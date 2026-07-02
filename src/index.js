@@ -1,3 +1,5 @@
+const BLOGGER_PROFILE_PAGE = "/p/business.html";
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -9,10 +11,20 @@ export default {
     const slug = url.pathname.split("/")[2];
 
     if (!slug) {
-      return new Response(
-        JSON.stringify({ error: "Missing profile slug" }),
-        { status: 400, headers: { "content-type": "application/json" } }
-      );
+      return new Response("Missing profile slug", { status: 400 });
+    }
+
+    // API mode: the Blogger page's own script calls this with ?format=json
+    // to fetch profile data. Everyone else hitting /b/<slug> directly in a
+    // browser gets redirected to the pretty rendered Blogger page instead
+    // of raw JSON, while still keeping the clean /b/<slug> as the
+    // shareable, indexable, canonical link.
+    const wantsJson = url.searchParams.get("format") === "json";
+
+    if (!wantsJson) {
+      const redirectUrl = new URL(BLOGGER_PROFILE_PAGE, url.origin);
+      redirectUrl.searchParams.set("biz", slug);
+      return Response.redirect(redirectUrl.toString(), 302);
     }
 
     const { results } = await env.DB.prepare(
@@ -108,4 +120,3 @@ async function sha256(message) {
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
-
