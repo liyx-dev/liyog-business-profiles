@@ -96,34 +96,43 @@
   box-shadow: var(--shadow-lift);
   padding: 20px 20px 16px;
   display: flex;
+  flex-wrap: nowrap;
   gap: 14px;
   align-items: flex-start;
 }
 .lp-logo {
   width: 76px;
   height: 76px;
+  min-width: 76px;
+  max-width: 76px;
   border-radius: var(--radius-md);
   object-fit: cover;
   border: 3px solid var(--surface);
   box-shadow: var(--shadow);
   flex-shrink: 0;
   background: var(--line);
+  display: block;
 }
-.lp-identity-text { flex: 1; min-width: 0; }
+.lp-identity-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
 .lp-business-name {
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: clamp(20px, 5vw, 28px);
-  line-height: 1.15;
+  font-size: clamp(18px, 5vw, 26px);
+  line-height: 1.2;
   margin: 0 0 4px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: block;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 .lp-verified-badge {
   color: var(--liyog-gold);
-  font-size: 0.7em;
-  flex-shrink: 0;
+  font-size: 0.65em;
+  margin-left: 4px;
+  white-space: nowrap;
 }
 .lp-tagline {
   color: var(--ink-soft);
@@ -401,4 +410,3 @@
   .lp-skeleton-block { animation: none; }
   .lp-btn, .lp-edit-pen, .lp-social-link { transition: none; }
 }
-
