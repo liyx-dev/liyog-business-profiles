@@ -85,7 +85,7 @@
       injectSeoTags(data.profile);
     } catch (err) {
       console.error("Failed to load profile:", err);
-      renderErrorState(root);
+      renderErrorState(root, err);
     }
   }
 
@@ -217,12 +217,13 @@
       </div>`;
   }
 
-  function renderErrorState(el) {
+  function renderErrorState(el, err) {
     el.innerHTML = `
       <div class="lp-root">
         <div class="lp-state-screen">
           <h2>Something went wrong</h2>
           <p>We couldn't load this profile right now. Please try again shortly.</p>
+          <p style="font-size:11px;color:#999;word-break:break-all;">${esc(err ? (err.message || String(err)) : "no error object")}</p>
         </div>
       </div>`;
   }
