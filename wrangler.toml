@@ -2,7 +2,7 @@ name = "liyog-profiles-worker"
 main = "src/index.js"
 compatibility_date = "2026-07-01"
 
-[[d1_databases]]
+[[ d1_databases]]
 binding = "DB"
 database_name = "liyog-profiles-db"
 database_id = "f329a916-5b2d-4cba-84da-7095d4884d45"
