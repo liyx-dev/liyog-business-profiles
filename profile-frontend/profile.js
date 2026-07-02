@@ -23,13 +23,44 @@
   const params = new URLSearchParams(window.location.search);
   const slug = params.get("biz");
 
-  if (!slug) {
-    renderClaimScreen(root);
-    return;
+  let currentPagePath = window.location.pathname; // safe fallback: wherever we already are
+
+  init();
+
+  async function init() {
+    // Ask the Worker where the profile page currently lives, so nothing
+    // here is ever hardcoded. If this page's own filename ever changes,
+    // updating one row in D1 is the only thing required — this script
+    // adapts automatically on next load.
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/config`);
+      const cfg = await res.json();
+      if (cfg.blogger_profile_page) currentPagePath = cfg.blogger_profile_page;
+    } catch (e) {
+      // Config fetch failing is non-fatal — we already have a safe fallback above.
+    }
+
+    if (!slug) {
+      renderClaimScreen(root, currentPagePath);
+      return;
+    }
+
+    renderSkeleton(root);
+    loadProfile(slug);
+    cleanAddressBar(slug);
   }
 
-  renderSkeleton(root);
-  loadProfile(slug);
+  // Rewrites the visible browser URL to the short, clean, shareable form
+  // (liyogworld.com.ng/b/slug) without reloading the page — so anyone
+  // who copies the URL from their address bar gets the SEO-friendly
+  // canonical link, not the Blogger path with ?biz=&m=1 attached.
+  function cleanAddressBar(slug) {
+    if (!window.history || !window.history.replaceState) return;
+    const cleanUrl = `${WORKER_BASE}/b/${encodeURIComponent(slug)}`;
+    if (window.location.href !== cleanUrl) {
+      window.history.replaceState({}, "", cleanUrl);
+    }
+  }
 
   async function loadProfile(slug) {
     try {
@@ -41,7 +72,7 @@
       const data = await res.json();
 
       if (!data.found) {
-        renderNotFound(root, slug);
+        renderNotFound(root, slug, currentPagePath);
         return;
       }
       if (data.status === "pending_review") {
@@ -165,13 +196,13 @@
     wireInteractions(p, isOwner);
   }
 
-  function renderNotFound(el, slug) {
+  function renderNotFound(el, slug, pagePath) {
     el.innerHTML = `
       <div class="lp-root">
         <div class="lp-state-screen">
           <h2>This profile doesn't exist yet</h2>
           <p>"${esc(slug)}" hasn't been claimed. Be the first to set it up.</p>
-          <a class="lp-state-cta" href="/p/business.html?claim=${encodeURIComponent(slug)}">Claim this link</a>
+          <a class="lp-state-cta" href="${escAttr(pagePath)}?claim=${encodeURIComponent(slug)}">Claim this link</a>
         </div>
       </div>`;
   }
@@ -196,13 +227,13 @@
       </div>`;
   }
 
-  function renderClaimScreen(el) {
+  function renderClaimScreen(el, pagePath) {
     el.innerHTML = `
       <div class="lp-root">
         <div class="lp-state-screen">
           <h2>Create your business profile</h2>
           <p>Get a free profile page and your own link to share, like liyogworld.com.ng/b/yourbusiness.</p>
-          <a class="lp-state-cta" href="/p/business.html?signup=1">Get started</a>
+          <a class="lp-state-cta" href="${escAttr(pagePath)}?signup=1">Get started</a>
         </div>
       </div>`;
   }
