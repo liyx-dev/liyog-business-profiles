@@ -34,8 +34,8 @@
   async function loadProfile(slug) {
     try {
       const currentUserId = getCurrentUserId(); // wired up fully once auth ships
-      const url = `${WORKER_BASE}/b/${encodeURIComponent(slug)}${
-        currentUserId ? `?viewer_id=${encodeURIComponent(currentUserId)}` : ""
+      const url = `${WORKER_BASE}/b/${encodeURIComponent(slug)}?format=json${
+        currentUserId ? `&viewer_id=${encodeURIComponent(currentUserId)}` : ""
       }`;
       const res = await fetch(url);
       const data = await res.json();
