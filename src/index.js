@@ -1,8 +1,14 @@
-const BLOGGER_PROFILE_PAGE = "/p/business_0889575646.html";
-
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/api/config") {
+      const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
+      return new Response(
+        JSON.stringify({ blogger_profile_page: pagePath }),
+        { headers: { "content-type": "application/json" } }
+      );
+    }
 
     if (!url.pathname.startsWith("/b/")) {
       return new Response("Not a profile route", { status: 404 });
@@ -14,15 +20,11 @@ export default {
       return new Response("Missing profile slug", { status: 400 });
     }
 
-    // API mode: the Blogger page's own script calls this with ?format=json
-    // to fetch profile data. Everyone else hitting /b/<slug> directly in a
-    // browser gets redirected to the pretty rendered Blogger page instead
-    // of raw JSON, while still keeping the clean /b/<slug> as the
-    // shareable, indexable, canonical link.
     const wantsJson = url.searchParams.get("format") === "json";
 
     if (!wantsJson) {
-      const redirectUrl = new URL(BLOGGER_PROFILE_PAGE, url.origin);
+      const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
+      const redirectUrl = new URL(pagePath, url.origin);
       redirectUrl.searchParams.set("biz", slug);
       return Response.redirect(redirectUrl.toString(), 302);
     }
@@ -119,4 +121,16 @@ async function sha256(message) {
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function getSetting(env, key, fallback) {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT value FROM app_settings WHERE key = ?"
+    ).bind(key).all();
+    return results.length > 0 ? results[0].value : fallback;
+  } catch (err) {
+    console.error("getSetting failed:", err);
+    return fallback;
+  }
 }
