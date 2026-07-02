@@ -43,8 +43,34 @@ export default {
       JSON.stringify({ found: true, profile }),
       { headers: { "content-type": "application/json" } }
     );
+  },
+
+  // Runs automatically on the schedule set in wrangler.toml (Cron Trigger).
+  // Keeps profile_views and share_events from growing forever, since the
+  // loop features only ever need recent history, not permanent raw logs.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(cleanupOldLogs(env));
   }
 };
+
+async function cleanupOldLogs(env) {
+  try {
+    const result = await env.DB.batch([
+      env.DB.prepare(
+        "DELETE FROM profile_views WHERE viewed_at < datetime('now', '-30 days')"
+      ),
+      env.DB.prepare(
+        "DELETE FROM share_events WHERE shared_at < datetime('now', '-90 days')"
+      ),
+      env.DB.prepare(
+        "DELETE FROM boost_log WHERE expires_at < datetime('now', '-7 days')"
+      )
+    ]);
+    console.log("Cleanup complete:", JSON.stringify(result.map(r => r.meta)));
+  } catch (err) {
+    console.error("Scheduled cleanup failed:", err);
+  }
+}
 
 async function logProfileView(request, env, profile) {
   try {
@@ -82,3 +108,4 @@ async function sha256(message) {
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
+
