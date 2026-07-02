@@ -1,4 +1,4 @@
-const BLOGGER_PROFILE_PAGE = "/p/business.html";
+const BLOGGER_PROFILE_PAGE = "/p/business_0889575646.html";
 
 export default {
   async fetch(request, env, ctx) {
