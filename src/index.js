@@ -1,6 +1,31 @@
+import PROFILE_CSS from "./assets/profile.css";
+import PROFILE_JS from "./assets/profile.js";
+import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // -----------------------------------------------------------------
+    // Direct asset serving — no external CDN, no caching lag. Editing
+    // these files in GitHub and pushing makes them live on the very
+    // next request, since they're bundled straight into this Worker.
+    // -----------------------------------------------------------------
+    if (url.pathname === "/brands.css") {
+      return new Response(PROFILE_CSS, {
+        headers: { "content-type": "text/css; charset=utf-8" }
+      });
+    }
+    if (url.pathname === "/brands.js") {
+      return new Response(PROFILE_JS, {
+        headers: { "content-type": "application/javascript; charset=utf-8" }
+      });
+    }
+    if (url.pathname === "/brands-template.html") {
+      return new Response(PROFILE_TEMPLATE_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" }
+      });
+    }
 
     if (url.pathname === "/api/config") {
       const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
