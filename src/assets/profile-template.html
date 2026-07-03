@@ -1,23 +1,23 @@
 <!-- =====================================================================
-     LIYOG WORLD BUSINESS PROFILES — profile-template.html (Phase 1 polish)
-     Pure structure. JS binds data via data-bind attributes only.
+     LIYOG WORLD BRAND PROFILES — profile-template.html (v3)
      ===================================================================== -->
 <div class="lp-root" id="lp-root">
 
   <div class="lp-cover-wrap">
     <img class="lp-cover" data-bind="cover_url" alt="" loading="eager">
+    <div class="lp-cover-fade"></div>
   </div>
 
   <div class="lp-identity">
     <img class="lp-logo" data-bind="logo_url" alt="">
-    <button class="lp-edit-pen" id="lp-edit-toggle" aria-label="Edit profile" title="Edit profile" hidden>
+    <button class="lp-edit-pen" id="lp-edit-toggle" aria-label="Edit brand profile" title="Edit" hidden>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
       </svg>
     </button>
     <h1 class="lp-name">
       <span data-bind="business_name"></span>
-      <span class="lp-verified" id="lp-verified" title="Verified business" hidden>
+      <span class="lp-verified" id="lp-verified" title="Verified brand" hidden>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
           <path d="M12 1.5l2.6 1.3 2.9-.4 1.3 2.6 2.6 1.3-.4 2.9L22.3 12l-1.3 2.6.4 2.9-2.6 1.3-1.3 2.6-2.9-.4L12 22.5l-2.6-1.3-2.9.4-1.3-2.6-2.6-1.3.4-2.9L1.7 12l1.3-2.6-.4-2.9 2.6-1.3L6.5 2.6l2.9.4L12 1.5z" fill="#1B7A3D"/>
           <path d="M8.5 12.5l2.3 2.3 4.7-4.7" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -39,10 +39,10 @@
       <span>Call</span>
     </a>
     <a class="lp-btn lp-btn-tertiary" id="lp-btn-sms" href="#" hidden>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       <span>SMS</span>
     </a>
-    <button class="lp-btn lp-btn-ghost" id="lp-btn-share" aria-label="Share this profile" title="Share">
+    <button class="lp-btn lp-btn-ghost" id="lp-btn-share" aria-label="Share this brand profile" title="Share">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
     </button>
   </div>
@@ -53,51 +53,61 @@
   </button>
 
   <div class="lp-section" id="lp-about-section" hidden>
-    <h2 class="lp-section-title">About this business</h2>
-    <div class="lp-bio-preview" id="lp-bio-preview"></div>
-    <button class="lp-read-more" id="lp-read-more-btn" hidden>Read more</button>
+    <h2 class="lp-section-title">The Brand Story</h2>
+    <div class="lp-bio-wrap">
+      <div class="lp-bio-preview" id="lp-bio-preview"></div>
+      <div class="lp-bio-fade" id="lp-bio-fade"></div>
+    </div>
+    <button class="lp-read-more" id="lp-read-more-btn" hidden>
+      <span>Read the full story</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 6 15 12 9 18"/></svg>
+    </button>
   </div>
 
   <div class="lp-section" id="lp-gallery-section" hidden>
-    <h2 class="lp-section-title">Storefront gallery</h2>
-    <p class="lp-section-sub">A closer look at what they offer</p>
+    <h2 class="lp-section-title">Brand Gallery</h2>
+    <p class="lp-section-sub">A closer look at the experience they deliver</p>
     <div class="lp-gallery" id="lp-gallery"></div>
   </div>
 
   <div class="lp-section" id="lp-reviews-section" hidden>
-    <h2 class="lp-section-title">Reviews &amp; ratings</h2>
+    <h2 class="lp-section-title">What People Are Saying</h2>
     <div class="lp-rating-summary" id="lp-rating-summary"></div>
     <div class="lp-reviews-list" id="lp-reviews-list"></div>
     <button class="lp-view-all-reviews" id="lp-view-all-reviews" hidden>View all reviews</button>
   </div>
 
   <div class="lp-section" id="lp-video-section" hidden>
-    <h2 class="lp-section-title">Watch</h2>
-    <p class="lp-section-sub">See them in action</p>
+    <h2 class="lp-section-title">See It In Motion</h2>
     <div class="lp-embed-wrap">
       <iframe id="lp-youtube" src="" title="" loading="lazy" allowfullscreen></iframe>
     </div>
   </div>
 
   <div class="lp-section" id="lp-map-section" hidden>
-    <h2 class="lp-section-title">Find them here</h2>
+    <h2 class="lp-section-title">Visit In Person</h2>
     <div class="lp-map-wrap">
       <iframe id="lp-map" src="" loading="lazy" title=""></iframe>
     </div>
   </div>
 
   <div class="lp-section" id="lp-social-section" hidden>
-    <h2 class="lp-section-title">Connect elsewhere</h2>
+    <h2 class="lp-section-title">Follow The Journey</h2>
     <div class="lp-social-row" id="lp-social-row"></div>
   </div>
 
   <div class="lp-meta">
-    <span id="lp-views-count">0 views</span>
-    <span id="lp-since-year"></span>
+    <span class="lp-meta-item" id="lp-views-count">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      <span></span>
+    </span>
+    <span class="lp-meta-item" id="lp-since-year">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span></span>
+    </span>
   </div>
 </div>
 
-<!-- Bottom sheet: full bio -->
 <div class="lp-sheet-overlay" id="lp-bio-sheet-overlay">
   <div class="lp-sheet" id="lp-bio-sheet">
     <div class="lp-sheet-handle"></div>
@@ -110,11 +120,10 @@
   </div>
 </div>
 
-<!-- Bottom sheet: all reviews -->
 <div class="lp-sheet-overlay" id="lp-reviews-sheet-overlay">
   <div class="lp-sheet" id="lp-reviews-sheet">
     <div class="lp-sheet-handle"></div>
-    <h3 class="lp-sheet-title-only">All reviews</h3>
+    <h3 class="lp-sheet-title-only">All Reviews</h3>
     <div class="lp-sheet-body" id="lp-all-reviews-body"></div>
   </div>
 </div>
@@ -123,3 +132,4 @@
   <button class="lp-lightbox-close" id="lp-lightbox-close" aria-label="Close">&times;</button>
   <img id="lp-lightbox-img" src="" alt="">
 </div>
+
