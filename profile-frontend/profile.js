@@ -11,7 +11,7 @@
   "use strict";
 
   const WORKER_BASE = "https://www.liyogworld.com.ng";
-  const TEMPLATE_URL = "https://cdn.jsdelivr.net/gh/liyx-dev/liyog-business-profiles@v1.0.0/profile-frontend/profile-template.html";
+  const TEMPLATE_URL = "https://cdn.jsdelivr.net/gh/liyx-dev/liyog-business-profiles@v1.0.1/profile-frontend/profile-template.html";
 
   const mount = document.getElementById("liyog-profile-root");
   if (!mount) { console.error("liyog-profile-root not found."); return; }
