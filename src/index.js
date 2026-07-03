@@ -1,5 +1,5 @@
-import PROFILE_CSS from "./assets/profile.css";
-import PROFILE_JS from "./assets/profile.js";
+import PROFILE_CSS from "./assets/profile-css.txt";
+import PROFILE_JS from "./assets/profile-js.txt";
 import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
 
 export default {
