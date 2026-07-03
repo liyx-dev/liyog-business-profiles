@@ -1,5 +1,6 @@
+
 /* =====================================================================
-   LIYOG WORLD BUSINESS PROFILES — profile.js (Phase 1 polish)
+   LIYOG WORLD BRAND PROFILES — profile.js (v3, premium rebuild)
    ===================================================================== */
 
 (function () {
@@ -7,7 +8,7 @@
 
   const WORKER_BASE = "https://www.liyogworld.com.ng";
   const TEMPLATE_URL = `${WORKER_BASE}/brands-template.html`;
-  const BIO_PREVIEW_CHAR_LIMIT = 180;
+  const BIO_PREVIEW_CHAR_LIMIT = 160;
 
   const mount = document.getElementById("liyog-profile-root");
   if (!mount) { console.error("liyog-profile-root not found."); return; }
@@ -60,12 +61,8 @@
     }
   }
 
-  // -------------------------------------------------------------------
-  // Data binding
-  // -------------------------------------------------------------------
-
   function bindProfile(p, isOwner) {
-    setImg("[data-bind='cover_url']", p.cover_url, `${p.business_name} cover photo`);
+    setImg("[data-bind='cover_url']", p.cover_url, `${p.business_name} cover`);
     setImg(".lp-logo", p.logo_url, `${p.business_name} logo`);
     setText("[data-bind='business_name']", p.business_name);
     setText("[data-bind='tagline']", p.tagline || "");
@@ -124,7 +121,7 @@
 
     const smsBtn = document.getElementById("lp-btn-sms");
     if (p.phone_number && smsBtn) {
-      const smsText = `Hi ${p.business_name}, I found your profile on Liyog World.`;
+      const smsText = `Hi ${p.business_name}, I found your brand profile on Liyog World.`;
       smsBtn.href = `sms:${sanitizeTel(p.phone_number)}?body=${encodeURIComponent(smsText)}`;
       smsBtn.hidden = false;
     }
@@ -135,8 +132,6 @@
     if (!btn) return;
     btn.hidden = false;
     btn.addEventListener("click", () => {
-      // Full inquiry form ships with the signup/auth phase — this
-      // confirms the entry point works end to end ahead of that.
       alert("Our built-in inquiry form is coming soon. For now, please reach out via WhatsApp, Call, or SMS above.");
     });
   }
@@ -145,6 +140,7 @@
     if (!p.bio_html) return;
     const section = document.getElementById("lp-about-section");
     const preview = document.getElementById("lp-bio-preview");
+    const fade = document.getElementById("lp-bio-fade");
     const readMoreBtn = document.getElementById("lp-read-more-btn");
     if (!section || !preview) return;
 
@@ -153,9 +149,15 @@
     preview.innerHTML = cleanHtml;
     section.hidden = false;
 
-    if (plainText.length > BIO_PREVIEW_CHAR_LIMIT) {
+    const overflows = plainText.length > BIO_PREVIEW_CHAR_LIMIT;
+    if (overflows) {
       readMoreBtn.hidden = false;
+      if (fade) fade.style.display = "block";
       readMoreBtn.addEventListener("click", () => openBioSheet(p, cleanHtml));
+    } else {
+      if (fade) fade.style.display = "none";
+      preview.style.webkitLineClamp = "unset";
+      preview.style.maxHeight = "none";
     }
   }
 
@@ -203,22 +205,22 @@
       const img = document.createElement("img");
       img.src = url;
       img.loading = "lazy";
-      img.alt = `${businessName} photo ${i + 1}`;
+      img.alt = `${businessName} — brand photo ${i + 1}`;
       img.dataset.full = url;
       tile.appendChild(img);
+      const index = document.createElement("span");
+      index.className = "lp-gallery-index";
+      index.textContent = `${i + 1} / ${photos.length}`;
+      tile.appendChild(index);
       wrap.appendChild(tile);
     });
     section.hidden = false;
   }
 
   function bindReviews(p) {
-    // Reviews are a separate build phase — this renders only if the
-    // Worker ever returns review data, so the section stays hidden
-    // and inert until that feature ships. No placeholder fake data.
     if (!p.reviews || !p.reviews.length) return;
     const section = document.getElementById("lp-reviews-section");
     if (section) section.hidden = false;
-    // Full render logic added when the Reviews feature is built.
   }
 
   function bindVideo(youtubeUrl, businessName) {
@@ -245,10 +247,10 @@
     const links = [
       [p.social_facebook, "Facebook", "lp-social-facebook", '<path fill="#fff" d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/>'],
       [p.social_instagram, "Instagram", "lp-social-instagram", '<rect x="2" y="2" width="20" height="20" rx="6" fill="none" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="4.5" fill="none" stroke="#fff" stroke-width="2"/><circle cx="17.3" cy="6.7" r="1.3" fill="#fff"/>'],
-      [p.social_twitter, "X", "lp-social-x", '<path fill="#fff" d="M4 4l16 16M20 4L4 20" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>'],
-      [p.social_tiktok, "TikTok", "lp-social-tiktok", '<path fill="#fff" d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/>'],
+      [p.social_twitter, "X", "lp-social-x", '<path stroke="#fff" stroke-width="2.4" stroke-linecap="round" d="M4 4l16 16M20 4L4 20"/>'],
+      [p.social_tiktok, "TikTok", "lp-social-tiktok", '<path fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5"/>'],
       [p.social_youtube, "YouTube", "lp-social-youtube", '<rect x="2" y="5" width="20" height="14" rx="4" fill="none" stroke="#fff" stroke-width="2"/><polygon points="10 9 15 12 10 15" fill="#fff"/>'],
-      [p.social_website, "Website", "lp-social-website", '<circle cx="12" cy="12" r="9" fill="none" stroke="#fff" stroke-width="2"/><line x1="3" y1="12" x2="21" y2="12" stroke="#fff" stroke-width="2"/><path d="M12 3a13.5 13.5 0 0 1 0 18 13.5 13.5 0 0 1 0-18" fill="none" stroke="#fff" stroke-width="2"/>']
+      [p.social_website, "Website", "lp-social-website", '<circle cx="12" cy="12" r="9" fill="none" stroke="#fff" stroke-width="2"/><line x1="3" y1="12" x2="21" y2="12" stroke="#fff" stroke-width="2"/><path fill="none" stroke="#fff" stroke-width="2" d="M12 3a13.5 13.5 0 0 1 0 18 13.5 13.5 0 0 1 0-18"/>']
     ];
     const section = document.getElementById("lp-social-section");
     const wrap = document.getElementById("lp-social-row");
@@ -271,10 +273,10 @@
   }
 
   function bindMeta(p) {
-    const views = document.getElementById("lp-views-count");
-    const since = document.getElementById("lp-since-year");
-    if (views) views.textContent = `${formatNumber(p.profile_views || 0)} views`;
-    if (since) since.textContent = `Member since ${formatYear(p.created_at)}`;
+    const viewsEl = document.querySelector("#lp-views-count span");
+    const sinceEl = document.querySelector("#lp-since-year span");
+    if (viewsEl) viewsEl.textContent = `${formatNumber(p.profile_views || 0)} profile views`;
+    if (sinceEl) sinceEl.textContent = `Joined ${formatExactDate(p.created_at)}`;
   }
 
   function wireShare(p) {
@@ -292,8 +294,8 @@
       }
       navigator.clipboard.writeText(shareUrl).then(() => {
         const original = btn.innerHTML;
-        btn.textContent = "Copied";
-        setTimeout(() => (btn.innerHTML = original), 1500);
+        btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>`;
+        setTimeout(() => (btn.innerHTML = original), 1600);
       });
     });
   }
@@ -305,7 +307,7 @@
     const closeBtn = document.getElementById("lp-lightbox-close");
     if (!gallery || !lightbox) return;
     gallery.addEventListener("click", (e) => {
-      const target = e.target.closest("img[data-full]");
+      const target = e.target.closest(".lp-gallery-tile img[data-full]");
       if (!target) return;
       img.src = target.dataset.full;
       img.alt = target.alt;
@@ -337,51 +339,43 @@
     if (window.location.href !== cleanUrl) window.history.replaceState({}, "", cleanUrl);
   }
 
-  // -------------------------------------------------------------------
-  // State screens
-  // -------------------------------------------------------------------
-
   function showSkeleton() {
     mount.innerHTML = `<div class="lp-root"><div class="lp-skeleton">
-      <div class="lp-skeleton-block" style="height:160px;margin-bottom:16px;"></div>
+      <div class="lp-skeleton-block" style="height:170px;margin-bottom:18px;"></div>
       <div class="lp-skeleton-block" style="height:22px;width:55%;margin:0 auto 10px;"></div>
       <div class="lp-skeleton-block" style="height:14px;width:35%;margin:0 auto;"></div>
     </div></div>`;
   }
   function showClaimScreen() {
     mount.innerHTML = `<div class="lp-root"><div class="lp-state-screen">
-      <h2>Create your business profile</h2>
-      <p>Get a free profile page and your own link to share, like liyogworld.com.ng/b/yourbusiness.</p>
-      <a class="lp-state-cta" href="${escAttr(pagePath)}?signup=1">Get started</a>
+      <h2>Your Brand Deserves a Home</h2>
+      <p>Claim a free brand profile on Liyog World — your own link to share, discoverable on Google, built to bring people to you every single day.</p>
+      <a class="lp-state-cta" href="${escAttr(pagePath)}?signup=1">Create your profile</a>
     </div></div>`;
   }
   function showNotFoundScreen(slug) {
     mount.innerHTML = `<div class="lp-root"><div class="lp-state-screen">
-      <h2>This profile doesn't exist yet</h2>
-      <p>"${esc(slug)}" hasn't been claimed. Be the first to set it up.</p>
+      <h2>This Link Is Still Available</h2>
+      <p>"${esc(slug)}" hasn't been claimed yet. Make it yours before someone else does.</p>
       <a class="lp-state-cta" href="${escAttr(pagePath)}?claim=${encodeURIComponent(slug)}">Claim this link</a>
     </div></div>`;
   }
   function showPendingScreen() {
     mount.innerHTML = `<div class="lp-root"><div class="lp-state-screen">
-      <h2>Profile under review</h2>
-      <p>This business profile is being checked and will be live shortly.</p>
+      <h2>Almost There</h2>
+      <p>This brand profile is being reviewed and will go live shortly.</p>
     </div></div>`;
   }
   function showErrorScreen() {
     mount.innerHTML = `<div class="lp-root"><div class="lp-state-screen">
-      <h2>Something went wrong</h2>
+      <h2>Something Went Wrong</h2>
       <p>We couldn't load this profile right now. Please try again shortly.</p>
     </div></div>`;
   }
 
-  // -------------------------------------------------------------------
-  // SEO injection
-  // -------------------------------------------------------------------
-
   function injectSeoTags(p) {
     const bioSnippet = p.tagline || stripHtml(p.bio_html).slice(0, 155);
-    document.title = `${p.business_name} | Liyog World Business Profiles`;
+    document.title = `${p.business_name} | Liyog World Brand Profiles`;
 
     setMeta("description", bioSnippet);
     setMeta("og:title", `${p.business_name} | Liyog World`, true);
@@ -389,7 +383,7 @@
     setMeta("og:image", p.logo_url || p.cover_url || "", true);
     setMeta("og:type", "business.business", true);
     setMeta("og:url", `${WORKER_BASE}/b/${p.slug}`, true);
-    setMeta("og:site_name", "Liyog World Business Profiles", true);
+    setMeta("og:site_name", "Liyog World Brand Profiles", true);
     setMeta("twitter:card", "summary_large_image");
     setMeta("twitter:title", `${p.business_name} | Liyog World`);
     setMeta("twitter:description", bioSnippet);
@@ -407,7 +401,6 @@
       "image": [p.logo_url, p.cover_url].filter(Boolean),
       "url": `${WORKER_BASE}/b/${p.slug}`,
       "telephone": p.phone_number || undefined,
-      "priceRange": undefined,
       "address": {
         "@type": "PostalAddress",
         "streetAddress": p.store_address || undefined,
@@ -420,14 +413,12 @@
     if (!script) { script = document.createElement("script"); script.type = "application/ld+json"; script.id = "lp-jsonld"; document.head.appendChild(script); }
     script.textContent = JSON.stringify(ld);
 
-    // Breadcrumb schema helps Google understand this page sits within
-    // the larger Liyog World site, improving how it's shown in results.
     const breadcrumbLd = {
       "@context": "https://schema.org",
       "@type": "BreadcrumbList",
       "itemListElement": [
         { "@type": "ListItem", "position": 1, "name": "Liyog World", "item": WORKER_BASE },
-        { "@type": "ListItem", "position": 2, "name": "Business Profiles", "item": `${WORKER_BASE}/b/` },
+        { "@type": "ListItem", "position": 2, "name": "Brand Profiles", "item": `${WORKER_BASE}/b/` },
         { "@type": "ListItem", "position": 3, "name": p.business_name, "item": `${WORKER_BASE}/b/${p.slug}` }
       ]
     };
@@ -449,17 +440,9 @@
     tag.setAttribute("content", content);
   }
 
-  // -------------------------------------------------------------------
-  // DOM helpers
-  // -------------------------------------------------------------------
-
   function setText(selector, value) { const el = document.querySelector(selector); if (el) el.textContent = value || ""; }
   function setImg(selector, url, alt) { const el = document.querySelector(selector); if (el) { el.src = url || ""; el.alt = alt || ""; } }
   function hide(selector) { const el = document.querySelector(selector); if (el) el.style.display = "none"; }
-
-  // -------------------------------------------------------------------
-  // Utilities
-  // -------------------------------------------------------------------
 
   function getCurrentUserId() { return null; }
   function safeParseArray(val) {
@@ -469,7 +452,7 @@
   function buildWhatsAppLink(number, message, businessName) {
     if (!number) return null;
     const cleaned = number.replace(/[^\d+]/g, "").replace("+", "");
-    const text = message || `Hi ${businessName}, I found your profile on Liyog World and I'm interested.`;
+    const text = message || `Hi ${businessName}, I found your brand profile on Liyog World and I'm interested.`;
     return `https://wa.me/${cleaned}?text=${encodeURIComponent(text)}`;
   }
   function sanitizeTel(number) { return number.replace(/[^\d+]/g, ""); }
@@ -477,9 +460,11 @@
     const match = url.match(/(?:youtu\.be\/|v=)([a-zA-Z0-9_-]{11})/);
     return match ? `https://www.youtube.com/embed/${match[1]}` : url;
   }
-  function formatYear(dateStr) {
+  function formatExactDate(dateStr) {
     if (!dateStr) return "2026";
-    return new Date(dateStr.replace(" ", "T") + "Z").getFullYear();
+    const d = new Date(dateStr.replace(" ", "T") + "Z");
+    const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    return `${months[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
   }
   function formatNumber(n) {
     if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
