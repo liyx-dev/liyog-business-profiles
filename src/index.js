@@ -1,6 +1,8 @@
 import PROFILE_CSS from "./assets/profile-css.txt";
 import PROFILE_JS from "./assets/profile-js.txt";
 import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
+import AUTH_UI_JS from "./assets/auth-ui-js.txt";
+import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
 import { checkText, saveModerationFlags } from "./lib/moderation.js";
 
@@ -53,6 +55,12 @@ export default {
     }
     if (url.pathname === "/brands-template.html") {
       return new Response(PROFILE_TEMPLATE_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+    if (url.pathname === "/auth-ui.js") {
+      return new Response(AUTH_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } });
+    }
+    if (url.pathname === "/auth-ui.css") {
+      return new Response(AUTH_UI_CSS, { headers: { "content-type": "text/css; charset=utf-8" } });
     }
 
     if (url.pathname === "/api/config") {
@@ -344,3 +352,4 @@ async function getSetting(env, key, fallback) {
     return fallback;
   }
 }
+
