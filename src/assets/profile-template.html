@@ -25,14 +25,45 @@
       </span>
     </h1>
     <p class="lp-tagline" data-bind="tagline"></p>
+    <span class="lp-category-badge" id="lp-category-badge"></span>
   </div>
 
   <div class="lp-pills" id="lp-pills"></div>
 
+  <div class="lp-contact-banner" id="lp-contact-banner" hidden>
+    <div class="lp-contact-banner-item" id="lp-contact-whatsapp-row" hidden>
+      <div class="lp-contact-icon lp-contact-icon-whatsapp">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2z"/></svg>
+      </div>
+      <div class="lp-contact-text">
+        <span class="lp-contact-label">WhatsApp</span>
+        <span class="lp-contact-value" id="lp-contact-whatsapp-value"></span>
+      </div>
+    </div>
+    <div class="lp-contact-banner-item" id="lp-contact-phone-row" hidden>
+      <div class="lp-contact-icon lp-contact-icon-phone">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+      </div>
+      <div class="lp-contact-text">
+        <span class="lp-contact-label">Call</span>
+        <span class="lp-contact-value" id="lp-contact-phone-value"></span>
+      </div>
+    </div>
+    <div class="lp-contact-banner-item" id="lp-contact-response-row" hidden>
+      <div class="lp-contact-icon lp-contact-icon-response">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      </div>
+      <div class="lp-contact-text">
+        <span class="lp-contact-label">Response time</span>
+        <span class="lp-contact-value" id="lp-contact-response-value"></span>
+      </div>
+    </div>
+  </div>
+
   <div class="lp-actions">
     <a class="lp-btn lp-btn-primary" id="lp-btn-whatsapp" href="#" target="_blank" rel="noopener" hidden>
       <svg width="19" height="19" viewBox="0 0 24 24" fill="#fff"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2zm5.8 14.14c-.24.68-1.4 1.3-1.94 1.38-.5.08-1.12.11-1.81-.11-.42-.13-.95-.31-1.64-.6-2.89-1.25-4.78-4.15-4.92-4.34-.14-.19-1.18-1.57-1.18-3 0-1.43.75-2.13 1.02-2.42.27-.29.58-.36.78-.36.19 0 .39 0 .56.01.18.01.42-.07.65.5.24.58.82 2.01.89 2.16.07.15.12.32.02.52-.1.19-.15.31-.29.48-.15.17-.31.37-.44.5-.15.14-.3.3-.13.58.17.29.76 1.25 1.63 2.02 1.12.99 2.06 1.3 2.35 1.45.29.14.46.12.63-.07.17-.19.72-.84.92-1.13.19-.29.38-.24.64-.14.26.09 1.67.79 1.96.93.29.14.48.21.55.33.07.12.07.7-.17 1.38z"/></svg>
-      <span> </span>
+      <span>WhatsApp</span>
     </a>
     <a class="lp-btn lp-btn-secondary" id="lp-btn-call" href="#" hidden>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
@@ -89,6 +120,10 @@
     <div class="lp-map-wrap">
       <iframe id="lp-map" src="" loading="lazy" title=""></iframe>
     </div>
+    <div class="lp-location-details" id="lp-location-details" hidden>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      <span id="lp-location-text"></span>
+    </div>
   </div>
 
   <div class="lp-section" id="lp-social-section" hidden>
@@ -110,7 +145,12 @@
 
 <div class="lp-sheet-overlay" id="lp-bio-sheet-overlay">
   <div class="lp-sheet" id="lp-bio-sheet">
-    <div class="lp-sheet-handle"></div>
+    <div class="lp-sheet-top-bar">
+      <div class="lp-sheet-handle"></div>
+      <button class="lp-sheet-close" id="lp-bio-sheet-close" aria-label="Close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
     <div class="lp-sheet-header">
       <img class="lp-sheet-logo" id="lp-sheet-logo" src="" alt="">
       <h3 id="lp-sheet-name"></h3>
@@ -132,4 +172,3 @@
   <button class="lp-lightbox-close" id="lp-lightbox-close" aria-label="Close">&times;</button>
   <img id="lp-lightbox-img" src="" alt="">
 </div>
-
