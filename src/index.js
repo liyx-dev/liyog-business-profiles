@@ -176,7 +176,13 @@ export default {
         return jsonResponse({ error: "Image too large — please use a smaller image" }, 400);
       }
 
-      const key = `profile-images/${userId}/${crypto.randomUUID()}.webp`;
+      // Use an SEO-friendly filename when the client provides one (brand
+      // name + field type, e.g. "zion-store-logo"), falling back to a
+      // random id if not — never blocks upload on a missing name.
+      const requestedName = (url.searchParams.get("name") || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
+      const uniqueSuffix = crypto.randomUUID().slice(0, 8);
+      const filename = requestedName ? `${requestedName}-${uniqueSuffix}` : crypto.randomUUID();
+      const key = `profile-images/${userId}/${filename}.webp`;
       await env.ASSETS.put(key, arrayBuffer, {
         httpMetadata: { contentType: "image/webp" }
       });
