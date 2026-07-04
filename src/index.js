@@ -1,13 +1,11 @@
 import PROFILE_CSS from "./assets/profile-css.txt";
 import PROFILE_JS from "./assets/profile-js.txt";
 import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
+import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
+import { checkText, saveModerationFlags } from "./lib/moderation.js";
 
-// A profile earns the verified badge once it has been on the platform
-// for at least 7 days AND has filled in the fields that matter for
-// trust: logo, cover, tagline, bio, at least one contact method, and
-// at least one gallery photo. This runs on every read rather than a
-// stored flag alone, so a profile that later removes key info loses
-// the badge automatically rather than keeping it stale forever.
+const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
+
 function computeIsVerified(profile) {
   const daysSinceCreated = (Date.now() - new Date(profile.created_at.replace(" ", "T") + "Z").getTime()) / (1000 * 60 * 60 * 24);
   if (daysSinceCreated < 7) return false;
@@ -27,10 +25,26 @@ function safeParseArray(val) {
   catch (e) { return []; }
 }
 
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+function getCookie(request, name) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const match = cookieHeader.match(new RegExp(`${name}=([^;]+)`));
+  return match ? match[1] : null;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    // -----------------------------------------------------------------
+    // Static assets
+    // -----------------------------------------------------------------
     if (url.pathname === "/brands.css") {
       return new Response(PROFILE_CSS, { headers: { "content-type": "text/css; charset=utf-8" } });
     }
@@ -43,24 +57,208 @@ export default {
 
     if (url.pathname === "/api/config") {
       const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
-      return new Response(
-        JSON.stringify({ blogger_profile_page: pagePath }),
-        { headers: { "content-type": "application/json" } }
-      );
+      return jsonResponse({ blogger_profile_page: pagePath, google_client_id: GOOGLE_CLIENT_ID });
     }
 
+    // -----------------------------------------------------------------
+    // Auth: sign in with Google — verifies token, creates/finds user,
+    // issues a session cookie. This is the single entry point for both
+    // "new user signing up" and "returning user logging in" — the
+    // distinction only matters for whether they already have a profile.
+    // -----------------------------------------------------------------
+    if (url.pathname === "/api/auth/google" && request.method === "POST") {
+      const body = await request.json();
+      const payload = await verifyGoogleToken(body.credential, GOOGLE_CLIENT_ID);
+      if (!payload) return jsonResponse({ error: "Invalid Google token" }, 401);
+
+      const user = await findOrCreateUser(env, payload, body.marketingOptIn === true);
+      const sessionToken = await createSessionToken(env, user.id);
+
+      const { results: existingProfiles } = await env.DB.prepare(
+        "SELECT id, slug FROM profiles WHERE owner_id = ?"
+      ).bind(user.id).all();
+
+      const response = jsonResponse({
+        user: { id: user.id, email: user.email, name: user.display_name, avatar: user.avatar_url },
+        profiles: existingProfiles
+      });
+      response.headers.set(
+        "Set-Cookie",
+        `liyog_session=${sessionToken}; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=Lax`
+      );
+      return response;
+    }
+
+    // Returns the current logged-in user (if any) based on session cookie.
+    if (url.pathname === "/api/auth/me") {
+      const sessionToken = getCookie(request, "liyog_session");
+      if (!sessionToken) return jsonResponse({ loggedIn: false });
+
+      const userId = await verifySessionToken(env, sessionToken);
+      if (!userId) return jsonResponse({ loggedIn: false });
+
+      const { results } = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).all();
+      if (!results.length) return jsonResponse({ loggedIn: false });
+
+      const { results: profiles } = await env.DB.prepare(
+        "SELECT id, slug, business_name, moderation_status FROM profiles WHERE owner_id = ?"
+      ).bind(userId).all();
+
+      return jsonResponse({
+        loggedIn: true,
+        user: { id: results[0].id, email: results[0].email, name: results[0].display_name, avatar: results[0].avatar_url },
+        profiles
+      });
+    }
+
+    if (url.pathname === "/api/auth/logout" && request.method === "POST") {
+      const response = jsonResponse({ success: true });
+      response.headers.set("Set-Cookie", "liyog_session=; Path=/; Max-Age=0");
+      return response;
+    }
+
+    // -----------------------------------------------------------------
+    // Slug availability check — used live while the user types during signup
+    // -----------------------------------------------------------------
+    if (url.pathname === "/api/check-slug") {
+      const slug = (url.searchParams.get("slug") || "").toLowerCase().trim();
+      const validFormat = /^[a-z0-9](?:[a-z0-9-]{1,18}[a-z0-9])?$/.test(slug);
+      if (!validFormat) return jsonResponse({ available: false, reason: "invalid_format" });
+
+      const { results: reserved } = await env.DB.prepare(
+        "SELECT slug FROM reserved_slugs WHERE slug = ?"
+      ).bind(slug).all();
+      if (reserved.length) return jsonResponse({ available: false, reason: "reserved" });
+
+      const { results: taken } = await env.DB.prepare(
+        "SELECT slug FROM profiles WHERE slug = ?"
+      ).bind(slug).all();
+      if (taken.length) return jsonResponse({ available: false, reason: "taken" });
+
+      return jsonResponse({ available: true });
+    }
+
+    // Returns the allowed business categories, so the signup form never
+    // hardcodes a category list that could drift from what's actually valid.
+    if (url.pathname === "/api/categories") {
+      const { results } = await env.DB.prepare(
+        "SELECT slug, label FROM business_categories WHERE is_allowed = 1"
+      ).all();
+      return jsonResponse({ categories: results });
+    }
+
+    // -----------------------------------------------------------------
+    // Create a new brand profile — requires a valid session
+    // -----------------------------------------------------------------
+    if (url.pathname === "/api/profiles" && request.method === "POST") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+
+      const body = await request.json();
+      const slug = (body.slug || "").toLowerCase().trim();
+      const businessName = (body.business_name || "").trim();
+      const category = body.business_category;
+
+      if (!slug || !businessName || !category) {
+        return jsonResponse({ error: "Missing required fields" }, 400);
+      }
+
+      const { results: categoryCheck } = await env.DB.prepare(
+        "SELECT slug FROM business_categories WHERE slug = ? AND is_allowed = 1"
+      ).bind(category).all();
+      if (!categoryCheck.length) return jsonResponse({ error: "Invalid category" }, 400);
+
+      const { results: slugTaken } = await env.DB.prepare(
+        "SELECT slug FROM profiles WHERE slug = ? UNION SELECT slug FROM reserved_slugs WHERE slug = ?"
+      ).bind(slug, slug).all();
+      if (slugTaken.length) return jsonResponse({ error: "Slug already taken" }, 409);
+
+      // Layer 1 moderation gate — text fields only, at profile-creation time.
+      const nameCheck = checkText(businessName);
+      const taglineCheck = checkText(body.tagline || "");
+      const flags = [];
+      if (!nameCheck.passed) flags.push({ checkType: "text_auto", fieldName: "business_name", flaggedValue: nameCheck.matchedTerm });
+      if (!taglineCheck.passed) flags.push({ checkType: "text_auto", fieldName: "tagline", flaggedValue: taglineCheck.matchedTerm });
+
+      const profileId = crypto.randomUUID();
+      const moderationStatus = flags.length > 0 ? "pending" : "approved";
+
+      await env.DB.prepare(
+        `INSERT INTO profiles (id, owner_id, slug, business_name, business_category, tagline, moderation_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).bind(profileId, userId, slug, businessName, category, body.tagline || null, moderationStatus).run();
+
+      if (flags.length) await saveModerationFlags(env, profileId, flags);
+
+      return jsonResponse({ success: true, profileId, slug, moderationStatus });
+    }
+
+    // -----------------------------------------------------------------
+    // Update an existing brand profile — owner-only, re-triggers
+    // moderation on any changed text field per the moderation spec.
+    // -----------------------------------------------------------------
+    if (url.pathname.startsWith("/api/profiles/") && request.method === "PATCH") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+
+      const profileId = url.pathname.split("/")[3];
+      const { results } = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).all();
+      if (!results.length) return jsonResponse({ error: "Profile not found" }, 404);
+      if (results[0].owner_id !== userId) return jsonResponse({ error: "Not your profile" }, 403);
+
+      const body = await request.json();
+      const editableFields = [
+        "tagline", "bio_html", "year_established", "whatsapp_number", "wa_message",
+        "phone_number", "response_time", "store_address", "store_city", "store_country",
+        "map_address", "logo_url", "cover_url", "store_photos", "youtube_url", "key_points",
+        "social_facebook", "social_instagram", "social_twitter", "social_tiktok",
+        "social_youtube", "social_website"
+      ];
+
+      const updates = {};
+      const flags = [];
+      for (const field of editableFields) {
+        if (body[field] !== undefined) {
+          updates[field] = body[field];
+          if (["tagline", "bio_html"].includes(field)) {
+            const check = checkText(body[field]);
+            if (!check.passed) flags.push({ checkType: "text_auto", fieldName: field, flaggedValue: check.matchedTerm });
+          }
+        }
+      }
+
+      if (!Object.keys(updates).length) return jsonResponse({ error: "No valid fields to update" }, 400);
+
+      // Any edit re-triggers moderation review, per the original spec:
+      // an approved profile that changes its bio/logo shouldn't stay
+      // approved on stale content forever.
+      const newStatus = flags.length > 0 ? "pending" : "approved";
+      updates.moderation_status = newStatus;
+
+      const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
+      const values = Object.values(updates);
+      await env.DB.prepare(
+        `UPDATE profiles SET ${setClauses}, updated_at = datetime('now') WHERE id = ?`
+      ).bind(...values, profileId).run();
+
+      if (flags.length) await saveModerationFlags(env, profileId, flags);
+
+      return jsonResponse({ success: true, moderationStatus: newStatus });
+    }
+
+    // -----------------------------------------------------------------
+    // Public profile routes (unchanged from before)
+    // -----------------------------------------------------------------
     if (!url.pathname.startsWith("/b/")) {
       return new Response("Not a profile route", { status: 404 });
     }
 
     const slug = url.pathname.split("/")[2];
-
-    if (!slug) {
-      return new Response("Missing profile slug", { status: 400 });
-    }
+    if (!slug) return new Response("Missing profile slug", { status: 400 });
 
     const wantsJson = url.searchParams.get("format") === "json";
-
     if (!wantsJson) {
       const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
       const redirectUrl = new URL(pagePath, url.origin);
@@ -72,32 +270,17 @@ export default {
       "SELECT * FROM profiles WHERE slug = ? AND is_active = 1"
     ).bind(slug).all();
 
-    if (results.length === 0) {
-      return new Response(
-        JSON.stringify({ found: false, slug }),
-        { status: 404, headers: { "content-type": "application/json" } }
-      );
-    }
+    if (results.length === 0) return jsonResponse({ found: false, slug }, 404);
 
     const profile = results[0];
-
     if (profile.moderation_status !== "approved") {
-      return new Response(
-        JSON.stringify({ found: true, status: "pending_review", slug }),
-        { headers: { "content-type": "application/json" } }
-      );
+      return jsonResponse({ found: true, status: "pending_review", slug });
     }
 
-    // Compute verification status live on every read (see comment above
-    // computeIsVerified for why this isn't just a static stored flag).
     profile.is_verified = computeIsVerified(profile) ? 1 : 0;
-
     ctx.waitUntil(logProfileView(request, env, profile));
 
-    return new Response(
-      JSON.stringify({ found: true, profile }),
-      { headers: { "content-type": "application/json" } }
-    );
+    return jsonResponse({ found: true, profile });
   },
 
   async scheduled(event, env, ctx) {
