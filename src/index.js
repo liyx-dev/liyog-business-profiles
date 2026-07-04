@@ -156,6 +156,46 @@ export default {
     }
 
     // -----------------------------------------------------------------
+    // Image upload — accepts a compressed WebP blob from the client,
+    // stores it in R2, returns the public URL. Client does compression
+    // before this ever runs, so this endpoint stays simple and fast.
+    // -----------------------------------------------------------------
+    if (url.pathname === "/api/upload-image" && request.method === "POST") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+
+      const contentType = request.headers.get("content-type") || "";
+      if (!contentType.includes("image/webp")) {
+        return jsonResponse({ error: "Only WebP images are accepted" }, 400);
+      }
+
+      const arrayBuffer = await request.arrayBuffer();
+      const sizeInMb = arrayBuffer.byteLength / (1024 * 1024);
+      if (sizeInMb > 2) {
+        return jsonResponse({ error: "Image too large — please use a smaller image" }, 400);
+      }
+
+      const key = `profile-images/${userId}/${crypto.randomUUID()}.webp`;
+      await env.ASSETS.put(key, arrayBuffer, {
+        httpMetadata: { contentType: "image/webp" }
+      });
+
+      const publicUrl = `${url.origin}/api/image/${key}`;
+      return jsonResponse({ success: true, url: publicUrl });
+    }
+
+    // Serves an uploaded image back out of R2.
+    if (url.pathname.startsWith("/api/image/")) {
+      const key = url.pathname.replace("/api/image/", "");
+      const object = await env.ASSETS.get(key);
+      if (!object) return new Response("Not found", { status: 404 });
+      return new Response(object.body, {
+        headers: { "content-type": "image/webp", "cache-control": "public, max-age=31536000" }
+      });
+    }
+
+    // -----------------------------------------------------------------
     // Create a new brand profile — requires a valid session
     // -----------------------------------------------------------------
     if (url.pathname === "/api/profiles" && request.method === "POST") {
@@ -352,4 +392,3 @@ async function getSetting(env, key, fallback) {
     return fallback;
   }
 }
-
