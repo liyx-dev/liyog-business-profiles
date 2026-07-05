@@ -9,7 +9,9 @@
   </div>
 
   <div class="lp-identity">
-    <img class="lp-logo" data-bind="logo_url" alt="">
+    <div class="lp-logo-wrap">
+      <img class="lp-logo" data-bind="logo_url" alt="">
+    </div>
     <button class="lp-edit-pen" id="lp-edit-toggle" aria-label="Edit brand profile" title="Edit" hidden>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
@@ -19,7 +21,7 @@
       <span data-bind="business_name"></span>
       <span class="lp-verified" id="lp-verified" title="Verified brand" hidden>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <path d="M12 1.5l2.6 1.3 2.9-.4 1.3 2.6 2.6 1.3-.4 2.9L22.3 12l-1.3 2.6.4 2.9-2.6 1.3-1.3 2.6-2.9-.4L12 22.5l-2.6-1.3-2.9.4-1.3-2.6-2.6-1.3.4-2.9L1.7 12l1.3-2.6-.4-2.9 2.6-1.3L6.5 2.6l2.9.4L12 1.5z" fill="#1B7A3D"/>
+          <path d="M12 1.5l2.6 1.3 2.9-.4 1.3 2.6 2.6 1.3-.4 2.9L22.3 12l-1.3 2.6.4 2.9-2.6 1.3-1.3 2.6-2.9-.4L12 22.5l-2.6-1.3-2.9.4-1.3-2.6-2.6-1.3.4-2.9L1.7 12l1.3-2.6-.4-2.9 2.6-1.3L6.5 2.6l2.9.4L12 1.5z" fill="#228B22"/>
           <path d="M8.5 12.5l2.3 2.3 4.7-4.7" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </span>
@@ -152,7 +154,9 @@
       </button>
     </div>
     <div class="lp-sheet-header">
-      <img class="lp-sheet-logo" id="lp-sheet-logo" src="" alt="">
+      <div class="lp-sheet-logo-wrap">
+        <img class="lp-sheet-logo" id="lp-sheet-logo" src="" alt="">
+      </div>
       <h3 id="lp-sheet-name"></h3>
     </div>
     <div class="lp-sheet-body" id="lp-sheet-bio"></div>
