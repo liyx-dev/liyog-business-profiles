@@ -299,6 +299,12 @@ export default {
 
       if (flags.length) await saveModerationFlags(env, profileId, flags);
 
+      // Delete any R2-hosted images that this update just replaced, so
+      // storage doesn't silently accumulate orphaned files over time.
+      // Only runs after the DB write succeeds, and only ever deletes
+      // files this platform hosts (never touches external URLs).
+      ctx.waitUntil(cleanupReplacedImages(env, results[0], updates));
+
       return jsonResponse({ success: true, moderationStatus: newStatus });
     }
 
@@ -397,4 +403,57 @@ async function getSetting(env, key, fallback) {
     console.error("getSetting failed:", err);
     return fallback;
   }
+}
+
+/**
+ * Deletes R2 objects that a profile update just replaced. Compares the
+ * old row's image fields against the incoming updates, and for any
+ * field that changed, deletes the old file — but ONLY if it's actually
+ * hosted on our own domain (via /api/image/), never an external URL,
+ * since we can't and shouldn't delete files we don't own.
+ */
+async function cleanupReplacedImages(env, oldProfile, updates) {
+  try {
+    const toDelete = [];
+
+    // Single-image fields: logo and cover.
+    for (const field of ["logo_url", "cover_url"]) {
+      if (updates[field] !== undefined && updates[field] !== oldProfile[field]) {
+        const key = extractR2KeyFromUrl(oldProfile[field]);
+        if (key) toDelete.push(key);
+      }
+    }
+
+    // Gallery is an array field — diff old vs new, delete anything
+    // present in the old list but missing from the new one.
+    if (updates.store_photos !== undefined) {
+      const oldPhotos = safeParseArray(oldProfile.store_photos);
+      const newPhotos = safeParseArray(updates.store_photos);
+      const removedPhotos = oldPhotos.filter((url) => !newPhotos.includes(url));
+      for (const url of removedPhotos) {
+        const key = extractR2KeyFromUrl(url);
+        if (key) toDelete.push(key);
+      }
+    }
+
+    if (toDelete.length) {
+      await Promise.all(toDelete.map((key) => env.ASSETS.delete(key)));
+      console.log("Cleaned up orphaned images:", toDelete);
+    }
+  } catch (err) {
+    // Cleanup failing must never affect the profile save itself —
+    // worst case is a harmless orphaned file, not a broken update.
+    console.error("Image cleanup failed:", err);
+  }
+}
+
+/**
+ * Extracts the R2 object key from one of our own /api/image/... URLs.
+ * Returns null for anything else (external URLs, empty values) — we
+ * only ever delete files we actually host and control.
+ */
+function extractR2KeyFromUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  const match = url.match(/\/api\/image\/(.+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
