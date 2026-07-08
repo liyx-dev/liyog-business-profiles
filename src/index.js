@@ -313,6 +313,27 @@ export default {
     // sender contact temporarily; the existing scheduled cleanup job
     // deletes rows older than 7 days, per the original privacy design.
     // -----------------------------------------------------------------
+    // Owner-only: fetch inquiries sent to a specific profile, most
+    // recent first. Requires the requester to actually own the profile.
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/inquiries$/) && request.method === "GET") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+
+      const profileId = url.pathname.split("/")[3];
+      const { results: profileRows } = await env.DB.prepare(
+        "SELECT owner_id FROM profiles WHERE id = ?"
+      ).bind(profileId).all();
+      if (!profileRows.length) return jsonResponse({ error: "Profile not found" }, 404);
+      if (profileRows[0].owner_id !== userId) return jsonResponse({ error: "Not your profile" }, 403);
+
+      const { results: inquiries } = await env.DB.prepare(
+        "SELECT sender_name, sender_contact, message, created_at FROM inquiries WHERE profile_id = ? ORDER BY created_at DESC"
+      ).bind(profileId).all();
+
+      return jsonResponse({ inquiries });
+    }
+
     if (url.pathname === "/api/inquiries" && request.method === "POST") {
       const body = await request.json();
       const { profile_id, sender_name, sender_contact, message } = body;
