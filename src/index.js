@@ -264,7 +264,7 @@ export default {
 
       const body = await request.json();
       const editableFields = [
-        "tagline", "bio_html", "year_established", "whatsapp_number", "wa_message",
+        "business_name", "tagline", "bio_html", "year_established", "whatsapp_number", "wa_message",
         "phone_number", "response_time", "store_address", "store_city", "store_country",
         "map_address", "logo_url", "cover_url", "store_photos", "youtube_url", "key_points",
         "social_facebook", "social_instagram", "social_twitter", "social_tiktok",
@@ -276,7 +276,7 @@ export default {
       for (const field of editableFields) {
         if (body[field] !== undefined) {
           updates[field] = body[field];
-          if (["tagline", "bio_html"].includes(field)) {
+          if (["business_name", "tagline", "bio_html"].includes(field)) {
             const check = checkText(body[field]);
             if (!check.passed) flags.push({ checkType: "text_auto", fieldName: field, flaggedValue: check.matchedTerm });
           }
@@ -306,6 +306,40 @@ export default {
       ctx.waitUntil(cleanupReplacedImages(env, results[0], updates));
 
       return jsonResponse({ success: true, moderationStatus: newStatus });
+    }
+
+    // -----------------------------------------------------------------
+    // Inquiries — the "Send an inquiry" form on a brand profile. Stores
+    // sender contact temporarily; the existing scheduled cleanup job
+    // deletes rows older than 7 days, per the original privacy design.
+    // -----------------------------------------------------------------
+    if (url.pathname === "/api/inquiries" && request.method === "POST") {
+      const body = await request.json();
+      const { profile_id, sender_name, sender_contact, message } = body;
+
+      if (!profile_id || !sender_name || !sender_contact || !message) {
+        return jsonResponse({ error: "Please fill in all fields" }, 400);
+      }
+      if (message.length > 500) {
+        return jsonResponse({ error: "Message is too long" }, 400);
+      }
+
+      const messageCheck = checkText(message);
+      if (!messageCheck.passed) {
+        return jsonResponse({ error: "Your message couldn't be sent — please rephrase and try again" }, 400);
+      }
+
+      const { results } = await env.DB.prepare(
+        "SELECT id FROM profiles WHERE id = ? AND is_active = 1"
+      ).bind(profile_id).all();
+      if (!results.length) return jsonResponse({ error: "This brand profile is no longer available" }, 404);
+
+      await env.DB.prepare(
+        `INSERT INTO inquiries (profile_id, sender_name, sender_contact, message)
+         VALUES (?, ?, ?, ?)`
+      ).bind(profile_id, sender_name.slice(0, 60), sender_contact.slice(0, 100), message.slice(0, 500)).run();
+
+      return jsonResponse({ success: true });
     }
 
     // -----------------------------------------------------------------
@@ -353,7 +387,8 @@ async function cleanupOldLogs(env) {
     const result = await env.DB.batch([
       env.DB.prepare("DELETE FROM profile_views WHERE viewed_at < datetime('now', '-30 days')"),
       env.DB.prepare("DELETE FROM share_events WHERE shared_at < datetime('now', '-90 days')"),
-      env.DB.prepare("DELETE FROM boost_log WHERE expires_at < datetime('now', '-7 days')")
+      env.DB.prepare("DELETE FROM boost_log WHERE expires_at < datetime('now', '-7 days')"),
+      env.DB.prepare("DELETE FROM inquiries WHERE created_at < datetime('now', '-7 days')")
     ]);
     console.log("Cleanup complete:", JSON.stringify(result.map(r => r.meta)));
   } catch (err) {
