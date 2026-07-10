@@ -5,6 +5,7 @@ import AUTH_UI_JS from "./assets/auth-ui-js.txt";
 import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
 import { checkText, saveModerationFlags } from "./lib/moderation.js";
+import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
 
@@ -170,6 +171,16 @@ export default {
         return jsonResponse({ error: "Only WebP images are accepted" }, 400);
       }
 
+      // Rate limit: cap uploads per user per hour by counting their
+      // existing R2 objects created recently. R2 list is cheap enough
+      // for this scale and avoids needing a separate counter table.
+      const listResult = await env.ASSETS.list({ prefix: `profile-images/${userId}/` });
+      const oneHourAgo = Date.now() - 60 * 60 * 1000;
+      const recentUploads = listResult.objects.filter((obj) => new Date(obj.uploaded).getTime() > oneHourAgo);
+      if (recentUploads.length >= 20) {
+        return jsonResponse({ error: "Upload limit reached — please try again in an hour" }, 429);
+      }
+
       const arrayBuffer = await request.arrayBuffer();
       const sizeInMb = arrayBuffer.byteLength / (1024 * 1024);
       if (sizeInMb > 2) {
@@ -275,10 +286,22 @@ export default {
       const flags = [];
       for (const field of editableFields) {
         if (body[field] !== undefined) {
-          updates[field] = body[field];
-          if (["business_name", "tagline", "bio_html"].includes(field)) {
-            const check = checkText(body[field]);
+          if (field === "bio_html") {
+            // The client sends raw rich-text syntax (e.g. "*bold*"), never
+            // HTML. This is the ONLY place that syntax is turned into
+            // markup — parseRichText guarantees the output is always
+            // safe, regardless of what the client actually sent.
+            const rawSyntax = String(body[field]).slice(0, RICHTEXT_MAX_LENGTH);
+            const plainTextForModeration = stripRichTextSyntax(rawSyntax);
+            const check = checkText(plainTextForModeration);
             if (!check.passed) flags.push({ checkType: "text_auto", fieldName: field, flaggedValue: check.matchedTerm });
+            updates[field] = parseRichText(rawSyntax);
+          } else {
+            updates[field] = body[field];
+            if (["business_name", "tagline"].includes(field)) {
+              const check = checkText(body[field]);
+              if (!check.passed) flags.push({ checkType: "text_auto", fieldName: field, flaggedValue: check.matchedTerm });
+            }
           }
         }
       }
@@ -313,27 +336,6 @@ export default {
     // sender contact temporarily; the existing scheduled cleanup job
     // deletes rows older than 7 days, per the original privacy design.
     // -----------------------------------------------------------------
-    // Owner-only: fetch inquiries sent to a specific profile, most
-    // recent first. Requires the requester to actually own the profile.
-    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/inquiries$/) && request.method === "GET") {
-      const sessionToken = getCookie(request, "liyog_session");
-      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
-      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
-
-      const profileId = url.pathname.split("/")[3];
-      const { results: profileRows } = await env.DB.prepare(
-        "SELECT owner_id FROM profiles WHERE id = ?"
-      ).bind(profileId).all();
-      if (!profileRows.length) return jsonResponse({ error: "Profile not found" }, 404);
-      if (profileRows[0].owner_id !== userId) return jsonResponse({ error: "Not your profile" }, 403);
-
-      const { results: inquiries } = await env.DB.prepare(
-        "SELECT sender_name, sender_contact, message, created_at FROM inquiries WHERE profile_id = ? ORDER BY created_at DESC"
-      ).bind(profileId).all();
-
-      return jsonResponse({ inquiries });
-    }
-
     if (url.pathname === "/api/inquiries" && request.method === "POST") {
       const body = await request.json();
       const { profile_id, sender_name, sender_contact, message } = body;
@@ -343,6 +345,16 @@ export default {
       }
       if (message.length > 500) {
         return jsonResponse({ error: "Message is too long" }, 400);
+      }
+
+      // Basic spam guard: block if this exact sender has already sent
+      // 3+ inquiries to ANY profile in the last hour. Coarse but cheap,
+      // and stops simple scripted spam without needing new infra.
+      const { results: recentCount } = await env.DB.prepare(
+        "SELECT COUNT(*) as count FROM inquiries WHERE sender_contact = ? AND created_at > datetime('now', '-1 hour')"
+      ).bind(sender_contact).all();
+      if (recentCount[0].count >= 3) {
+        return jsonResponse({ error: "You've sent several inquiries recently — please wait a bit before sending more" }, 429);
       }
 
       const messageCheck = checkText(message);
