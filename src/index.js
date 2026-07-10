@@ -3,7 +3,7 @@ import PROFILE_JS from "./assets/profile-js.txt";
 import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
 import AUTH_UI_JS from "./assets/auth-ui-js.txt";
 import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
-import REVIEWS_UI_JS from "./assets/reviews-ui.js";
+import REVIEWS_UI_JS from "./assets/reviews-ui-js.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
 import { checkText, saveModerationFlags } from "./lib/moderation.js";
 import * as reviews from "./lib/reviews.js";
