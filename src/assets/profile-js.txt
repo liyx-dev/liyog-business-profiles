@@ -96,7 +96,7 @@
     bindInquiry(p);
     bindBio(p);
     bindGallery(safeParseArray(p.store_photos), p.business_name);
-    bindReviews(p);
+    bindReviews(p, isOwner);
     bindVideo(p.youtube_url, p.business_name);
     bindMap(p);
     bindSocial(p);
@@ -954,11 +954,10 @@
     }
   }
 
-  function bindReviews(p) {
-    if (!p.reviews || !p.reviews.length) return;
-    const section = document.getElementById("lp-reviews-section");
-    if (section) section.hidden = false;
-    // Full render logic ships with the dedicated Reviews build phase.
+  function bindReviews(p, isOwner) {
+    if (window.LiyogReviews && window.LiyogReviews.mountReviews) {
+      window.LiyogReviews.mountReviews(p, isOwner);
+    }
   }
 
   function bindVideo(youtubeUrl, businessName) {
