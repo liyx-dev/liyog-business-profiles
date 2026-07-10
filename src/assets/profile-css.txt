@@ -794,16 +794,16 @@ select.lp-field-input {
    .lp-review-card, etc. already exist in your file and are reused as-is).
    ===================================================================== */
 
+/* Fix: .lp-rating-summary needs flex-wrap so the badges row and the
+   reaction bar (which use flex-basis: 100%) actually drop to their own
+   line instead of squeezing/stacking oddly next to the rating bars. */
+.lp-rating-summary { flex-wrap: wrap; }
+
 /* ---- Premium SVG star (single source used everywhere) ---- */
 .lp-star-row { display: inline-flex; gap: 2px; vertical-align: middle; }
 .lp-star-svg { display: inline-block; flex-shrink: 0; }
 .lp-star-svg .lp-star-bg { fill: var(--line); }
-.lp-star-svg .lp-star-fill { fill: url(#lp-star-gradient); fill: var(--liyog-gold); }
-
-/* Gradient fill for stars — gold to orange, matches your rating bar fill */
-.lp-star-svg .lp-star-fill {
-  fill: var(--liyog-gold);
-}
+.lp-star-svg .lp-star-fill { fill: var(--liyog-gold); }
 
 /* ---- Badges (Top Rated, Trusted Brand, etc.) ---- */
 .lp-review-badges-row {
@@ -890,5 +890,7 @@ select.lp-field-input {
 @media (prefers-color-scheme: dark) {
   .lp-review-badge { color: var(--liyog-black); }
 }
+
+
 
 
