@@ -3,10 +3,8 @@ import PROFILE_JS from "./assets/profile-js.txt";
 import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
 import AUTH_UI_JS from "./assets/auth-ui-js.txt";
 import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
-import REVIEWS_UI_JS from "./assets/reviews-ui-js.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
 import { checkText, saveModerationFlags } from "./lib/moderation.js";
-import * as reviews from "./lib/reviews.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
@@ -55,9 +53,6 @@ export default {
     }
     if (url.pathname === "/brands.js") {
       return new Response(PROFILE_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } });
-    }
-if (url.pathname === "/reviews-ui.js") {
-      return new Response(REVIEWS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } });
     }
     if (url.pathname === "/brands-template.html") {
       return new Response(PROFILE_TEMPLATE_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -254,10 +249,18 @@ if (url.pathname === "/reviews-ui.js") {
       const profileId = crypto.randomUUID();
       const moderationStatus = flags.length > 0 ? "pending" : "approved";
 
-      await env.DB.prepare(
-        `INSERT INTO profiles (id, owner_id, slug, business_name, business_category, tagline, moderation_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).bind(profileId, userId, slug, businessName, category, body.tagline || null, moderationStatus).run();
+      try {
+        await env.DB.prepare(
+          `INSERT INTO profiles (id, owner_id, slug, business_name, business_category, tagline, moderation_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).bind(profileId, userId, slug, businessName, category, body.tagline || null, moderationStatus).run();
+      } catch (dbErr) {
+        console.error("Profile creation DB error:", dbErr);
+        return jsonResponse(
+          { error: "We couldn't create your profile — please check your brand name and link, then try again." },
+          400
+        );
+      }
 
       if (flags.length) await saveModerationFlags(env, profileId, flags);
 
@@ -321,9 +324,22 @@ if (url.pathname === "/reviews-ui.js") {
 
       const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
       const values = Object.values(updates);
-      await env.DB.prepare(
-        `UPDATE profiles SET ${setClauses}, updated_at = datetime('now') WHERE id = ?`
-      ).bind(...values, profileId).run();
+
+      try {
+        await env.DB.prepare(
+          `UPDATE profiles SET ${setClauses}, updated_at = datetime('now') WHERE id = ?`
+        ).bind(...values, profileId).run();
+      } catch (dbErr) {
+        // A CHECK constraint failing here means a field exceeded the
+        // database's own length limit (or similar). Translate this into
+        // a plain message rather than letting a raw D1/SQLite error
+        // surface to the client as an unreadable response.
+        console.error("Profile update DB error:", dbErr);
+        return jsonResponse(
+          { error: "One of your fields is too long or contains an unexpected value. Please review your entries and try again." },
+          400
+        );
+      }
 
       if (flags.length) await saveModerationFlags(env, profileId, flags);
 
@@ -380,123 +396,6 @@ if (url.pathname === "/reviews-ui.js") {
       return jsonResponse({ success: true });
     }
 
-   // -----------------------------------------------------------------
-    // Brand Reputation Engine — reviews, reactions, owner replies
-    // -----------------------------------------------------------------
-
-    // GET /api/reviews/:profileId?sort=recent&offset=0 — list live reviews
-    if (url.pathname.startsWith("/api/reviews/") && request.method === "GET" && !url.pathname.endsWith("/stats")) {
-      const profileId = url.pathname.split("/")[3];
-      const sort = url.searchParams.get("sort") || "recent";
-      const offset = parseInt(url.searchParams.get("offset") || "0", 10) || 0;
-      const list = await reviews.listReviews(env, profileId, { sort, offset, limit: 20 });
-      return jsonResponse({ reviews: list });
-    }
-
-    // GET /api/reviews/:profileId/stats — cached stats + badges (lightweight, cacheable)
-    if (url.pathname.startsWith("/api/reviews/") && url.pathname.endsWith("/stats") && request.method === "GET") {
-      const profileId = url.pathname.split("/")[3];
-      const stats = await reviews.getStats(env, profileId);
-      const badges = reviews.computeBadges(stats);
-      return jsonResponse({ stats, badges });
-    }
-
-    // POST /api/reviews — submit a new review (logged-in, brand-as-author, or anonymous)
-    if (url.pathname === "/api/reviews" && request.method === "POST") {
-      const sessionToken = getCookie(request, "liyog_session");
-      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
-
-      const body = await request.json();
-      try {
-        const result = await reviews.createReview(env, {
-          profileId: body.profile_id,
-          userId,
-          authorProfileId: body.author_profile_id || null, // set only if user is posting AS one of their own brand profiles
-          authorName: body.author_name,
-          rating: parseInt(body.rating, 10),
-          recommend: typeof body.recommend === "boolean" ? body.recommend : null,
-          title: body.title,
-          reviewText: body.review_text,
-          photos: body.photos,
-          request,
-          clientDeviceSignal: body.device_signal,
-          checkText
-        });
-        return jsonResponse({ success: true, ...result });
-      } catch (err) {
-        if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
-        console.error("createReview failed:", err);
-        return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
-      }
-    }
-
-    // POST /api/reviews/:reviewId/helpful — mark a review as helpful
-    if (url.pathname.match(/^\/api\/reviews\/[^/]+\/helpful$/) && request.method === "POST") {
-      const reviewId = url.pathname.split("/")[3];
-      const body = await request.json().catch(() => ({}));
-      const result = await reviews.voteHelpful(env, { reviewId, request, clientDeviceSignal: body.device_signal });
-      return jsonResponse(result);
-    }
-
-    // POST /api/reviews/:reviewId/reply — owner replies to a review on their own profile
-    if (url.pathname.match(/^\/api\/reviews\/[^/]+\/reply$/) && request.method === "POST") {
-      const sessionToken = getCookie(request, "liyog_session");
-      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
-      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
-
-      const reviewId = url.pathname.split("/")[3];
-      const body = await request.json();
-      try {
-        const result = await reviews.ownerReply(env, { reviewId, ownerId: userId, replyText: body.reply_text });
-        return jsonResponse(result);
-      } catch (err) {
-        if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
-        console.error("ownerReply failed:", err);
-        return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
-      }
-    }
-
-    // POST /api/reviews/:reviewId/feature — owner pins/unpins a review (max 50 featured)
-    if (url.pathname.match(/^\/api\/reviews\/[^/]+\/feature$/) && request.method === "POST") {
-      const sessionToken = getCookie(request, "liyog_session");
-      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
-      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
-
-      const reviewId = url.pathname.split("/")[3];
-      const body = await request.json();
-      try {
-        const result = await reviews.setFeatured(env, { reviewId, ownerId: userId, featured: !!body.featured });
-        return jsonResponse(result);
-      } catch (err) {
-        if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
-        console.error("setFeatured failed:", err);
-        return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
-      }
-    }
-
-    // POST /api/reactions — like or dislike a brand profile (upsert)
-    if (url.pathname === "/api/reactions" && request.method === "POST") {
-      const sessionToken = getCookie(request, "liyog_session");
-      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
-
-      const body = await request.json();
-      try {
-        const result = await reviews.setReaction(env, {
-          profileId: body.profile_id,
-          userId,
-          reaction: body.reaction,
-          request,
-          clientDeviceSignal: body.device_signal
-        });
-        return jsonResponse(result);
-      } catch (err) {
-        if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
-        console.error("setReaction failed:", err);
-        return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
-      }
-    }
-
-
     // -----------------------------------------------------------------
     // Public profile routes (unchanged from before)
     // -----------------------------------------------------------------
@@ -529,17 +428,11 @@ if (url.pathname === "/reviews-ui.js") {
     profile.is_verified = computeIsVerified(profile) ? 1 : 0;
     ctx.waitUntil(logProfileView(request, env, profile));
 
-    const reviewStats = await reviews.getStats(env, profile.id);
-    profile.review_stats = reviewStats;
-    profile.review_badges = reviews.computeBadges(reviewStats);
-    profile.my_reaction = await reviews.getMyReaction(env, profile.id, request, url.searchParams.get("ds"));
-
     return jsonResponse({ found: true, profile });
   },
 
-async scheduled(event, env, ctx) {
+  async scheduled(event, env, ctx) {
     ctx.waitUntil(cleanupOldLogs(env));
-   ctx.waitUntil(reviews.runScheduledArchive(env));
   }
 };
 
@@ -653,6 +546,3 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
-
-
