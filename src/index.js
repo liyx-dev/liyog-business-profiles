@@ -282,6 +282,39 @@ export default {
       if (results[0].owner_id !== userId) return jsonResponse({ error: "Not your profile" }, 403);
 
       const body = await request.json();
+
+      // Slug changes are gated separately from the general field list
+      // below: only one change allowed per 7 days, must pass the same
+      // format/reserved/uniqueness checks as signup.
+      let slugUpdate = null;
+      if (body.slug !== undefined && body.slug !== results[0].slug) {
+        const newSlug = String(body.slug).toLowerCase().trim();
+        const validFormat = /^[a-z0-9](?:[a-z0-9-]{1,18}[a-z0-9])?$/.test(newSlug);
+        if (!validFormat) {
+          return jsonResponse({ error: "Your link can only use lowercase letters, numbers, and hyphens, and must be 3-20 characters." }, 400);
+        }
+
+        if (results[0].slug_updated_at) {
+          const daysSinceChange = (Date.now() - new Date(results[0].slug_updated_at.replace(" ", "T") + "Z").getTime()) / (1000 * 60 * 60 * 24);
+          if (daysSinceChange < 7) {
+            const daysLeft = Math.ceil(7 - daysSinceChange);
+            return jsonResponse({ error: `You can change your link again in ${daysLeft} day${daysLeft === 1 ? "" : "s"}. It can only be updated once every 7 days.` }, 429);
+          }
+        }
+
+        const { results: reserved } = await env.DB.prepare(
+          "SELECT slug FROM reserved_slugs WHERE slug = ?"
+        ).bind(newSlug).all();
+        if (reserved.length) return jsonResponse({ error: "That link isn't available. Please choose another." }, 400);
+
+        const { results: taken } = await env.DB.prepare(
+          "SELECT slug FROM profiles WHERE slug = ? AND id != ?"
+        ).bind(newSlug, profileId).all();
+        if (taken.length) return jsonResponse({ error: "That link is already taken. Please choose another." }, 409);
+
+        slugUpdate = newSlug;
+      }
+
       const editableFields = [
         "business_name", "tagline", "bio_html", "year_established", "whatsapp_number", "wa_message",
         "phone_number", "response_time", "store_address", "store_city", "store_country",
@@ -314,13 +347,20 @@ export default {
         }
       }
 
-      if (!Object.keys(updates).length) return jsonResponse({ error: "No valid fields to update" }, 400);
+      if (!Object.keys(updates).length && !slugUpdate) {
+        return jsonResponse({ error: "No valid fields to update" }, 400);
+      }
 
       // Any edit re-triggers moderation review, per the original spec:
       // an approved profile that changes its bio/logo shouldn't stay
       // approved on stale content forever.
       const newStatus = flags.length > 0 ? "pending" : "approved";
       updates.moderation_status = newStatus;
+
+      if (slugUpdate) {
+        updates.slug = slugUpdate;
+        updates.slug_updated_at = new Date().toISOString().slice(0, 19).replace("T", " ");
+      }
 
       const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
       const values = Object.values(updates);
@@ -349,7 +389,28 @@ export default {
       // files this platform hosts (never touches external URLs).
       ctx.waitUntil(cleanupReplacedImages(env, results[0], updates));
 
-      return jsonResponse({ success: true, moderationStatus: newStatus });
+      return jsonResponse({ success: true, moderationStatus: newStatus, newSlug: slugUpdate || null });
+    }
+
+    // Owner-only: fetch inquiries sent to a specific profile, most
+    // recent first. Requires the requester to actually own the profile.
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/inquiries$/) && request.method === "GET") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+
+      const profileId = url.pathname.split("/")[3];
+      const { results: profileRows } = await env.DB.prepare(
+        "SELECT owner_id FROM profiles WHERE id = ?"
+      ).bind(profileId).all();
+      if (!profileRows.length) return jsonResponse({ error: "Profile not found" }, 404);
+      if (profileRows[0].owner_id !== userId) return jsonResponse({ error: "Not your profile" }, 403);
+
+      const { results: inquiries } = await env.DB.prepare(
+        "SELECT sender_name, sender_contact, message, created_at FROM inquiries WHERE profile_id = ? ORDER BY created_at DESC"
+      ).bind(profileId).all();
+
+      return jsonResponse({ inquiries });
     }
 
     // -----------------------------------------------------------------
