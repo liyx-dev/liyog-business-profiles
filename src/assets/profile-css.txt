@@ -919,4 +919,67 @@ select.lp-field-input {
   line-height: 1.6;
 }
 
+/* ---------------------------------------------------------------------
+   Details / Inquiries tabs — premium tab bar with active state
+   --------------------------------------------------------------------- */
+.lp-edit-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  background: var(--surface-soft, var(--bg));
+  border-radius: var(--r-pill);
+  margin: 4px 0 20px;
+  border: 1px solid var(--line);
+}
+
+.lp-edit-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.lp-edit-tab:hover {
+  color: var(--ink);
+}
+
+.lp-edit-tab-active {
+  background: var(--liyog-green);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.lp-edit-tab-active:hover {
+  color: #fff;
+}
+
+.lp-edit-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--liyog-red);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+.lp-edit-tab-active .lp-edit-tab-badge {
+  background: #fff;
+  color: var(--liyog-red);
+}
+
 
