@@ -4,7 +4,7 @@ import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
 import AUTH_UI_JS from "./assets/auth-ui-js.txt";
 import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
-import { checkText, saveModerationFlags } from "./lib/moderation.js";
+import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage } from "./lib/moderation.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
@@ -187,6 +187,15 @@ export default {
         return jsonResponse({ error: "Image too large — please use a smaller image" }, 400);
       }
 
+      // Real moderation gate: reject outright before ever touching R2.
+      // The frontend shows this as an immediate toast so the user can
+      // just pick a different photo, rather than discovering later that
+      // their whole profile got silently demoted to "pending".
+      const moderationResult = await checkImage(arrayBuffer, env);
+      if (!moderationResult.passed) {
+        return jsonResponse({ error: getReadableRejectionMessage(moderationResult.reason) }, 422);
+      }
+
       // Use an SEO-friendly filename when the client provides one (brand
       // name + field type, e.g. "zion-store-logo"), falling back to a
       // random id if not — never blocks upload on a missing name.
@@ -197,6 +206,23 @@ export default {
       await env.ASSETS.put(key, arrayBuffer, {
         httpMetadata: { contentType: "image/webp" }
       });
+
+      // A borderline (needsReview) image still uploads normally. We log
+      // it for visibility, but moderation_queue's profile_id column is a
+      // real foreign key to profiles(id) — at upload time there may not
+      // be a profile yet (e.g. during signup, before the profile row is
+      // created), so we only queue this if the caller told us which
+      // profile it belongs to. Otherwise it's still visible in logs.
+      const relatedProfileId = url.searchParams.get("profile_id") || null;
+      if (moderationResult.needsReview && relatedProfileId) {
+        ctx.waitUntil(
+          env.DB.prepare(
+            "INSERT INTO moderation_queue (profile_id, check_type, field_name, flagged_value, status) VALUES (?, ?, ?, ?, 'open')"
+          ).bind(relatedProfileId, "image_caution", requestedName || "upload", moderationResult.reason).run()
+        );
+      } else if (moderationResult.needsReview) {
+        console.warn("Borderline image uploaded with no profile_id context:", requestedName, moderationResult.reason);
+      }
 
       const publicUrl = `${url.origin}/api/image/${key}`;
       return jsonResponse({ success: true, url: publicUrl });
