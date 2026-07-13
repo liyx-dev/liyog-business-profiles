@@ -1,44 +1,24 @@
 // =====================================================================
-// LIYOG WORLD — src/lib/moderation.js
-// One shared moderation gate for ALL user-generated content: profiles
-// today, reviews and Discovery feed posts/comments later, plus catalogue
-// products going forward. Callers pass in what they have; this module
-// never assumes a specific content type.
+// LIYOG WORLD — src/lib/moderation.js (v2 — hardened after a real
+// safety failure: an explicit image passed the previous threshold
+// policy. This version is deliberately stricter and logs the FULL
+// raw Vision response on every check, so any future failure can be
+// diagnosed from real data instead of guessed at.)
 // =====================================================================
 
-// Server-side only — never expose this list to any client response.
 const BANNED_KEYWORDS = [
-  // Placeholder list — replace with your actual moderation keyword set.
-  // Kept short here since the real list should stay private and is
-  // best maintained directly in this file, not documented elsewhere.
   "xxx", "porn", "escort", "casino", "bet9ja-scam"
 ];
 
-// Terms that indicate a restricted CATEGORY of listing (as opposed to
-// explicit content, which the image checker handles). This is the layer
-// that should carry the weight for "medicine/supplement/etc." judgment
-// calls — not the image checker, which can't tell a legal product photo
-// from an illegal one. Tune this list against your actual category
-// policy rather than loosening image thresholds to compensate.
 const RESTRICTED_CATEGORY_TERMS = [
   "gambling", "adult content", "firearm", "gun for sale", "lottery ticket",
   "loan shark", "prescription drugs", "controlled substance"
 ];
 
-// Terms that are fine in a health/wellness context but worth a lighter
-// second look rather than an outright block — e.g. supplement listings
-// mentioning dosages. These go to manual review, not auto-reject, so
-// legitimate sellers aren't blocked by an overly blunt keyword match.
 const CAUTION_TERMS = [
   "prescription", "dosage", "mg per", "supplement", "medication"
 ];
 
-/**
- * Runs text through the banned-keyword filter. Works on any string —
- * a bio, a review body, a Discovery feed post, a comment, a product
- * description.
- * Returns { passed: boolean, matchedTerm: string|null, needsReview: boolean }
- */
 export function checkText(rawText) {
   if (!rawText) return { passed: true, matchedTerm: null, needsReview: false };
   const plain = stripHtml(rawText).toLowerCase();
@@ -56,33 +36,31 @@ export function checkText(rawText) {
 }
 
 /**
- * Checks an image (as raw bytes, already fetched by the caller) against
- * Google Cloud Vision's SafeSearch detection. This is the real
- * integration — previous versions of this function were a placeholder.
+ * Checks image bytes against Google Cloud Vision SafeSearch.
  *
- * Vision returns LIKELIHOOD ratings (UNKNOWN, VERY_UNLIKELY, UNLIKELY,
- * POSSIBLE, LIKELY, VERY_LIKELY) for adult, violence, racy, medical, and
- * spoof content — not a single numeric score, so thresholds are judged
- * against these categorical levels.
+ * POLICY CHANGE (hardened): the previous thresholds (reject only at
+ * LIKELY/VERY_LIKELY) were too permissive — real explicit content got
+ * through. This version rejects at POSSIBLE and above for adult/racy,
+ * and LIKELY and above for violence (violence has more legitimate
+ * borderline cases — historical photos, sports injuries in a health
+ * context, etc. — so it keeps a slightly looser bar than adult content,
+ * which has essentially no legitimate borderline case on this platform).
  *
- * Decision policy (tuned to reduce manual review load while staying safe):
- *   - adult or violence at LIKELY or VERY_LIKELY  -> hard reject
- *   - racy at VERY_LIKELY                          -> hard reject
- *   - racy at LIKELY                               -> soft flag (needsReview)
- *   - everything else                              -> pass automatically
- *
- * Returns { passed: boolean, needsReview: boolean, reason: string|null, raw: object|null }
+ * Every call logs the FULL raw annotation via console.log, regardless
+ * of outcome, specifically so a failure can be diagnosed from actual
+ * Vision output next time rather than guessed at blind.
  */
 export async function checkImage(imageBytes, env) {
   if (!imageBytes) return { passed: true, needsReview: false, reason: null, raw: null };
 
   if (!env.IMAGE_MODERATION_API_KEY) {
-    console.warn("IMAGE_MODERATION_API_KEY not set — image moderation is currently a no-op.");
+    console.warn("MODERATION ALERT: IMAGE_MODERATION_API_KEY not set — image was NOT checked and passed by default.");
     return { passed: true, needsReview: false, reason: "moderation_not_configured", raw: null };
   }
 
   try {
     const base64Image = arrayBufferToBase64(imageBytes);
+    console.log("Vision check starting, image byte length:", imageBytes.byteLength);
 
     const res = await fetch(
       `https://vision.googleapis.com/v1/images:annotate?key=${env.IMAGE_MODERATION_API_KEY}`,
@@ -102,59 +80,65 @@ export async function checkImage(imageBytes, env) {
 
     if (!res.ok) {
       const errBody = await res.text();
-      console.error("Vision API request failed:", res.status, errBody);
-      // Fail open on an API-level error (bad key, quota, network) — a
-      // provider outage should never be the reason a legitimate upload
-      // gets stuck. This is a deliberate, documented tradeoff, not an
-      // oversight: revisit if abuse volume ever justifies fail-closed.
-      return { passed: true, needsReview: true, reason: "moderation_api_error", raw: null };
+      console.error("MODERATION ALERT: Vision API request FAILED - status", res.status, "body:", errBody);
+      // Fail CLOSED, not open, given the real failure we just had. An
+      // API error should never silently let content through unchecked.
+      return { passed: false, needsReview: true, reason: "moderation_unavailable", raw: null };
     }
 
     const data = await res.json();
+    console.log("Vision RAW response:", JSON.stringify(data));
+
+    if (data.responses?.[0]?.error) {
+      console.error("MODERATION ALERT: Vision returned an error object:", JSON.stringify(data.responses[0].error));
+      return { passed: false, needsReview: true, reason: "moderation_unavailable", raw: data };
+    }
+
     const annotation = data.responses?.[0]?.safeSearchAnnotation;
     if (!annotation) {
-      return { passed: true, needsReview: true, reason: "moderation_no_result", raw: null };
+      console.error("MODERATION ALERT: No safeSearchAnnotation in Vision response - failing closed.");
+      return { passed: false, needsReview: true, reason: "moderation_no_result", raw: data };
     }
+
+    console.log("Vision SafeSearch levels — adult:", annotation.adult, "violence:", annotation.violence, "racy:", annotation.racy, "medical:", annotation.medical, "spoof:", annotation.spoof);
 
     const LIKELIHOOD_RANK = {
       UNKNOWN: 0, VERY_UNLIKELY: 1, UNLIKELY: 2, POSSIBLE: 3, LIKELY: 4, VERY_LIKELY: 5
     };
-    const rank = (level) => LIKELIHOOD_RANK[level] ?? 0;
+    const rank = (level) => LIKELIHOOD_RANK[level] ?? 5; // unknown level treated as worst-case, not best-case
 
     const adultRank = rank(annotation.adult);
     const violenceRank = rank(annotation.violence);
     const racyRank = rank(annotation.racy);
 
-    if (adultRank >= LIKELIHOOD_RANK.LIKELY) {
+    // Adult and racy: reject at POSSIBLE or above. This platform has no
+    // legitimate use case for borderline adult/racy imagery, so the bar
+    // is deliberately low — a false positive (blocking a genuinely safe
+    // photo) is a far smaller cost than a false negative here.
+    if (adultRank >= LIKELIHOOD_RANK.POSSIBLE) {
+      console.warn("MODERATION: REJECTED for adult content, rank:", annotation.adult);
       return { passed: false, needsReview: false, reason: "adult_content_detected", raw: annotation };
     }
-    if (violenceRank >= LIKELIHOOD_RANK.LIKELY) {
-      return { passed: false, needsReview: false, reason: "violent_content_detected", raw: annotation };
-    }
-    if (racyRank >= LIKELIHOOD_RANK.VERY_LIKELY) {
+    if (racyRank >= LIKELIHOOD_RANK.POSSIBLE) {
+      console.warn("MODERATION: REJECTED for racy content, rank:", annotation.racy);
       return { passed: false, needsReview: false, reason: "racy_content_detected", raw: annotation };
     }
-    if (racyRank >= LIKELIHOOD_RANK.LIKELY) {
-      return { passed: true, needsReview: true, reason: "racy_content_possible", raw: annotation };
+    // Violence: reject at LIKELY or above, keeping a slightly looser bar
+    // since it has more legitimate borderline cases than adult content.
+    if (violenceRank >= LIKELIHOOD_RANK.LIKELY) {
+      console.warn("MODERATION: REJECTED for violent content, rank:", annotation.violence);
+      return { passed: false, needsReview: false, reason: "violent_content_detected", raw: annotation };
     }
 
+    console.log("MODERATION: image passed all checks.");
     return { passed: true, needsReview: false, reason: null, raw: annotation };
   } catch (err) {
-    console.error("Image moderation call failed:", err);
-    return { passed: true, needsReview: true, reason: "moderation_check_failed", raw: null };
+    console.error("MODERATION ALERT: checkImage threw an exception:", err.message, err.stack);
+    // Fail CLOSED on unexpected errors too, given the stakes.
+    return { passed: false, needsReview: true, reason: "moderation_check_failed", raw: null };
   }
 }
 
-/**
- * Full moderation pass for a piece of content made of multiple fields.
- * Text fields are checked directly; image fields are expected to already
- * be raw bytes (ArrayBuffer) — fetch them before calling this, since the
- * gate itself shouldn't need to know where an image came from.
- *
- * @param {object} content - { textFields: {...}, imageFields: {fieldName: ArrayBuffer} }
- * @param {object} env - Worker env, for image API access
- * @returns {object} { status: 'approved'|'pending', flags: [...] }
- */
 export async function runModerationGate(content, env) {
   const flags = [];
 
@@ -183,10 +167,6 @@ export async function runModerationGate(content, env) {
   };
 }
 
-/**
- * Persists moderation flags to the shared moderation_queue table.
- * Generic across content types — pass the owning table + row id.
- */
 export async function saveModerationFlags(env, contentId, flags) {
   if (!flags.length) return;
   const inserts = flags.map((flag) =>
@@ -197,16 +177,14 @@ export async function saveModerationFlags(env, contentId, flags) {
   await env.DB.batch(inserts);
 }
 
-/**
- * Returns a short, human-readable message for a rejection reason —
- * used to build the toast message the frontend shows immediately,
- * instead of silently demoting content to "pending" with no explanation.
- */
 export function getReadableRejectionMessage(reason) {
   const messages = {
     adult_content_detected: "This image can't be used — it appears to contain adult content. Please choose a different photo.",
     violent_content_detected: "This image can't be used — it appears to contain graphic or violent content. Please choose a different photo.",
-    racy_content_detected: "This image can't be used — it doesn't meet our content guidelines. Please choose a different photo."
+    racy_content_detected: "This image can't be used — it doesn't meet our content guidelines. Please choose a different photo.",
+    moderation_unavailable: "We couldn't verify this image right now. Please try uploading again in a moment.",
+    moderation_no_result: "We couldn't verify this image right now. Please try uploading again in a moment.",
+    moderation_check_failed: "We couldn't verify this image right now. Please try uploading again in a moment."
   };
   return messages[reason] || "This image can't be used right now. Please try a different photo.";
 }
