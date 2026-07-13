@@ -13,3 +13,4 @@ bucket_name = "liyog-profiles-assets"
 
 [triggers]
 crons = ["0 3 * * *"]
+
