@@ -13,3 +13,6 @@ bucket_name = "liyog-profiles-assets"
 
 [triggers]
 crons = ["0 3 * * *"]
+[observability.logs]
+enabled = false
+invocation_logs = true
