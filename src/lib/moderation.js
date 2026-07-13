@@ -1,8 +1,9 @@
 // =====================================================================
 // LIYOG WORLD — src/lib/moderation.js
 // One shared moderation gate for ALL user-generated content: profiles
-// today, reviews and Discovery feed posts/comments later. Callers pass
-// in what they have; this module never assumes a specific content type.
+// today, reviews and Discovery feed posts/comments later, plus catalogue
+// products going forward. Callers pass in what they have; this module
+// never assumes a specific content type.
 // =====================================================================
 
 // Server-side only — never expose this list to any client response.
@@ -13,76 +14,144 @@ const BANNED_KEYWORDS = [
   "xxx", "porn", "escort", "casino", "bet9ja-scam"
 ];
 
+// Terms that indicate a restricted CATEGORY of listing (as opposed to
+// explicit content, which the image checker handles). This is the layer
+// that should carry the weight for "medicine/supplement/etc." judgment
+// calls — not the image checker, which can't tell a legal product photo
+// from an illegal one. Tune this list against your actual category
+// policy rather than loosening image thresholds to compensate.
 const RESTRICTED_CATEGORY_TERMS = [
-  "gambling", "adult", "weapon", "firearm", "lottery", "loan shark"
+  "gambling", "adult content", "firearm", "gun for sale", "lottery ticket",
+  "loan shark", "prescription drugs", "controlled substance"
+];
+
+// Terms that are fine in a health/wellness context but worth a lighter
+// second look rather than an outright block — e.g. supplement listings
+// mentioning dosages. These go to manual review, not auto-reject, so
+// legitimate sellers aren't blocked by an overly blunt keyword match.
+const CAUTION_TERMS = [
+  "prescription", "dosage", "mg per", "supplement", "medication"
 ];
 
 /**
  * Runs text through the banned-keyword filter. Works on any string —
- * a bio, a review body, a Discovery feed post, a comment.
- * Returns { passed: boolean, matchedTerm: string|null }
+ * a bio, a review body, a Discovery feed post, a comment, a product
+ * description.
+ * Returns { passed: boolean, matchedTerm: string|null, needsReview: boolean }
  */
 export function checkText(rawText) {
-  if (!rawText) return { passed: true, matchedTerm: null };
+  if (!rawText) return { passed: true, matchedTerm: null, needsReview: false };
   const plain = stripHtml(rawText).toLowerCase();
 
   for (const term of BANNED_KEYWORDS) {
-    if (plain.includes(term)) return { passed: false, matchedTerm: term };
+    if (plain.includes(term)) return { passed: false, matchedTerm: term, needsReview: false };
   }
   for (const term of RESTRICTED_CATEGORY_TERMS) {
-    if (plain.includes(term)) return { passed: false, matchedTerm: term };
+    if (plain.includes(term)) return { passed: false, matchedTerm: term, needsReview: false };
   }
-  return { passed: true, matchedTerm: null };
+  for (const term of CAUTION_TERMS) {
+    if (plain.includes(term)) return { passed: true, matchedTerm: term, needsReview: true };
+  }
+  return { passed: true, matchedTerm: null, needsReview: false };
 }
 
 /**
- * Checks an image URL against an external moderation API (SafeSearch-
- * style). This is a single integration point — swap the provider here
- * once you choose one, and every caller (profile photos, review photos,
- * Discovery feed images) benefits without changing their own code.
+ * Checks an image (as raw bytes, already fetched by the caller) against
+ * Google Cloud Vision's SafeSearch detection. This is the real
+ * integration — previous versions of this function were a placeholder.
  *
- * Returns { passed: boolean, score: number, reason: string|null }
+ * Vision returns LIKELIHOOD ratings (UNKNOWN, VERY_UNLIKELY, UNLIKELY,
+ * POSSIBLE, LIKELY, VERY_LIKELY) for adult, violence, racy, medical, and
+ * spoof content — not a single numeric score, so thresholds are judged
+ * against these categorical levels.
+ *
+ * Decision policy (tuned to reduce manual review load while staying safe):
+ *   - adult or violence at LIKELY or VERY_LIKELY  -> hard reject
+ *   - racy at VERY_LIKELY                          -> hard reject
+ *   - racy at LIKELY                               -> soft flag (needsReview)
+ *   - everything else                              -> pass automatically
+ *
+ * Returns { passed: boolean, needsReview: boolean, reason: string|null, raw: object|null }
  */
-export async function checkImage(imageUrl, env) {
-  if (!imageUrl) return { passed: true, score: 0, reason: null };
+export async function checkImage(imageBytes, env) {
+  if (!imageBytes) return { passed: true, needsReview: false, reason: null, raw: null };
 
   if (!env.IMAGE_MODERATION_API_KEY) {
-    // No provider configured yet — this is a deliberate soft-pass with
-    // a loud console warning, so nothing silently breaks in development,
-    // but it's obvious in logs that real moderation isn't active yet.
     console.warn("IMAGE_MODERATION_API_KEY not set — image moderation is currently a no-op.");
-    return { passed: true, score: 0, reason: "moderation_not_configured" };
+    return { passed: true, needsReview: false, reason: "moderation_not_configured", raw: null };
   }
 
   try {
-    // Placeholder call shape for a SafeSearch-style API. Replace the
-    // URL/body/parsing with your chosen provider's actual contract
-    // once IMAGE_MODERATION_API_KEY is set.
-    const res = await fetch("https://api.example-moderation-provider.com/v1/safesearch", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${env.IMAGE_MODERATION_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ image_url: imageUrl })
-    });
+    const base64Image = arrayBufferToBase64(imageBytes);
+
+    const res = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${env.IMAGE_MODERATION_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requests: [
+            {
+              image: { content: base64Image },
+              features: [{ type: "SAFE_SEARCH_DETECTION" }]
+            }
+          ]
+        })
+      }
+    );
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.error("Vision API request failed:", res.status, errBody);
+      // Fail open on an API-level error (bad key, quota, network) — a
+      // provider outage should never be the reason a legitimate upload
+      // gets stuck. This is a deliberate, documented tradeoff, not an
+      // oversight: revisit if abuse volume ever justifies fail-closed.
+      return { passed: true, needsReview: true, reason: "moderation_api_error", raw: null };
+    }
+
     const data = await res.json();
-    const score = data.adult_score || 0;
-    return { passed: score < 0.7, score, reason: score >= 0.7 ? "adult_content_detected" : null };
+    const annotation = data.responses?.[0]?.safeSearchAnnotation;
+    if (!annotation) {
+      return { passed: true, needsReview: true, reason: "moderation_no_result", raw: null };
+    }
+
+    const LIKELIHOOD_RANK = {
+      UNKNOWN: 0, VERY_UNLIKELY: 1, UNLIKELY: 2, POSSIBLE: 3, LIKELY: 4, VERY_LIKELY: 5
+    };
+    const rank = (level) => LIKELIHOOD_RANK[level] ?? 0;
+
+    const adultRank = rank(annotation.adult);
+    const violenceRank = rank(annotation.violence);
+    const racyRank = rank(annotation.racy);
+
+    if (adultRank >= LIKELIHOOD_RANK.LIKELY) {
+      return { passed: false, needsReview: false, reason: "adult_content_detected", raw: annotation };
+    }
+    if (violenceRank >= LIKELIHOOD_RANK.LIKELY) {
+      return { passed: false, needsReview: false, reason: "violent_content_detected", raw: annotation };
+    }
+    if (racyRank >= LIKELIHOOD_RANK.VERY_LIKELY) {
+      return { passed: false, needsReview: false, reason: "racy_content_detected", raw: annotation };
+    }
+    if (racyRank >= LIKELIHOOD_RANK.LIKELY) {
+      return { passed: true, needsReview: true, reason: "racy_content_possible", raw: annotation };
+    }
+
+    return { passed: true, needsReview: false, reason: null, raw: annotation };
   } catch (err) {
     console.error("Image moderation call failed:", err);
-    // Fail closed on error would block legitimate content on a network
-    // blip; fail open with logging is the safer default for launch,
-    // revisit once volume justifies stricter handling.
-    return { passed: true, score: 0, reason: "moderation_check_failed" };
+    return { passed: true, needsReview: true, reason: "moderation_check_failed", raw: null };
   }
 }
 
 /**
  * Full moderation pass for a piece of content made of multiple fields.
- * This is the one function every content type should call.
+ * Text fields are checked directly; image fields are expected to already
+ * be raw bytes (ArrayBuffer) — fetch them before calling this, since the
+ * gate itself shouldn't need to know where an image came from.
  *
- * @param {object} content - e.g. { textFields: {...}, imageFields: {...} }
+ * @param {object} content - { textFields: {...}, imageFields: {fieldName: ArrayBuffer} }
  * @param {object} env - Worker env, for image API access
  * @returns {object} { status: 'approved'|'pending', flags: [...] }
  */
@@ -92,19 +161,24 @@ export async function runModerationGate(content, env) {
   for (const [fieldName, value] of Object.entries(content.textFields || {})) {
     const result = checkText(value);
     if (!result.passed) {
-      flags.push({ checkType: "text_auto", fieldName, flaggedValue: result.matchedTerm });
+      flags.push({ checkType: "text_auto", fieldName, flaggedValue: result.matchedTerm, hardReject: true });
+    } else if (result.needsReview) {
+      flags.push({ checkType: "text_caution", fieldName, flaggedValue: result.matchedTerm, hardReject: false });
     }
   }
 
-  for (const [fieldName, url] of Object.entries(content.imageFields || {})) {
-    const result = await checkImage(url, env);
+  for (const [fieldName, imageBytes] of Object.entries(content.imageFields || {})) {
+    const result = await checkImage(imageBytes, env);
     if (!result.passed) {
-      flags.push({ checkType: "image_auto", fieldName, flaggedValue: url, autoScore: result.score });
+      flags.push({ checkType: "image_auto", fieldName, flaggedValue: result.reason, autoScore: null, hardReject: true });
+    } else if (result.needsReview) {
+      flags.push({ checkType: "image_caution", fieldName, flaggedValue: result.reason, autoScore: null, hardReject: false });
     }
   }
 
+  const hasHardReject = flags.some((f) => f.hardReject);
   return {
-    status: flags.length > 0 ? "pending" : "approved",
+    status: hasHardReject ? "rejected" : (flags.length > 0 ? "pending" : "approved"),
     flags
   };
 }
@@ -123,7 +197,30 @@ export async function saveModerationFlags(env, contentId, flags) {
   await env.DB.batch(inserts);
 }
 
+/**
+ * Returns a short, human-readable message for a rejection reason —
+ * used to build the toast message the frontend shows immediately,
+ * instead of silently demoting content to "pending" with no explanation.
+ */
+export function getReadableRejectionMessage(reason) {
+  const messages = {
+    adult_content_detected: "This image can't be used — it appears to contain adult content. Please choose a different photo.",
+    violent_content_detected: "This image can't be used — it appears to contain graphic or violent content. Please choose a different photo.",
+    racy_content_detected: "This image can't be used — it doesn't meet our content guidelines. Please choose a different photo."
+  };
+  return messages[reason] || "This image can't be used right now. Please try a different photo.";
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 function stripHtml(html) {
   return html.replace(/<[^>]*>/g, " ");
 }
-
