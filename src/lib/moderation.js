@@ -218,20 +218,34 @@ async function checkImageWithGemini(imageBytes, env) {
     return null;
   }
 }
-
 /**
  * Fallback check 3: Local Cloudflare Workers AI Vision LLM
  * High-performance safety backup powered entirely on your Cloudflare Global Network.
+ * Autodetects and self-heals Meta License Agreement exceptions (Error 5016).
  */
 async function checkImageWithWorkersAI(imageBytes, env) {
   if (!env.AI) return null;
 
-  try {
-    // Run an advanced local Vision instruction model instead of generic object classifications
-    const response = await env.AI.run("@cf/meta/llama-3.2-11b-vision-instruct", {
+  const modelName = "@cf/meta/llama-3.2-11b-vision-instruct";
+
+  const executeRun = async () => {
+    return await env.AI.run(modelName, {
       prompt: "Does this image contain sexually explicit content, pornography, full frontal nudity, or bare exposures? Answer with exactly one word: 'YES' or 'NO'.",
       image: [...new Uint8Array(imageBytes)]
     });
+  };
+
+  try {
+    let response = await executeRun();
+
+    // Check if the model returned an agreement prompt requirements error in the text body
+    const checkText = (response.description || response.response || "").trim();
+    
+    if (checkText.includes("must submit the prompt 'agree'")) {
+      console.warn("Meta License agreement prompt detected. Sending agreement handshake...");
+      await env.AI.run(modelName, { prompt: "agree" });
+      response = await executeRun(); // Retry immediately
+    }
 
     const answer = (response.description || response.response || "").trim().toUpperCase();
     console.log(`Workers AI Vision LLM analysis evaluation: "${answer}"`);
@@ -251,11 +265,31 @@ async function checkImageWithWorkersAI(imageBytes, env) {
 
     return null;
   } catch (err) {
-    console.error("Workers AI Vision execution wrapper failed:", err.message);
+    const errMessage = err.message || "";
+    
+    // Catch-all: If the error thrown is directly the 5016 license prompt error
+    if (errMessage.includes("5016") || errMessage.includes("submit the prompt 'agree'")) {
+      console.warn("Caught Error 5016! Executing auto-agreement and retrying...");
+      try {
+        await env.AI.run(modelName, { prompt: "agree" });
+        const retryResponse = await executeRun();
+        const retryAnswer = (retryResponse.description || retryResponse.response || "").trim().toUpperCase();
+        
+        if (retryAnswer.includes("YES")) {
+          return { passed: false, needsReview: false, reason: "adult_content_detected", provider: "workers-ai" };
+        }
+        if (retryAnswer.includes("NO")) {
+          return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
+        }
+      } catch (retryErr) {
+        console.error("Auto-agreement execution loop failed:", retryErr.message);
+      }
+    }
+    
+    console.error("Workers AI Vision execution wrapper failed:", errMessage);
     return null;
   }
 }
-
 /**
  * Public entry point: Cascades through Google Vision, OpenAI, Gemini 3.5, and Cloudflare AI.
  * Implements an ironclad fail-closed rule to safeguard your app if all systems go offline.
@@ -345,3 +379,5 @@ function arrayBufferToBase64(buffer) {
 function stripHtml(html) {
   return html.replace(/<[^>]*>/g, " ");
 }
+
+
