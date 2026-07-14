@@ -223,33 +223,63 @@ async function checkImageWithGemini(imageBytes, env) {
  * High-performance safety backup powered entirely on your Cloudflare Global Network.
  * Uses strict structural JSON prompt engineering to bypass internal LLM safety refusals.
  */
-async function checkImageWithWorkersAI(imageBytes, env) {
+
+  
+    async function checkImageWithWorkersAI(imageBytes, env) {
   if (!env.AI) return null;
 
   const modelName = "@cf/meta/llama-3.2-11b-vision-instruct";
 
   const executeRun = async () => {
+    // Correct payload format utilizing messages array + raw uint8 array for vision tasks
     return await env.AI.run(modelName, {
-      prompt: "Analyze the visual elements of this image. Identify if there is nudity, visible intimate anatomy (genitals, breasts, buttocks), or explicit adult content. Respond ONLY with a valid JSON object matching this schema: { \"unsafe\": boolean, \"reason\": \"adult_content_detected\" | null }. Do not include any conversational filler, markdown formatting, or backticks.",
+      messages: [
+        {
+          role: "user",
+          content: "Analyze the visual elements of this image. Identify if there is nudity, visible intimate anatomy (genitals, breasts, buttocks), or explicit adult content. Respond ONLY with a valid JSON object matching this schema: { \"unsafe\": boolean, \"reason\": \"adult_content_detected\" | null }. Do not include any conversational filler, markdown formatting, or backticks."
+        }
+      ],
       image: [...new Uint8Array(imageBytes)]
     });
   };
 
   try {
     let response = await executeRun();
-    let rawText = (response.description || response.response || "").trim();
+    
+    // Safely extract text from the response object
+    let rawText = "";
+    if (response && typeof response === "object") {
+      rawText = response.response || response.description || "";
+    } else if (typeof response === "string") {
+      rawText = response;
+    }
+    
+    // Force to string and safely trim
+    rawText = String(rawText).trim();
+
+    if (!rawText) {
+      console.error("Workers AI returned an empty response.");
+      return null;
+    }
 
     // Self-healing check for the Meta License Agreement prompt
     if (rawText.includes("must submit the prompt 'agree'")) {
       console.warn("Meta License agreement prompt detected. Sending agreement handshake...");
       await env.AI.run(modelName, { prompt: "agree" });
       response = await executeRun(); // Retry
-      rawText = (response.description || response.response || "").trim();
+      
+      let retryText = "";
+      if (response && typeof response === "object") {
+        retryText = response.response || response.description || "";
+      } else if (typeof response === "string") {
+        retryText = response;
+      }
+      rawText = String(retryText).trim();
     }
 
     console.log(`Workers AI Raw Response: "${rawText}"`);
 
-    // Clean up any stray markdown code blocks the model might have still returned
+    // Clean up any stray markdown code blocks the model might have returned
     if (rawText.includes("```")) {
       rawText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
     }
@@ -285,7 +315,14 @@ async function checkImageWithWorkersAI(imageBytes, env) {
 
         console.log("Retrying image processing execution block...");
         const retryResponse = await executeRun();
-        let retryText = (retryResponse.description || retryResponse.response || "").trim();
+        
+        let retryText = "";
+        if (retryResponse && typeof retryResponse === "object") {
+          retryText = retryResponse.response || retryResponse.description || "";
+        } else if (typeof retryResponse === "string") {
+          retryText = retryResponse;
+        }
+        retryText = String(retryText).trim();
         
         if (retryText.includes("```")) {
           retryText = retryText.replace(/```json/g, "").replace(/```/g, "").trim();
@@ -306,6 +343,8 @@ async function checkImageWithWorkersAI(imageBytes, env) {
     return null;
   }
 }
+
+
 /**
  * Public entry point: Cascades through Google Vision, OpenAI, Gemini 3.5, and Cloudflare AI.
  * Implements an ironclad fail-closed rule to safeguard your app if all systems go offline.
