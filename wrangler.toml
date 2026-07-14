@@ -1,6 +1,7 @@
 name = "liyog-profiles-worker"
 main = "src/index.js"
 compatibility_date = "2026-07-01"
+compatibility_flags = [ "nodejs_compat" ]
 
 [[d1_databases]]
 binding = "DB"
