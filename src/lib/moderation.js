@@ -1,13 +1,16 @@
 // =====================================================================
-// LIYOG WORLD — src/lib/moderation.js (v4 — Quad-Layer Resilient System)
-// 
-// 1. Google Cloud Vision (Primary - Paid API)
-// 2. OpenAI Moderation (Fallback 1 - Paid API)
-// 3. Gemini 2.5 Flash (Fallback 2 - Free API, No Credit Card Required)
-// 4. Cloudflare Workers AI (Fallback 3 - Local GPU Edge Inference)
+// LIYOG WORLD — src/lib/moderation.js (v4 — Quad-Provider Resilience)
 //
-// Fails closed only if ALL 4 checks fail or encounter errors.
+// 1. Google Cloud Vision (Primary - Paid API via env.IMAGE_MODERATION_API_KEY)
+// 2. OpenAI Moderation (Fallback 1 - Paid API via env.OPENAI_API_KEY)
+// 3. Gemini 3.5 Flash (Fallback 2 - Free API via env.GEMINI_API_KEY)
+// 4. Cloudflare Workers AI (Fallback 3 - Local GPU Vision LLM on Edge via env.AI)
+//
+// Maintains absolute feature parity with v3 text filters, database insertions,
+// and layout hooks while establishing bulletproof, scale-ready edge security.
 // =====================================================================
+
+import { Buffer } from "node:buffer";
 
 const BANNED_KEYWORDS = [
   "xxx", "porn", "escort", "casino", "bet9ja-scam"
@@ -39,14 +42,13 @@ export function checkText(rawText) {
 }
 
 /**
- * Layer 1 Check: Google Cloud Vision SafeSearch.
- * Returns null on any failure, prompting fallback.
+ * Primary check: Google Cloud Vision SafeSearch.
+ * Returns null (not a result) on any failure, so the caller knows to
+ * try the fallback provider instead of treating a provider outage as
+ * a content verdict.
  */
 async function checkImageWithVision(imageBytes, env) {
-  if (!env.IMAGE_MODERATION_API_KEY) {
-    console.warn("Vision API Key missing. Skipping to fallback.");
-    return null;
-  }
+  if (!env.IMAGE_MODERATION_API_KEY) return null;
 
   try {
     const base64Image = arrayBufferToBase64(imageBytes);
@@ -63,19 +65,19 @@ async function checkImageWithVision(imageBytes, env) {
 
     if (!res.ok) {
       const errBody = await res.text();
-      console.error("Vision API failed, trying fallback — status", res.status, "body:", errBody);
+      console.error("Vision API failed, will try fallback provider — status", res.status, "body:", errBody);
       return null;
     }
 
     const data = await res.json();
     if (data.responses?.[0]?.error) {
-      console.error("Vision returned an error object, trying fallback:", JSON.stringify(data.responses[0].error));
+      console.error("Vision returned an error object, will try fallback:", JSON.stringify(data.responses[0].error));
       return null;
     }
 
     const annotation = data.responses?.[0]?.safeSearchAnnotation;
     if (!annotation) {
-      console.error("Vision returned no annotation, trying fallback.");
+      console.error("Vision returned no annotation, will try fallback.");
       return null;
     }
 
@@ -95,20 +97,17 @@ async function checkImageWithVision(imageBytes, env) {
     }
     return { passed: true, needsReview: false, reason: null, provider: "vision" };
   } catch (err) {
-    console.error("Vision call threw, trying fallback:", err.message);
+    console.error("Vision call threw, will try fallback:", err.message);
     return null;
   }
 }
 
 /**
- * Layer 2 Check: OpenAI's Moderation API.
- * Returns null on any failure, prompting fallback.
+ * Fallback check 1: OpenAI's Moderation API (omni-moderation-latest),
+ * which accepts images directly. Only called if Vision is unavailable.
  */
 async function checkImageWithOpenAI(imageBytes, env) {
-  if (!env.OPENAI_API_KEY) {
-    console.warn("OpenAI API Key missing. Skipping to fallback.");
-    return null;
-  }
+  if (!env.OPENAI_API_KEY) return null;
 
   try {
     const base64Image = arrayBufferToBase64(imageBytes);
@@ -126,7 +125,7 @@ async function checkImageWithOpenAI(imageBytes, env) {
 
     if (!res.ok) {
       const errBody = await res.text();
-      console.error("OpenAI moderation failed, trying fallback — status", res.status, "body:", errBody);
+      console.error("OpenAI moderation failed — status", res.status, "body:", errBody);
       return null;
     }
 
@@ -137,7 +136,7 @@ async function checkImageWithOpenAI(imageBytes, env) {
       return null;
     }
 
-    console.log("OpenAI moderation categories:", JSON.stringify(result.categories));
+    console.log("OpenAI moderation categories:", JSON.stringify(result.categories), "scores:", JSON.stringify(result.category_scores));
 
     if (result.flagged) {
       const flaggedCategory = Object.entries(result.categories).find(([, isFlagged]) => isFlagged)?.[0] || "policy_violation";
@@ -158,20 +157,17 @@ async function checkImageWithOpenAI(imageBytes, env) {
 }
 
 /**
- * Layer 3 Check: Gemini 2.5 Flash via Google AI Studio.
- * 100% Free Tier (10 RPM / 250 RPD limit), NO credit card required.
+ * Fallback check 2: Google Gemini 3.5 Flash API (Multimodal)
+ * Active stable free-tier channel (No Credit Card required for sign up).
  */
 async function checkImageWithGemini(imageBytes, env) {
-  if (!env.GEMINI_API_KEY) {
-    console.warn("Gemini API Key missing. Skipping to fallback.");
-    return null;
-  }
+  if (!env.GEMINI_API_KEY) return null;
 
   try {
     const base64Image = arrayBufferToBase64(imageBytes);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
 
-    const response = await fetch(url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -179,7 +175,7 @@ async function checkImageWithGemini(imageBytes, env) {
           {
             parts: [
               {
-                text: 'Analyze this image for content safety. Respond ONLY with a valid, raw JSON object using this exact structure: { "passed": boolean, "reason": "adult_content_detected" | "violent_content_detected" | null }. Set "passed" to false and specify the "reason" if the image contains pornography, racy/explicit nudity, graphic violence, weapons, or illegal drug deals. Otherwise, set "passed" to true and "reason" to null. Do not write markdown code formatting.'
+                text: "Analyze this image for content safety. You must respond in a raw JSON formatting matching exactly this structure: { \"passed\": boolean, \"reason\": \"adult_content_detected\" | \"racy_content_detected\" | \"violent_content_detected\" | null }. If the image contains pornographic material, full nudity, explicitly suggestive exposures, or visible weapons/violence, set passed to false and pass the accurate reason field. Otherwise set passed to true and reason to null. Do not add markdown code block wraps."
               },
               {
                 inlineData: {
@@ -196,17 +192,17 @@ async function checkImageWithGemini(imageBytes, env) {
       })
     });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error("Gemini fallback failed — status:", response.status, "body:", errText);
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.error("Gemini API fallback failed — status:", res.status, "body:", errBody);
       return null;
     }
 
-    const data = await response.json();
+    const data = await res.json();
     const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!responseText) {
-      console.error("Gemini returned an empty response.");
+      console.error("Gemini fallback returned an empty context candidate body.");
       return null;
     }
 
@@ -214,94 +210,82 @@ async function checkImageWithGemini(imageBytes, env) {
     return {
       passed: result.passed,
       needsReview: false,
-      reason: result.reason,
+      reason: result.reason || "content_policy_violation",
       provider: "gemini"
     };
   } catch (err) {
-    console.error("Gemini fallback threw an error:", err.message);
+    console.error("Gemini fallback execution threw:", err.message);
     return null;
   }
 }
 
 /**
- * Layer 4 Check: Cloudflare Workers AI.
- * Runs on GPU infrastructure at the Edge. No cold starts, local performance.
+ * Fallback check 3: Local Cloudflare Workers AI Vision LLM
+ * High-performance safety backup powered entirely on your Cloudflare Global Network.
  */
 async function checkImageWithWorkersAI(imageBytes, env) {
-  if (!env.AI) {
-    console.warn("Workers AI binding (env.AI) is missing in wrangler.toml.");
-    return null;
-  }
+  if (!env.AI) return null;
 
   try {
-    // Converts the raw image binary into an array format accepted by Cloudflare's AI runtime
-    const imageArray = [...new Uint8Array(imageBytes)];
-
-    // Uses the high-performance ResNet-50 image classification model
-    const response = await env.AI.run("@cf/microsoft/resnet-50", {
-      image: imageArray
+    // Run an advanced local Vision instruction model instead of generic object classifications
+    const response = await env.AI.run("@cf/meta/llama-3.2-11b-vision-instruct", {
+      prompt: "Does this image contain sexually explicit content, pornography, full frontal nudity, or bare exposures? Answer with exactly one word: 'YES' or 'NO'.",
+      image: [...new Uint8Array(imageBytes)]
     });
 
-    if (!response || !Array.isArray(response)) {
-      console.error("Workers AI returned an unexpected response format.");
-      return null;
+    const answer = (response.description || response.response || "").trim().toUpperCase();
+    console.log(`Workers AI Vision LLM analysis evaluation: "${answer}"`);
+
+    if (answer.includes("YES")) {
+      return { 
+        passed: false, 
+        needsReview: false, 
+        reason: "adult_content_detected", 
+        provider: "workers-ai" 
+      };
     }
 
-    console.log("Workers AI ResNet classifications:", JSON.stringify(response));
-
-    // Common labels for sensitive categories
-    const flaggedLabels = [
-      "bikini", "undergarment", "swimwear", "brassiere", "weapon", "assault rifle", "revolver"
-    ];
-
-    for (const prediction of response) {
-      const label = prediction.label.toLowerCase();
-      // Flag if matching labels score higher than 45% confidence
-      if (flaggedLabels.some(flagged => label.includes(flagged)) && prediction.score > 0.45) {
-        console.warn(`Local AI flagged content: ${label} (Confidence: ${prediction.score})`);
-        return { 
-          passed: false, 
-          needsReview: false, 
-          reason: "racy_content_detected", 
-          provider: "workers-ai" 
-        };
-      }
+    if (answer.includes("NO")) {
+      return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
     }
 
-    return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
+    return null;
   } catch (err) {
-    console.error("Workers AI call failed:", err.message);
+    console.error("Workers AI Vision execution wrapper failed:", err.message);
     return null;
   }
 }
 
 /**
- * Public Orchestration Gateway
+ * Public entry point: Cascades through Google Vision, OpenAI, Gemini 3.5, and Cloudflare AI.
+ * Implements an ironclad fail-closed rule to safeguard your app if all systems go offline.
  */
 export async function checkImage(imageBytes, env) {
-  if (!imageBytes) return { passed: true, needsReview: false, reason: null };
+  if (!imageBytes || imageBytes.byteLength === 0) {
+    return { passed: true, needsReview: false, reason: null };
+  }
 
-  // Layer 1
+  // Provider 1: Google Vision API
   const visionResult = await checkImageWithVision(imageBytes, env);
-  if (visionResult) return visionResult;
+  if (visionResult !== null) return visionResult;
 
-  // Layer 2
-  console.log("Falling back to OpenAI moderation.");
+  // Provider 2: OpenAI Moderation API
+  console.log("Falling back to OpenAI moderation for this image.");
   const openaiResult = await checkImageWithOpenAI(imageBytes, env);
-  if (openaiResult) return openaiResult;
+  if (openaiResult !== null) return openaiResult;
 
-  // Layer 3
-  console.log("Falling back to Gemini 2.5 Flash.");
+  // Provider 3: Gemini 3.5 Flash API
+  console.log("Falling back to Gemini 3.5 Flash for this image.");
   const geminiResult = await checkImageWithGemini(imageBytes, env);
-  if (geminiResult) return geminiResult;
+  if (geminiResult !== null) return geminiResult;
 
-  // Layer 4
-  console.log("Falling back to local Cloudflare Workers AI edge engine.");
+  // Provider 4: Local Workers AI Vision Pipeline
+  console.log("Falling back to local Cloudflare Workers AI Vision LLM engine.");
   const localAIResult = await checkImageWithWorkersAI(imageBytes, env);
-  if (localAIResult) return localAIResult;
+  if (localAIResult !== null) return localAIResult;
 
-  // Absolute fail-closed safely
-  console.error("CRITICAL MODERATION ALERT: All providers failed — failing closed.");
+  // Security Hardening Rule: Fail-Closed Protection
+  console.error("CRITICAL SAFETY BREACH: All 4 image moderation layers failed/timed out. Rejecting file upload securely.");
   return { passed: false, needsReview: true, reason: "moderation_unavailable" };
 }
 
@@ -355,13 +339,7 @@ export function getReadableRejectionMessage(reason) {
 }
 
 function arrayBufferToBase64(buffer) {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 8192;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
+  return Buffer.from(buffer).toString("base64");
 }
 
 function stripHtml(html) {
