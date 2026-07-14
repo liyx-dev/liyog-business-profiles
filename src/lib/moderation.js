@@ -1,5 +1,5 @@
 // =====================================================================
-// LIYOG WORLD — src/lib/moderation.js (v4 — Quad-Provider Resilience)
+// LIYOG WORLD — src/lib/moderation.js (v4.1 — Quad-Provider Resilience)
 //
 // 1. Google Cloud Vision (Primary - Paid API via env.IMAGE_MODERATION_API_KEY)
 // 2. OpenAI Moderation (Fallback 1 - Paid API via env.OPENAI_API_KEY)
@@ -218,10 +218,11 @@ async function checkImageWithGemini(imageBytes, env) {
     return null;
   }
 }
+
 /**
  * Fallback check 3: Local Cloudflare Workers AI Vision LLM
  * High-performance safety backup powered entirely on your Cloudflare Global Network.
- * Autodetects and self-heals Meta License Agreement exceptions (Error 5016).
+ * Autodetects and resolves Meta License Agreement exception paradoxes dynamically.
  */
 async function checkImageWithWorkersAI(imageBytes, env) {
   if (!env.AI) return null;
@@ -237,16 +238,6 @@ async function checkImageWithWorkersAI(imageBytes, env) {
 
   try {
     let response = await executeRun();
-
-    // Check if the model returned an agreement prompt requirements error in the text body
-    const checkText = (response.description || response.response || "").trim();
-    
-    if (checkText.includes("must submit the prompt 'agree'")) {
-      console.warn("Meta License agreement prompt detected. Sending agreement handshake...");
-      await env.AI.run(modelName, { prompt: "agree" });
-      response = await executeRun(); // Retry immediately
-    }
-
     const answer = (response.description || response.response || "").trim().toUpperCase();
     console.log(`Workers AI Vision LLM analysis evaluation: "${answer}"`);
 
@@ -266,15 +257,28 @@ async function checkImageWithWorkersAI(imageBytes, env) {
     return null;
   } catch (err) {
     const errMessage = err.message || "";
-    
-    // Catch-all: If the error thrown is directly the 5016 license prompt error
-    if (errMessage.includes("5016") || errMessage.includes("submit the prompt 'agree'")) {
-      console.warn("Caught Error 5016! Executing auto-agreement and retrying...");
+
+    // Error 5016 can be either the direct license prompt request, OR a "Thank you" response thrown as an exception.
+    if (errMessage.includes("5016") || errMessage.includes("agree")) {
+      console.warn("Meta License paradox exception caught. Automating agreement handshake...");
       try {
-        await env.AI.run(modelName, { prompt: "agree" });
+        try {
+          // Perform agreement handshake
+          await env.AI.run(modelName, { prompt: "agree" });
+        } catch (agreeErr) {
+          const agreeMsg = agreeErr.message || "";
+          // If it throws the 5016 "Thank you" error, that means agreement succeeded!
+          if (!agreeMsg.includes("Thank you for agreeing") && !agreeMsg.includes("You may now use")) {
+            throw agreeErr; // Real error
+          }
+          console.log("Agreement successfully completed via accepted backend exception.");
+        }
+
+        // Retry the exact image run now that agreement is established
+        console.log("Retrying image processing execution block...");
         const retryResponse = await executeRun();
         const retryAnswer = (retryResponse.description || retryResponse.response || "").trim().toUpperCase();
-        
+
         if (retryAnswer.includes("YES")) {
           return { passed: false, needsReview: false, reason: "adult_content_detected", provider: "workers-ai" };
         }
@@ -282,14 +286,15 @@ async function checkImageWithWorkersAI(imageBytes, env) {
           return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
         }
       } catch (retryErr) {
-        console.error("Auto-agreement execution loop failed:", retryErr.message);
+        console.error("Workers AI Auto-Agreement retry block failed:", retryErr.message);
       }
     }
-    
+
     console.error("Workers AI Vision execution wrapper failed:", errMessage);
     return null;
   }
 }
+
 /**
  * Public entry point: Cascades through Google Vision, OpenAI, Gemini 3.5, and Cloudflare AI.
  * Implements an ironclad fail-closed rule to safeguard your app if all systems go offline.
@@ -379,5 +384,3 @@ function arrayBufferToBase64(buffer) {
 function stripHtml(html) {
   return html.replace(/<[^>]*>/g, " ");
 }
-
-
