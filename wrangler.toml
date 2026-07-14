@@ -16,3 +16,5 @@ crons = ["0 3 * * *"]
 [observability.logs]
 enabled = true
 invocation_logs = true
+[ai]
+binding = "AI"
