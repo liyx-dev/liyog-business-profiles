@@ -217,12 +217,11 @@ async function checkImageWithGemini(imageBytes, env) {
     console.error("Gemini fallback execution threw:", err.message);
     return null;
   }
-}
-
+  }
 /**
  * Fallback check 3: Local Cloudflare Workers AI Vision LLM
  * High-performance safety backup powered entirely on your Cloudflare Global Network.
- * Autodetects and resolves Meta License Agreement exception paradoxes dynamically.
+ * Uses strict structural JSON prompt engineering to bypass internal LLM safety refusals.
  */
 async function checkImageWithWorkersAI(imageBytes, env) {
   if (!env.AI) return null;
@@ -231,60 +230,73 @@ async function checkImageWithWorkersAI(imageBytes, env) {
 
   const executeRun = async () => {
     return await env.AI.run(modelName, {
-      prompt: "Does this image contain sexually explicit content, pornography, full frontal nudity, or bare exposures? Answer with exactly one word: 'YES' or 'NO'.",
+      prompt: "Analyze the visual elements of this image. Identify if there is nudity, visible intimate anatomy (genitals, breasts, buttocks), or explicit adult content. Respond ONLY with a valid JSON object matching this schema: { \"unsafe\": boolean, \"reason\": \"adult_content_detected\" | null }. Do not include any conversational filler, markdown formatting, or backticks.",
       image: [...new Uint8Array(imageBytes)]
     });
   };
 
   try {
     let response = await executeRun();
-    const answer = (response.description || response.response || "").trim().toUpperCase();
-    console.log(`Workers AI Vision LLM analysis evaluation: "${answer}"`);
+    let rawText = (response.description || response.response || "").trim();
 
-    if (answer.includes("YES")) {
+    // Self-healing check for the Meta License Agreement prompt
+    if (rawText.includes("must submit the prompt 'agree'")) {
+      console.warn("Meta License agreement prompt detected. Sending agreement handshake...");
+      await env.AI.run(modelName, { prompt: "agree" });
+      response = await executeRun(); // Retry
+      rawText = (response.description || response.response || "").trim();
+    }
+
+    console.log(`Workers AI Raw Response: "${rawText}"`);
+
+    // Clean up any stray markdown code blocks the model might have still returned
+    if (rawText.includes("```")) {
+      rawText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+    }
+
+    const result = JSON.parse(rawText);
+
+    if (result.unsafe === true || result.unsafe === "true") {
       return { 
         passed: false, 
         needsReview: false, 
-        reason: "adult_content_detected", 
+        reason: result.reason || "adult_content_detected", 
         provider: "workers-ai" 
       };
     }
 
-    if (answer.includes("NO")) {
-      return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
-    }
+    return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
 
-    return null;
   } catch (err) {
     const errMessage = err.message || "";
 
-    // Error 5016 can be either the direct license prompt request, OR a "Thank you" response thrown as an exception.
+    // Handle the 5016 license paradox handshake if thrown as an exception
     if (errMessage.includes("5016") || errMessage.includes("agree")) {
       console.warn("Meta License paradox exception caught. Automating agreement handshake...");
       try {
         try {
-          // Perform agreement handshake
           await env.AI.run(modelName, { prompt: "agree" });
         } catch (agreeErr) {
           const agreeMsg = agreeErr.message || "";
-          // If it throws the 5016 "Thank you" error, that means agreement succeeded!
           if (!agreeMsg.includes("Thank you for agreeing") && !agreeMsg.includes("You may now use")) {
-            throw agreeErr; // Real error
+            throw agreeErr;
           }
-          console.log("Agreement successfully completed via accepted backend exception.");
         }
 
-        // Retry the exact image run now that agreement is established
         console.log("Retrying image processing execution block...");
         const retryResponse = await executeRun();
-        const retryAnswer = (retryResponse.description || retryResponse.response || "").trim().toUpperCase();
+        let retryText = (retryResponse.description || retryResponse.response || "").trim();
+        
+        if (retryText.includes("```")) {
+          retryText = retryText.replace(/```json/g, "").replace(/```/g, "").trim();
+        }
 
-        if (retryAnswer.includes("YES")) {
-          return { passed: false, needsReview: false, reason: "adult_content_detected", provider: "workers-ai" };
+        const retryResult = JSON.parse(retryText);
+        if (retryResult.unsafe === true || retryResult.unsafe === "true") {
+          return { passed: false, needsReview: false, reason: retryResult.reason || "adult_content_detected", provider: "workers-ai" };
         }
-        if (retryAnswer.includes("NO")) {
-          return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
-        }
+        return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
+
       } catch (retryErr) {
         console.error("Workers AI Auto-Agreement retry block failed:", retryErr.message);
       }
@@ -294,7 +306,6 @@ async function checkImageWithWorkersAI(imageBytes, env) {
     return null;
   }
 }
-
 /**
  * Public entry point: Cascades through Google Vision, OpenAI, Gemini 3.5, and Cloudflare AI.
  * Implements an ironclad fail-closed rule to safeguard your app if all systems go offline.
@@ -384,3 +395,6 @@ function arrayBufferToBase64(buffer) {
 function stripHtml(html) {
   return html.replace(/<[^>]*>/g, " ");
 }
+
+
+                                      
