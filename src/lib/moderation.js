@@ -223,119 +223,131 @@ async function checkImageWithGemini(imageBytes, env) {
  * High-performance safety backup powered entirely on your Cloudflare Global Network.
  * Uses strict structural JSON prompt engineering to bypass internal LLM safety refusals.
  */
+
+/**
+ * Pulls the actual generated text out of a Workers AI response, no
+ * matter which exact shape the model returned it in. This replaces
+ * the earlier version that assumed response.response was always a
+ * plain string — it wasn't, which caused the "[object Object]" bug.
+ */
+function extractWorkersAiText(response) {
+  if (typeof response === "string") return response;
+  if (!response || typeof response !== "object") return "";
+
+  const directCandidates = [
+    response.response,
+    response.description,
+    response.text,
+    response.output,
+    response.result
+  ];
+  for (const candidate of directCandidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate;
+  }
+
+  if (response.response && typeof response.response === "object") {
+    const nested = extractWorkersAiText(response.response);
+    if (nested) return nested;
+  }
+
+  function findFirstUsableString(obj, depth) {
+    if (depth > 4) return null;
+    if (typeof obj === "string" && obj.trim().length > 3) return obj;
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        const found = findFirstUsableString(item, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (obj && typeof obj === "object") {
+      for (const key of Object.keys(obj)) {
+        const found = findFirstUsableString(obj[key], depth + 1);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  return findFirstUsableString(response, 0) || "";
+}
+
 async function checkImageWithWorkersAI(imageBytes, env) {
   if (!env.AI) return null;
 
   const modelName = "@cf/meta/llama-3.2-11b-vision-instruct";
+  const PROMPT = "Analyze the visual elements of this image. Identify if there is nudity, visible intimate anatomy (genitals, breasts, buttocks), or explicit adult content. Respond ONLY with a valid JSON object matching this schema: { \"unsafe\": boolean, \"reason\": \"adult_content_detected\" | null }. Do not include any conversational filler, markdown formatting, or backticks.";
 
   const executeRun = async () => {
-    // FIX: Use the 'prompt' parameter directly alongside 'image'
     return await env.AI.run(modelName, {
-      prompt: "Analyze the visual elements of this image. Identify if there is nudity, visible intimate anatomy (genitals, breasts, buttocks), or explicit adult content. Respond ONLY with a valid JSON object matching this schema: { \"unsafe\": boolean, \"reason\": \"adult_content_detected\" | null }. Do not include any conversational filler, markdown formatting, or backticks.",
+      prompt: PROMPT,
       image: [...new Uint8Array(imageBytes)]
     });
   };
 
+  const parseAttempt = (rawResponse) => {
+    let text = extractWorkersAiText(rawResponse);
+    text = text.trim();
+    if (text.includes("```")) {
+      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+    }
+    return text;
+  };
+
   try {
     let response = await executeRun();
-    
-    // Safely extract text from the response object
-    let rawText = "";
-    if (response && typeof response === "object") {
-      rawText = response.response || response.description || "";
-    } else if (typeof response === "string") {
-      rawText = response;
-    }
-    
-    // Force to string and safely trim
-    rawText = String(rawText).trim();
+    console.log("Workers AI raw response object:", JSON.stringify(response));
+
+    let rawText = parseAttempt(response);
 
     if (!rawText) {
-      console.error("Workers AI returned an empty response.");
+      console.error("Workers AI: could not extract any usable text from response.");
       return null;
     }
 
-    // Self-healing check for the Meta License Agreement prompt
-    if (rawText.includes("must submit the prompt 'agree'")) {
+    if (rawText.includes("must submit the prompt") || rawText.includes("agree")) {
       console.warn("Meta License agreement prompt detected. Sending agreement handshake...");
-      await env.AI.run(modelName, { prompt: "agree" });
-      response = await executeRun(); // Retry
-      
-      let retryText = "";
-      if (response && typeof response === "object") {
-        retryText = response.response || response.description || "";
-      } else if (typeof response === "string") {
-        retryText = response;
+      try {
+        await env.AI.run(modelName, { prompt: "agree" });
+      } catch (agreeErr) {
+        console.warn("Agreement handshake call raised (may be benign):", agreeErr.message);
       }
-      rawText = String(retryText).trim();
+      response = await executeRun();
+      console.log("Workers AI raw response object (after agreement retry):", JSON.stringify(response));
+      rawText = parseAttempt(response);
+      if (!rawText) {
+        console.error("Workers AI: still no usable text after agreement retry.");
+        return null;
+      }
     }
 
-    console.log(`Workers AI Raw Response: "${rawText}"`);
+    console.log("Workers AI extracted text for parsing:", rawText);
 
-    // Clean up any stray markdown code blocks the model might have returned
-    if (rawText.includes("```")) {
-      rawText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+    let result;
+    try {
+      result = JSON.parse(rawText);
+    } catch (parseErr) {
+      console.error("Workers AI: extracted text is not valid JSON:", rawText);
+      return null;
     }
-
-    const result = JSON.parse(rawText);
 
     if (result.unsafe === true || result.unsafe === "true") {
-      return { 
-        passed: false, 
-        needsReview: false, 
-        reason: result.reason || "adult_content_detected", 
-        provider: "workers-ai" 
+      return {
+        passed: false,
+        needsReview: false,
+        reason: result.reason || "adult_content_detected",
+        provider: "workers-ai"
       };
     }
-
     return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
-
   } catch (err) {
-    const errMessage = err.message || "";
-
-    // Handle the 5016 license paradox handshake if thrown as an exception
-    if (errMessage.includes("5016") || errMessage.includes("agree")) {
-      console.warn("Meta License paradox exception caught. Automating agreement handshake...");
-      try {
-        try {
-          await env.AI.run(modelName, { prompt: "agree" });
-        } catch (agreeErr) {
-          const agreeMsg = agreeErr.message || "";
-          if (!agreeMsg.includes("Thank you for agreeing") && !agreeMsg.includes("You may now use")) {
-            throw agreeErr;
-          }
-        }
-
-        console.log("Retrying image processing execution block...");
-        const retryResponse = await executeRun();
-        
-        let retryText = "";
-        if (retryResponse && typeof retryResponse === "object") {
-          retryText = retryResponse.response || retryResponse.description || "";
-        } else if (typeof retryResponse === "string") {
-          retryText = retryResponse;
-        }
-        retryText = String(retryText).trim();
-        
-        if (retryText.includes("```")) {
-          retryText = retryText.replace(/```json/g, "").replace(/```/g, "").trim();
-        }
-
-        const retryResult = JSON.parse(retryText);
-        if (retryResult.unsafe === true || retryResult.unsafe === "true") {
-          return { passed: false, needsReview: false, reason: retryResult.reason || "adult_content_detected", provider: "workers-ai" };
-        }
-        return { passed: true, needsReview: false, reason: null, provider: "workers-ai" };
-
-      } catch (retryErr) {
-        console.error("Workers AI Auto-Agreement retry block failed:", retryErr.message);
-      }
-    }
-
-    console.error("Workers AI Vision execution wrapper failed:", errMessage);
+    console.error("Workers AI Vision execution wrapper failed:", err.message);
     return null;
   }
 }
+  
+
+        
 
 
 /**
