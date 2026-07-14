@@ -223,22 +223,15 @@ async function checkImageWithGemini(imageBytes, env) {
  * High-performance safety backup powered entirely on your Cloudflare Global Network.
  * Uses strict structural JSON prompt engineering to bypass internal LLM safety refusals.
  */
-
-  
-    async function checkImageWithWorkersAI(imageBytes, env) {
+async function checkImageWithWorkersAI(imageBytes, env) {
   if (!env.AI) return null;
 
   const modelName = "@cf/meta/llama-3.2-11b-vision-instruct";
 
   const executeRun = async () => {
-    // Correct payload format utilizing messages array + raw uint8 array for vision tasks
+    // FIX: Use the 'prompt' parameter directly alongside 'image'
     return await env.AI.run(modelName, {
-      messages: [
-        {
-          role: "user",
-          content: "Analyze the visual elements of this image. Identify if there is nudity, visible intimate anatomy (genitals, breasts, buttocks), or explicit adult content. Respond ONLY with a valid JSON object matching this schema: { \"unsafe\": boolean, \"reason\": \"adult_content_detected\" | null }. Do not include any conversational filler, markdown formatting, or backticks."
-        }
-      ],
+      prompt: "Analyze the visual elements of this image. Identify if there is nudity, visible intimate anatomy (genitals, breasts, buttocks), or explicit adult content. Respond ONLY with a valid JSON object matching this schema: { \"unsafe\": boolean, \"reason\": \"adult_content_detected\" | null }. Do not include any conversational filler, markdown formatting, or backticks.",
       image: [...new Uint8Array(imageBytes)]
     });
   };
