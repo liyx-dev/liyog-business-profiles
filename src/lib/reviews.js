@@ -318,10 +318,10 @@ async function getMyReaction(env, profileId, request, clientDeviceSignal) {
 // ---------------------------------------------------------------------
 
 const SORT_COLUMNS = {
-  recent: "created_at DESC",
-  helpful: "helpful_count DESC, created_at DESC",
-  highest: "rating DESC, created_at DESC",
-  lowest: "rating ASC, created_at DESC"
+  recent: "r.created_at DESC",
+  helpful: "r.helpful_count DESC, r.created_at DESC",
+  highest: "r.rating DESC, r.created_at DESC",
+  lowest: "r.rating ASC, r.created_at DESC"
 };
 
 function safeParseArray(val) {
