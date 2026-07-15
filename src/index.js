@@ -687,6 +687,13 @@ if (url.pathname === "/reviews-ui.js") {
           clientDeviceSignal: body.device_signal,
           checkText
         });
+
+        // LiyX AI: generate the FIRST insight immediately so a brand-new
+        // profile feels premium from day one. Fire-and-forget — never
+        // delays the response back to the reviewer. No-ops instantly if
+        // this profile already has an insight (monthly cron owns re-gen).
+        ctx.waitUntil(reviews.maybeGenerateRollupOnNewReview(env, body.profile_id));
+
         return jsonResponse({ success: true, ...result });
       } catch (err) {
         if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
@@ -793,10 +800,11 @@ if (url.pathname === "/reviews-ui.js") {
 profile.is_verified = computeIsVerified(profile) ? 1 : 0;
     ctx.waitUntil(logProfileView(request, env, profile));
 
-    const reviewStats = await reviews.getStats(env, profile.id);
+const reviewStats = await reviews.getStats(env, profile.id);
     profile.review_stats = reviewStats;
     profile.review_badges = reviews.computeBadges(reviewStats);
     profile.my_reaction = await reviews.getMyReaction(env, profile.id, request, url.searchParams.get("ds"));
+    profile.ai_insight = await reviews.getMonthlyRollup(env, profile.id);
 
     return jsonResponse({ found: true, profile });
 
@@ -805,6 +813,7 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
   async scheduled(event, env, ctx) {
     ctx.waitUntil(cleanupOldLogs(env));
     ctx.waitUntil(reviews.runScheduledArchive(env));
+    ctx.waitUntil(reviews.runMonthlyRollupForAllProfiles(env));
   }
 };
 
@@ -871,6 +880,4 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
-
 
