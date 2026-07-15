@@ -1014,3 +1014,147 @@ select.lp-field-input {
   background: #fff;
   color: var(--liyog-red);
 }
+/* =====================================================================
+   LIYOG WORLD — reviews-ui.css additions
+   APPEND this entire block to the END of your existing profile-css.txt.
+   Nothing here redefines existing selectors (.lp-rating-summary,
+   .lp-review-card, etc. already exist in your file and are reused as-is).
+   ===================================================================== */
+
+/* Fix: .lp-rating-summary needs flex-wrap so the badges row and the
+   reaction bar (which use flex-basis: 100%) actually drop to their own
+   line instead of squeezing/stacking oddly next to the rating bars. */
+.lp-rating-summary { flex-wrap: wrap; }
+
+/* ---- Premium SVG star (single source used everywhere) ---- */
+.lp-star-row { display: inline-flex; gap: 2px; vertical-align: middle; }
+.lp-star-svg { display: inline-block; flex-shrink: 0; }
+.lp-star-svg .lp-star-bg { fill: var(--line); }
+.lp-star-svg .lp-star-fill { fill: var(--liyog-gold); }
+
+/* ---- Badges (Top Rated, Trusted Brand, etc.) ---- */
+.lp-review-badges-row {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; flex-basis: 100%;
+}
+.lp-review-badge {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase;
+  padding: 4px 10px; border-radius: var(--r-pill);
+  background: linear-gradient(135deg, var(--liyog-gold), var(--liyog-orange));
+  color: var(--liyog-black);
+}
+
+/* ---- Like / Dislike reaction bar ---- */
+.lp-reaction-bar {
+  display: flex; gap: 10px; margin-top: 14px; flex-basis: 100%;
+}
+.lp-reaction-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: var(--r-pill);
+  border: 1px solid var(--line); background: var(--surface-soft);
+  color: var(--ink-soft); font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s var(--ease);
+}
+.lp-reaction-btn:hover { border-color: var(--liyog-green); color: var(--ink); }
+.lp-reaction-active-like { background: rgba(40,164,40,0.12); border-color: var(--liyog-green); color: var(--liyog-green-dark); }
+.lp-reaction-active-dislike { background: rgba(255,59,48,0.1); border-color: var(--liyog-red); color: var(--liyog-red-dark); }
+.lp-reaction-count { font-variant-numeric: tabular-nums; }
+
+/* ---- Write-a-review CTA ---- */
+.lp-write-review-cta { width: 100%; margin-bottom: 14px; }
+
+.lp-no-reviews-yet, .lp-loading-reviews {
+  text-align: center; color: var(--ink-faint); font-size: 13.5px; padding: 20px 10px;
+}
+
+/* ---- Review card extras (title, tags, owner reply, helpful) ---- */
+.lp-review-title { font-weight: 700; font-size: 13.5px; color: var(--ink); margin: 4px 0 2px; }
+.lp-review-verified-tag, .lp-review-featured-tag, .lp-review-recommend-tag {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: var(--r-pill);
+  margin-left: 6px; vertical-align: middle; text-transform: uppercase; letter-spacing: 0.2px;
+}
+.lp-review-verified-tag { background: rgba(34,139,34,0.12); color: var(--verified-green); }
+.lp-review-featured-tag { background: rgba(255,215,0,0.18); color: #8a6d00; }
+.lp-review-recommend-tag { background: rgba(24,119,242,0.1); color: var(--liyog-blue); margin-left: 0; }
+
+.lp-review-helpful-btn {
+  margin-top: 8px; background: none; border: 1px solid var(--line); border-radius: var(--r-pill);
+  padding: 5px 12px; font-size: 11.5px; font-weight: 600; color: var(--ink-faint);
+  cursor: pointer; transition: all 0.2s ease;
+}
+.lp-review-helpful-btn:hover { border-color: var(--liyog-green); color: var(--liyog-green-dark); }
+
+.lp-review-owner-reply {
+  margin-top: 10px; padding: 10px 12px; border-radius: var(--r-sm);
+  background: var(--surface-soft); border-left: 3px solid var(--liyog-green);
+}
+.lp-review-owner-reply-label { font-size: 11px; font-weight: 700; color: var(--liyog-green-dark); margin-bottom: 3px; }
+.lp-review-owner-reply p { margin: 0; font-size: 13px; color: var(--ink-soft); line-height: 1.5; }
+
+/* ---- Owner-only controls: reply / feature buttons + inline reply box ---- */
+.lp-review-owner-controls { display: flex; gap: 8px; margin-top: 8px; }
+.lp-review-owner-btn {
+  background: none; border: 1px solid var(--line); border-radius: var(--r-pill);
+  padding: 5px 12px; font-size: 11.5px; font-weight: 600; color: var(--ink-faint);
+  cursor: pointer; transition: all 0.2s ease;
+}
+.lp-review-owner-btn:hover { border-color: var(--liyog-green); color: var(--liyog-green-dark); }
+.lp-review-owner-btn-active { background: rgba(255,215,0,0.18); border-color: var(--liyog-gold); color: #8a6d00; }
+
+.lp-review-reply-box { margin-top: 10px; }
+.lp-review-reply-box textarea { width: 100%; box-sizing: border-box; }
+.lp-review-reply-box-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.lp-btn-text-cancel {
+  background: none; border: none; color: var(--ink-faint); font-size: 12.5px;
+  font-weight: 600; cursor: pointer; padding: 6px 10px;
+}
+.lp-btn-small { padding: 6px 14px; font-size: 12.5px; }
+
+/* ---- Sort row inside the "All Reviews" sheet ---- */
+.lp-review-sort-row { margin-bottom: 12px; }
+.lp-review-sort-select {
+  width: 100%; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); font-size: 13.5px; font-weight: 600;
+}
+
+/* ---- Star picker (submission form) ---- */
+.lp-star-picker { display: flex; gap: 6px; margin: 6px 0 16px; }
+.lp-star-picker-btn {
+  background: none; border: none; padding: 2px; cursor: pointer; transition: transform 0.15s var(--ease);
+}
+.lp-star-picker-btn:hover { transform: scale(1.15); }
+.lp-star-picker-active .lp-star-fill { fill: var(--liyog-gold); }
+
+/* ---- Review submission form ---- */
+.lp-review-form { display: flex; flex-direction: column; }
+.lp-review-form .lp-field-label { margin-top: 12px; margin-bottom: 6px; }
+.lp-review-recommend-toggle {
+  display: flex; align-items: center; gap: 8px; margin: 14px 0 6px;
+  font-size: 13.5px; color: var(--ink-soft); cursor: pointer;
+}
+.lp-review-recommend-toggle input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 20px; height: 20px; flex-shrink: 0;
+  border: 2px solid var(--line); border-radius: 5px;
+  background: var(--surface); cursor: pointer;
+  position: relative; transition: all 0.15s var(--ease);
+}
+.lp-review-recommend-toggle input[type="checkbox"]:checked {
+  background: var(--liyog-green); border-color: var(--liyog-green);
+}
+.lp-review-recommend-toggle input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 5px; top: 1px;
+  width: 5px; height: 10px;
+  border: solid white; border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.lp-review-recommend-toggle input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--liyog-green); outline-offset: 2px;
+}
+.lp-review-form #lp-review-submit-btn { margin-top: 16px; }
+
+@media (prefers-color-scheme: dark) {
+  .lp-review-badge { color: var(--liyog-black); }
+}
+
+
+
