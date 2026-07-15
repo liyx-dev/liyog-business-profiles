@@ -217,61 +217,13 @@ async function checkImageWithGemini(imageBytes, env) {
     console.error("Gemini fallback execution threw:", err.message);
     return null;
   }
-  }
+}
+
 /**
  * Fallback check 3: Local Cloudflare Workers AI Vision LLM
  * High-performance safety backup powered entirely on your Cloudflare Global Network.
  * Uses strict structural JSON prompt engineering to bypass internal LLM safety refusals.
  */
-
-/**
- * Pulls the actual generated text out of a Workers AI response, no
- * matter which exact shape the model returned it in. This replaces
- * the earlier version that assumed response.response was always a
- * plain string — it wasn't, which caused the "[object Object]" bug.
- */
-function extractWorkersAiText(response) {
-  if (typeof response === "string") return response;
-  if (!response || typeof response !== "object") return "";
-
-  const directCandidates = [
-    response.response,
-    response.description,
-    response.text,
-    response.output,
-    response.result
-  ];
-  for (const candidate of directCandidates) {
-    if (typeof candidate === "string" && candidate.trim()) return candidate;
-  }
-
-  if (response.response && typeof response.response === "object") {
-    const nested = extractWorkersAiText(response.response);
-    if (nested) return nested;
-  }
-
-  function findFirstUsableString(obj, depth) {
-    if (depth > 4) return null;
-    if (typeof obj === "string" && obj.trim().length > 3) return obj;
-    if (Array.isArray(obj)) {
-      for (const item of obj) {
-        const found = findFirstUsableString(item, depth + 1);
-        if (found) return found;
-      }
-      return null;
-    }
-    if (obj && typeof obj === "object") {
-      for (const key of Object.keys(obj)) {
-        const found = findFirstUsableString(obj[key], depth + 1);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-
-  return findFirstUsableString(response, 0) || "";
-}
-
 async function checkImageWithWorkersAI(imageBytes, env) {
   if (!env.AI) return null;
 
@@ -285,51 +237,69 @@ async function checkImageWithWorkersAI(imageBytes, env) {
     });
   };
 
-  const parseAttempt = (rawResponse) => {
-    let text = extractWorkersAiText(rawResponse);
-    text = text.trim();
-    if (text.includes("```")) {
-      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+  /**
+   * Extracts a usable { unsafe, reason } result from a Workers AI
+   * response, handling THREE possible shapes:
+   * 1. response.response is already the real object: { unsafe, reason }
+   * 2. response.response is a JSON string that needs parsing
+   * 3. response itself is the object (rare, but defensive)
+   */
+  function extractModerationResult(rawResponse) {
+    if (!rawResponse || typeof rawResponse !== "object") return null;
+
+    // Shape 1: already a real object with the fields we need.
+    if (rawResponse.response && typeof rawResponse.response === "object" &&
+        "unsafe" in rawResponse.response) {
+      return rawResponse.response;
     }
-    return text;
-  };
+
+    // Shape 2: response.response is a string that needs JSON.parse.
+    if (typeof rawResponse.response === "string") {
+      let text = rawResponse.response.trim();
+      if (text.includes("```")) {
+        text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+      }
+      try {
+        const parsed = JSON.parse(text);
+        if ("unsafe" in parsed) return parsed;
+      } catch (e) { /* fall through */ }
+    }
+
+    // Shape 3: the object itself has the fields directly.
+    if ("unsafe" in rawResponse) return rawResponse;
+
+    return null;
+  }
 
   try {
     let response = await executeRun();
     console.log("Workers AI raw response object:", JSON.stringify(response));
 
-    let rawText = parseAttempt(response);
+    let result = extractModerationResult(response);
 
-    if (!rawText) {
-      console.error("Workers AI: could not extract any usable text from response.");
-      return null;
-    }
-
-    if (rawText.includes("must submit the prompt") || rawText.includes("agree")) {
-      console.warn("Meta License agreement prompt detected. Sending agreement handshake...");
-      try {
-        await env.AI.run(modelName, { prompt: "agree" });
-      } catch (agreeErr) {
-        console.warn("Agreement handshake call raised (may be benign):", agreeErr.message);
-      }
-      response = await executeRun();
-      console.log("Workers AI raw response object (after agreement retry):", JSON.stringify(response));
-      rawText = parseAttempt(response);
-      if (!rawText) {
-        console.error("Workers AI: still no usable text after agreement retry.");
-        return null;
+    if (!result) {
+      // Check for the license-agreement gate as plain text, in case
+      // that's why no usable result was found.
+      const flatText = JSON.stringify(response);
+      if (flatText.includes("must submit the prompt") || flatText.includes("You have not accepted")) {
+        console.warn("Meta License agreement prompt detected. Sending agreement handshake...");
+        try {
+          await env.AI.run(modelName, { prompt: "agree" });
+        } catch (agreeErr) {
+          console.warn("Agreement handshake call raised (may be benign):", agreeErr.message);
+        }
+        response = await executeRun();
+        console.log("Workers AI raw response object (after agreement retry):", JSON.stringify(response));
+        result = extractModerationResult(response);
       }
     }
 
-    console.log("Workers AI extracted text for parsing:", rawText);
-
-    let result;
-    try {
-      result = JSON.parse(rawText);
-    } catch (parseErr) {
-      console.error("Workers AI: extracted text is not valid JSON:", rawText);
+    if (!result) {
+      console.error("Workers AI: could not extract a usable moderation result from response.");
       return null;
     }
+
+    console.log("Workers AI parsed moderation result:", JSON.stringify(result));
 
     if (result.unsafe === true || result.unsafe === "true") {
       return {
@@ -345,10 +315,6 @@ async function checkImageWithWorkersAI(imageBytes, env) {
     return null;
   }
 }
-  
-
-        
-
 
 /**
  * Public entry point: Cascades through Google Vision, OpenAI, Gemini 3.5, and Cloudflare AI.
@@ -439,6 +405,3 @@ function arrayBufferToBase64(buffer) {
 function stripHtml(html) {
   return html.replace(/<[^>]*>/g, " ");
 }
-
-
-                                      
