@@ -866,3 +866,151 @@ select.lp-field-input {
 .lp-toast-visible { opacity: 1; transform: translateY(0); }
 .lp-toast-error { background: var(--liyog-red-dark, #C1271A); }
 .lp-toast-success { background: var(--liyog-green-dark, #228B22); }
+
+/* ---------------------------------------------------------------------
+   Inquiries list — premium card styling
+   --------------------------------------------------------------------- */
+#lp-inquiries-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 20px;
+}
+
+.lp-inquiry-list-item {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--liyog-green);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.lp-inquiry-list-item:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.lp-inquiry-list-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.lp-inquiry-list-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.lp-inquiry-list-date {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+  background: var(--surface-soft, var(--bg));
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+
+.lp-inquiry-list-contact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--liyog-blue);
+  margin-bottom: 10px;
+}
+.lp-inquiry-list-contact::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--liyog-green);
+  flex-shrink: 0;
+}
+
+.lp-inquiry-list-message {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.lp-inquiry-empty {
+  text-align: center;
+  padding: 48px 20px;
+  color: var(--ink-faint);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ---------------------------------------------------------------------
+   Details / Inquiries tabs — premium tab bar with active state
+   --------------------------------------------------------------------- */
+.lp-edit-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  background: var(--surface-soft, var(--bg));
+  border-radius: var(--r-pill);
+  margin: 4px 0 20px;
+  border: 1px solid var(--line);
+}
+
+.lp-edit-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.lp-edit-tab:hover {
+  color: var(--ink);
+}
+
+.lp-edit-tab-active {
+  background: var(--liyog-green);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.lp-edit-tab-active:hover {
+  color: #fff;
+}
+
+.lp-edit-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--liyog-red);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+.lp-edit-tab-active .lp-edit-tab-badge {
+  background: #fff;
+  color: var(--liyog-red);
+}
