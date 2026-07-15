@@ -1,5 +1,5 @@
 /* =====================================================================
-   LIYOG WORLD BRAND PROFILES — profile.js (v3, premium rebuild)
+   LIYOG WORLD BRAND PROFILES — profile.js (v4, premium synchronized rebuild)
    ===================================================================== */
 
 (function () {
@@ -282,9 +282,6 @@
     preview.innerHTML = cleanHtml;
     section.hidden = false;
 
-    // Only show the fade + Read More affordance when content actually
-    // overflows the clamped preview — otherwise both stay hidden so a
-    // short bio never shows a misleading "read more" with nothing more to read.
     const overflows = plainText.length > BIO_PREVIEW_CHAR_LIMIT;
     if (overflows) {
       readMoreBtn.hidden = false;
@@ -335,6 +332,7 @@
     const section = document.getElementById("lp-gallery-section");
     const wrap = document.getElementById("lp-gallery");
     if (!section || !wrap) return;
+    wrap.innerHTML = ""; // Clear out previous items before binding
     photos.slice(0, 5).forEach((url, i) => {
       const tile = document.createElement("div");
       tile.className = "lp-gallery-tile";
@@ -407,8 +405,8 @@
     form.innerHTML = buildEditFormHtml(p);
     openSheet(overlay);
 
-    wireImageUpload(form, "logo_url", p.logo_url);
-    wireImageUpload(form, "cover_url", p.cover_url);
+    wireImageUpload(form, "logo_url", p);
+    wireImageUpload(form, "cover_url", p);
     wireGalleryUpload(form, p);
     wireCategoryDropdown(p.business_category);
     wireTagInput(safeParseArray(p.key_points));
@@ -474,7 +472,6 @@
       loadInquiriesForOwner(p.id);
     };
 
-    // Reset to Details tab as the default view every time the panel opens.
     detailsTab.classList.add("lp-edit-tab-active");
     inquiriesTab.classList.remove("lp-edit-tab-active");
     detailsPanel.hidden = false;
@@ -503,13 +500,19 @@
         return;
       }
 
+      // Updated rendering logic to utilize the backend's clean action_url (WhatsApp directly format)
       listEl.innerHTML = inquiries.map((inq) => `
         <div class="lp-inquiry-list-item">
           <div class="lp-inquiry-list-top">
             <span class="lp-inquiry-list-name">${escHtml(inq.sender_name)}</span>
             <span class="lp-inquiry-list-date">${formatExactDate(inq.created_at)}</span>
           </div>
-          <div class="lp-inquiry-list-contact">${escHtml(inq.sender_contact)}</div>
+          <div class="lp-inquiry-list-contact">
+            ${inq.action_url 
+              ? `<a href="${escAttr(inq.action_url)}" target="_blank" class="lp-inquiry-action-link">${escHtml(inq.sender_contact)} ↗</a>`
+              : escHtml(inq.sender_contact)
+            }
+          </div>
           <p class="lp-inquiry-list-message">${escHtml(inq.message)}</p>
         </div>
       `).join("");
@@ -524,6 +527,7 @@
     try {
       const res = await fetch(`${WORKER_BASE}/api/categories`);
       const data = await res.json();
+      select.innerHTML = '<option value="">Choose a category</option>';
       (data.categories || []).forEach((c) => {
         const opt = document.createElement("option");
         opt.value = c.slug;
@@ -629,12 +633,36 @@
         });
       });
       grid.querySelectorAll(".lp-gallery-remove-btn").forEach((btn) => {
-        btn.addEventListener("click", (e) => {
+        btn.addEventListener("click", async (e) => {
           e.stopPropagation();
           const idx = parseInt(btn.dataset.index, 10);
-          photos[idx] = null;
-          syncHiddenInput();
-          renderGalleryGrid();
+          const oldUrl = photos[idx];
+          if (!oldUrl) return;
+
+          const slot = btn.closest(".lp-gallery-upload-slot");
+          const statusEl = slot.querySelector(`.lp-gallery-slot-status`);
+          statusEl.textContent = "Removing…";
+          statusEl.className = "lp-gallery-slot-status lp-upload-active";
+
+          try {
+            // Call premium instant deletion endpoint with target profile and array index tracking
+            const res = await fetch(`${WORKER_BASE}/api/remove-image?field=store_photos&profile_id=${p.id}&url=${encodeURIComponent(oldUrl)}`, {
+              method: "POST",
+              credentials: "include"
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Removal failed");
+
+            photos[idx] = null;
+            syncHiddenInput();
+            renderGalleryGrid();
+            // Re-bind page gallery view in real-time
+            bindGallery(photos.filter(Boolean), p.business_name);
+          } catch (err) {
+            statusEl.textContent = "Error";
+            statusEl.className = "lp-gallery-slot-status lp-upload-error";
+            showToast(err.message, "error");
+          }
         });
       });
     }
@@ -653,7 +681,9 @@
           const webpBlob = await compressImageToWebp(file, 900);
           statusEl.textContent = "Uploading…";
           const filename = buildSeoFilename(p.business_name, `gallery-${idx + 1}`);
-          const res = await fetch(`${WORKER_BASE}/api/upload-image?name=${encodeURIComponent(filename)}`, {
+          
+          // CRITICAL FIX: Pass 'field' and 'profile_id' as query parameters to Worker backend
+          const res = await fetch(`${WORKER_BASE}/api/upload-image?name=${encodeURIComponent(filename)}&field=store_photos&profile_id=${p.id}`, {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "image/webp" },
@@ -661,9 +691,12 @@
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "Upload failed");
+          
           photos[idx] = data.url;
           syncHiddenInput();
           renderGalleryGrid();
+          // Update presentation page container instantly
+          bindGallery(photos.filter(Boolean), p.business_name);
         } catch (err) {
           statusEl.textContent = err.message;
           statusEl.className = "lp-gallery-slot-status lp-upload-error";
@@ -687,11 +720,6 @@
     syncHiddenInput();
   }
 
-  /**
-   * Builds an SEO-friendly filename from the brand name + field type,
-   * e.g. "zion-store-logo", "zion-store-gallery-1" — helps Google Images
-   * associate the file with the brand, rather than a random UUID.
-   */
   function buildSeoFilename(businessName, fieldType) {
     const slugified = (businessName || "brand")
       .toLowerCase()
@@ -701,14 +729,6 @@
     return `${slugified}-${fieldType}`;
   }
 
-  /**
-   * Converts stored safe HTML (produced by the server's parseRichText)
-   * back into the simple bold/italic marker syntax, so re-opening the
-   * edit form shows the user their original markers instead of raw
-   * HTML tags. This only needs to understand the exact fixed set of
-   * tags our own parser produces — it's not a general HTML-to-text
-   * converter.
-   */
   const HEX_TO_COLOR_NAME = {
     "#ff3b30": "red",
     "#28a428": "green",
@@ -729,7 +749,6 @@
     syntax = syntax.replace(/<em>([^<]*)<\/em>/g, "_$1_");
     syntax = syntax.replace(/<u>([^<]*)<\/u>/g, "~$1~");
     syntax = syntax.replace(/<br\s*\/?>/g, "\n");
-    // Anything else remaining is stripped as plain text fallback.
     const tmp = document.createElement("div");
     tmp.innerHTML = syntax;
     return tmp.textContent || "";
@@ -843,7 +862,7 @@
         ${imageUploadFieldHtml("cover_url", "Cover Photo", p.cover_url)}
         <div class="lp-edit-field">
           <label class="lp-field-label">Brand name</label>
-          <input type="text" name="business_name" class="lp-field-input" value="${escAttr(p.business_name || "")}" maxlength="60" placeholder="e.g. Zion Store" required>
+          <input type="text" name="business_name" id="lp-input-name" class="lp-field-input" value="${escAttr(p.business_name || "")}" maxlength="60" placeholder="e.g. Zion Store" required>
         </div>
         ${slugFieldHtml(p)}
         <div class="lp-edit-field">
@@ -935,7 +954,7 @@
       </div>
 
       <div class="lp-edit-group">
-        <h4 class="lp-edit-group-title">Media &amp; Social</h4>
+        <h4 class="lp-edit-group-title">Media & Social</h4>
         <div class="lp-edit-field">
           <label class="lp-field-label">YouTube video</label>
           <input type="url" name="youtube_url" class="lp-field-input" value="${escAttr(p.youtube_url || "")}" placeholder="https://www.youtube.com/watch?v=XXXXXXXXXXX">
@@ -1020,6 +1039,10 @@
             <span>Tap to upload</span>
           </div>
           <div class="lp-image-upload-status" id="lp-upload-status-${fieldName}"></div>
+          ${currentUrl 
+            ? `<button type="button" class="lp-image-remove-trigger" id="lp-remove-${fieldName}" data-field="${fieldName}">Remove Current</button>`
+            : ""
+          }
         </div>
         <input type="file" accept="image/*" class="lp-image-file-input" id="lp-file-${fieldName}" style="display:none;">
         <input type="hidden" name="${fieldName}" id="lp-hidden-${fieldName}" value="${escAttr(currentUrl || "")}">
@@ -1027,15 +1050,54 @@
     `;
   }
 
-  function wireImageUpload(form, fieldName, currentUrl) {
+  function wireImageUpload(form, fieldName, p) {
     const box = document.getElementById(`lp-upload-box-${fieldName}`);
     const fileInput = document.getElementById(`lp-file-${fieldName}`);
     const preview = document.getElementById(`lp-preview-${fieldName}`);
     const placeholder = document.getElementById(`lp-placeholder-${fieldName}`);
     const statusEl = document.getElementById(`lp-upload-status-${fieldName}`);
     const hiddenInput = document.getElementById(`lp-hidden-${fieldName}`);
+    const removeBtn = document.getElementById(`lp-remove-${fieldName}`);
 
-    box.addEventListener("click", () => fileInput.click());
+    box.addEventListener("click", (e) => {
+      if (e.target.closest(".lp-image-remove-trigger")) return;
+      fileInput.click();
+    });
+
+    if (removeBtn) {
+      removeBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const oldUrl = hiddenInput.value;
+        if (!oldUrl) return;
+
+        statusEl.textContent = "Removing…";
+        statusEl.className = "lp-image-upload-status lp-upload-active";
+
+        try {
+          const res = await fetch(`${WORKER_BASE}/api/remove-image?field=${fieldName}&profile_id=${p.id}&url=${encodeURIComponent(oldUrl)}`, {
+            method: "POST",
+            credentials: "include"
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Removal failed");
+
+          hiddenInput.value = "";
+          preview.src = "";
+          preview.style.display = "none";
+          placeholder.style.display = "flex";
+          statusEl.textContent = "";
+          removeBtn.remove();
+
+          // Sync interface instantly
+          if (fieldName === "logo_url") setImg(".lp-logo", "https://placehold.co/300x300/1877F2/FFFFFF?text=Logo", "Logo removed");
+          if (fieldName === "cover_url") setImg("[data-bind='cover_url']", "https://placehold.co/1200x560/3F3D9E/FFFFFF?text=Add+Your+Cover+Photo", "Cover photo removed");
+        } catch (err) {
+          statusEl.textContent = "Error";
+          statusEl.className = "lp-image-upload-status lp-upload-error";
+          showToast(err.message, "error");
+        }
+      });
+    }
 
     fileInput.addEventListener("change", async () => {
       const file = fileInput.files[0];
@@ -1053,7 +1115,8 @@
         const nameForFilename = businessNameInput ? businessNameInput.value : (form.dataset.businessName || "brand");
         const filename = buildSeoFilename(nameForFilename, fieldLabel);
 
-        const res = await fetch(`${WORKER_BASE}/api/upload-image?name=${encodeURIComponent(filename)}`, {
+        // CRITICAL FIX: Add field and profile_id parameters to sync properly with src/index.js
+        const res = await fetch(`${WORKER_BASE}/api/upload-image?name=${encodeURIComponent(filename)}&field=${fieldName}&profile_id=${p.id}`, {
           method: "POST",
           credentials: "include",
           headers: { "content-type": "image/webp" },
@@ -1067,6 +1130,23 @@
         preview.style.display = "block";
         placeholder.style.display = "none";
         statusEl.textContent = "";
+
+        // Dynamically add the Remove button if not already there
+        if (!document.getElementById(`lp-remove-${fieldName}`)) {
+          const remTrigger = document.createElement("button");
+          remTrigger.type = "button";
+          remTrigger.className = "lp-image-remove-trigger";
+          remTrigger.id = `lp-remove-${fieldName}`;
+          remTrigger.dataset.field = fieldName;
+          remTrigger.textContent = "Remove Current";
+          box.appendChild(remTrigger);
+          // Recursively wire the newly created button
+          wireImageUpload(form, fieldName, p);
+        }
+
+        // Live page UI sync
+        if (fieldName === "logo_url") setImg(".lp-logo", data.url, `${p.business_name} logo`);
+        if (fieldName === "cover_url") setImg("[data-bind='cover_url']", data.url, `${p.business_name} cover`);
       } catch (err) {
         statusEl.textContent = err.message;
         statusEl.className = "lp-image-upload-status lp-upload-error";
@@ -1075,12 +1155,6 @@
     });
   }
 
-  /**
-   * Compresses an image client-side to WebP before it ever reaches the
-   * server — keeps R2 storage and upload bandwidth low, and matches the
-   * "compress before upload" requirement rather than relying on the
-   * server to do this work.
-   */
   function compressImageToWebp(file, maxDimension) {
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -1151,9 +1225,6 @@
       updates[key] = value.trim() || null;
     }
 
-    // Check against the same limits the database enforces, so the user
-    // gets a clear answer immediately instead of a server round-trip
-    // that could come back as a confusing error.
     const validationError = validateBeforeSubmit(updates);
     if (validationError) {
       statusEl.textContent = validationError;
@@ -1172,10 +1243,6 @@
         body: JSON.stringify(updates)
       });
 
-      // Defensive parsing: if the server ever returns something that
-      // isn't valid JSON (e.g. an infrastructure-level error page),
-      // show a plain, understandable message instead of crashing on
-      // a failed .json() parse.
       let data;
       try {
         data = await res.json();
@@ -1183,7 +1250,30 @@
         throw new Error("Something went wrong on our end. Please try again in a moment.");
       }
 
-      if (!res.ok) throw new Error(data.error || "Couldn't save your changes. Please check your details and try again.");
+      if (!res.ok) {
+        // Validation failed / Forbidden text check
+        if (res.status === 422 && data.fields) {
+          let flaggedMsg = data.error || "Inappropriate text detected.";
+          for (const [field, info] of Object.entries(data.fields)) {
+            flaggedMsg += ` (${FIELD_LABELS[field] || field}: "${info.term}")`;
+            // Red-outline the flagged input field
+            const targetInput = form.querySelector(`[name="${field}"]`);
+            if (targetInput) {
+              targetInput.style.borderColor = "#FF3B30";
+              targetInput.style.boxShadow = "0 0 0 3px rgba(255, 59, 48, 0.2)";
+              targetInput.addEventListener("input", () => {
+                targetInput.style.borderColor = "";
+                targetInput.style.boxShadow = "";
+              }, { once: true });
+            }
+          }
+          if (data.strikesRemaining !== undefined) {
+            flaggedMsg += ` — ${data.strikesRemaining} strikes left before locking.`;
+          }
+          throw new Error(flaggedMsg);
+        }
+        throw new Error(data.error || "Couldn't save your changes.");
+      }
 
       statusEl.textContent = data.moderationStatus === "approved"
         ? "Saved! Your changes are now live."
@@ -1209,7 +1299,6 @@
     if (!p.reviews || !p.reviews.length) return;
     const section = document.getElementById("lp-reviews-section");
     if (section) section.hidden = false;
-    // Full render logic ships with the dedicated Reviews build phase.
   }
 
   function bindVideo(youtubeUrl, businessName) {
@@ -1232,7 +1321,7 @@
 
     if (hasMapAddress) {
       const iframe = document.getElementById("lp-map");
-      iframe.src = `https://www.google.com/maps?q=${encodeURIComponent(p.map_address)}&output=embed`;
+      iframe.src = `https://maps.google.com/maps?q=${encodeURIComponent(p.map_address)}&output=embed`;
       iframe.title = `${p.business_name} location`;
     }
 
@@ -1263,6 +1352,7 @@
     const section = document.getElementById("lp-social-section");
     const wrap = document.getElementById("lp-social-row");
     if (!section || !wrap) return;
+    wrap.innerHTML = ""; // Clear out previous items before binding
     let any = false;
     links.forEach(([url, label, colorClass, pathData]) => {
       if (!url) return;
@@ -1425,7 +1515,7 @@
   }
 
   // -------------------------------------------------------------------
-  // State screens — rewritten in confident brand-marketing language
+  // State screens
   // -------------------------------------------------------------------
 
   function showSkeleton() {
@@ -1624,21 +1714,12 @@
     return tmp.textContent || "";
   }
   function sanitizeBioHtml(html) {
-    // The server's parseRichText is the actual security boundary now —
-    // stored bio_html is guaranteed safe HTML from our own constrained
-    // engine. This client-side pass only strips genuinely dangerous
-    // tags that should never legitimately appear, without touching the
-    // safe <a>, <strong>, <em>, <u>, <span> tags our engine produces.
     const tmp = document.createElement("div");
     tmp.innerHTML = html;
     tmp.querySelectorAll("script, iframe, object, embed, style").forEach((n) => n.remove());
     return tmp.innerHTML;
   }
-  /**
-   * Shows a brief floating toast message — used for upload rejections
-   * and other moments where an inline status message alone might be
-   * missed, since the toast is fixed to the viewport and hard to miss.
-   */
+  
   function showToast(message, type = "error") {
     let container = document.getElementById("lp-toast-container");
     if (!container) {
