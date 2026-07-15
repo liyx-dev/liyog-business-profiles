@@ -1300,9 +1300,19 @@
     }
   }
 
-  function bindReviews(p, isOwner) {
+  function bindReviews(p, isOwner, attempt) {
+    attempt = attempt || 0;
     if (window.LiyogReviews && window.LiyogReviews.mountReviews) {
       window.LiyogReviews.mountReviews(p, isOwner);
+      return;
+    }
+    // reviews-ui.js hasn't finished loading/executing yet — retry briefly
+    // instead of giving up. Stops after ~2 seconds so a genuinely missing
+    // script doesn't retry forever.
+    if (attempt < 20) {
+      setTimeout(() => bindReviews(p, isOwner, attempt + 1), 100);
+    } else {
+      console.error("LiyogReviews failed to load — reviews section could not be mounted.");
     }
   }
 
