@@ -331,18 +331,27 @@ function safeParseArray(val) {
 
 async function listReviews(env, profileId, { sort = "recent", limit = 20, offset = 0, featuredOnly = false } = {}) {
   const orderBy = SORT_COLUMNS[sort] || SORT_COLUMNS.recent;
-  const featuredClause = featuredOnly ? "AND is_featured = 1" : "";
+  const featuredClause = featuredOnly ? "AND r.is_featured = 1" : "";
   const { results } = await env.DB.prepare(
-    `SELECT id, profile_id, author_user_id, author_profile_id, author_name,
-            rating, recommend, title, review_text, photos, owner_reply, owner_replied_at,
-            helpful_count, is_verified_customer, is_featured, created_at
-     FROM brand_reviews
-     WHERE profile_id = ? AND moderation_status = 'approved' ${featuredClause}
-     ORDER BY is_featured DESC, ${orderBy}
+    `SELECT r.id, r.profile_id, r.author_user_id, r.author_profile_id, r.author_name,
+            u.display_name AS user_display_name,
+            ap.business_name AS author_profile_name,
+            r.rating, r.recommend, r.title, r.review_text, r.photos, r.owner_reply, r.owner_replied_at,
+            r.helpful_count, r.is_verified_customer, r.is_featured, r.created_at
+     FROM brand_reviews r
+     LEFT JOIN users u ON u.id = r.author_user_id
+     LEFT JOIN profiles ap ON ap.id = r.author_profile_id
+     WHERE r.profile_id = ? AND r.moderation_status = 'approved' ${featuredClause}
+     ORDER BY r.is_featured DESC, ${orderBy}
      LIMIT ? OFFSET ?`
   ).bind(profileId, limit, offset).all();
 
-  return results.map((r) => ({ ...r, photos: safeParseArray(r.photos) }));
+  return results.map((r) => ({
+    ...r,
+    photos: safeParseArray(r.photos),
+    // Resolution order: brand-profile author name > logged-in user's real name > typed anonymous name > "Anonymous"
+    display_name: r.author_profile_name || r.user_display_name || r.author_name || "Anonymous"
+  }));
 }
 
 // ---------------------------------------------------------------------
@@ -443,4 +452,3 @@ module.exports = {
   buildFingerprint,
   UserFacingError
 };
-
