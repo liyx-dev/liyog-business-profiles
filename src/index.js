@@ -251,9 +251,23 @@ export default {
           `UPDATE profiles SET ${fieldName} = ?, updated_at = datetime('now') WHERE id = ?`
         ).bind(dbValueToStore, profileId).run();
       } else if (fieldName === "store_photos") {
-        // Appends to existing photos array immediately
+        // The gallery grid on the frontend (wireGalleryUpload in profile-js.txt)
+        // has 5 fixed slots. When the user taps an OCCUPIED slot to replace its
+        // photo, the client sends the old URL back as "replace_url" so we can
+        // swap it in place. When the user taps an EMPTY slot, no replace_url is
+        // sent and we just append. Without this distinction, replacing a slot
+        // would silently leave the old gallery file behind in R2 forever.
+        const replaceUrl = url.searchParams.get("replace_url");
         const currentPhotos = safeParseArray(profileRow.store_photos);
-        currentPhotos.push(publicUrl);
+
+        if (replaceUrl && currentPhotos.includes(replaceUrl)) {
+          const idx = currentPhotos.indexOf(replaceUrl);
+          currentPhotos[idx] = publicUrl;
+          oldImageToDelete = replaceUrl;
+        } else {
+          currentPhotos.push(publicUrl);
+        }
+
         dbValueToStore = JSON.stringify(currentPhotos);
         await env.DB.prepare(
           "UPDATE profiles SET store_photos = ?, updated_at = datetime('now') WHERE id = ?"
@@ -290,7 +304,18 @@ export default {
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
       if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
 
-      const { profile_id, field, target_url } = await request.json();
+      // NOTE: profile-js.txt calls this endpoint as a body-less POST with the
+      // profile_id / field / url all in the query string. The previous code
+      // called `await request.json()` on that empty body, which throws before
+      // any storage/DB logic runs. That uncaught exception is exactly what
+      // produced the "<!DOCTYPE ... is not valid JSON" error the user saw in
+      // the browser — Cloudflare's own HTML error page was being served
+      // instead of our jsonResponse(). Reading from url.searchParams matches
+      // what the client actually sends, and lets this handler run at all.
+      const profile_id = url.searchParams.get("profile_id");
+      const field = url.searchParams.get("field");
+      const target_url = url.searchParams.get("url"); // client's param name is "url", not "target_url"
+
       if (!profile_id || !field) {
         return jsonResponse({ error: "Missing required parameters" }, 400);
       }
