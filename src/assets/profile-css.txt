@@ -1014,6 +1014,7 @@ select.lp-field-input {
   background: #fff;
   color: var(--liyog-red);
 }
+
 /* =====================================================================
    LIYOG WORLD — reviews-ui.css additions
    APPEND this entire block to the END of your existing profile-css.txt.
@@ -1152,9 +1153,28 @@ select.lp-field-input {
 }
 .lp-review-form #lp-review-submit-btn { margin-top: 16px; }
 
+/* ---- LiyX AI insight card ---- */
+.lp-ai-insight-card {
+  flex-basis: 100%; margin-top: 12px; padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: linear-gradient(135deg, rgba(40,164,40,0.06), rgba(255,215,0,0.08));
+  border: 1px solid rgba(40,164,40,0.15);
+}
+.lp-ai-insight-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.lp-liyx-sparkle { flex-shrink: 0; }
+.lp-ai-insight-label {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.4px; text-transform: uppercase;
+  background: linear-gradient(135deg, var(--liyog-green-dark), var(--liyog-orange));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.lp-ai-insight-text { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--ink); }
+.lp-ai-keywords-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.lp-ai-keyword {
+  font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: var(--r-pill);
+  background: var(--surface); border: 1px solid var(--line); color: var(--ink-soft);
+}
+
 @media (prefers-color-scheme: dark) {
   .lp-review-badge { color: var(--liyog-black); }
 }
-
-
 
