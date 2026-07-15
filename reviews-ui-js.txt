@@ -1,0 +1,553 @@
+/* =====================================================================
+   LIYOG WORLD — reviews-ui.js
+   Brand Reputation Engine: frontend rendering + interaction layer.
+
+   This file is self-contained. It does NOT redeclare WORKER_BASE or any
+   existing helper — it expects to be loaded as a second <script> tag
+   right after profile.js, inside the same page, and it reads
+   `window.LiyogReviews` conventions only. See INTEGRATION.md for the
+   3 small edits needed in your existing profile-js.txt/template/css.
+   ===================================================================== */
+
+(function () {
+  "use strict";
+
+  const WORKER_BASE = "https://www.liyogworld.com.ng";
+
+  // ---------------------------------------------------------------------
+  // Premium SVG star — single source of truth for every star drawn
+  // anywhere in the reviews UI (summary, cards, submission form).
+  // Supports partial fill (e.g. 4.3) via a clipPath gradient trick.
+  // ---------------------------------------------------------------------
+  function starSvg(fillPercent, size = 16) {
+    const clipId = `star-clip-${Math.random().toString(36).slice(2, 9)}`;
+    const pct = Math.max(0, Math.min(100, fillPercent));
+    return `
+<svg width="${size}" height="${size}" viewBox="0 0 24 24" class="lp-star-svg">
+  <defs>
+    <clipPath id="${clipId}"><rect x="0" y="0" width="${(pct / 100) * 24}" height="24" /></clipPath>
+  </defs>
+  <path class="lp-star-bg" d="M12 2.5l2.9 6.6 7.1.7-5.4 4.8 1.6 7-6.2-3.7-6.2 3.7 1.6-7-5.4-4.8 7.1-.7z"/>
+  <path class="lp-star-fill" clip-path="url(#${clipId})" d="M12 2.5l2.9 6.6 7.1.7-5.4 4.8 1.6 7-6.2-3.7-6.2 3.7 1.6-7-5.4-4.8 7.1-.7z"/>
+</svg>`.trim();
+  }
+
+  function starRow(rating, size = 16) {
+    let html = '<span class="lp-star-row">';
+    for (let i = 1; i <= 5; i++) {
+      const fill = Math.max(0, Math.min(1, rating - (i - 1))) * 100;
+      html += starSvg(fill, size);
+    }
+    html += "</span>";
+    return html;
+  }
+
+  // Interactive star picker used in the submission form — click/tap to set 1-5.
+  function buildStarPicker(container, onChange) {
+    container.innerHTML = "";
+    container.className = "lp-star-picker";
+    let current = 0;
+    const stars = [];
+    for (let i = 1; i <= 5; i++) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "lp-star-picker-btn";
+      btn.setAttribute("aria-label", `Rate ${i} star${i > 1 ? "s" : ""}`);
+      btn.innerHTML = starSvg(0, 30);
+      btn.addEventListener("mouseenter", () => paint(i));
+      btn.addEventListener("click", () => { current = i; paint(i); onChange(i); });
+      container.appendChild(btn);
+      stars.push(btn);
+    }
+    container.addEventListener("mouseleave", () => paint(current));
+    function paint(upTo) {
+      stars.forEach((btn, idx) => {
+        btn.innerHTML = starSvg(idx < upTo ? 100 : 0, 30);
+        btn.classList.toggle("lp-star-picker-active", idx < upTo);
+      });
+    }
+    return { getValue: () => current, reset: () => { current = 0; paint(0); } };
+  }
+
+  // ---------------------------------------------------------------------
+  // Rating summary + horizontal bar chart (5★ down to 1★)
+  // ---------------------------------------------------------------------
+  function renderRatingSummary(stats, badges) {
+    const total = stats.rating_count || 0;
+    const avg = stats.average_rating || 0;
+    const rows = [5, 4, 3, 2, 1].map((n) => {
+      const STAR_KEYS = { 1: "one_star_count", 2: "two_star_count", 3: "three_star_count", 4: "four_star_count", 5: "five_star_count" };
+      const count = stats[STAR_KEYS[n]] || 0;
+      const pct = total ? Math.round((count / total) * 100) : 0;
+      return `
+        <div class="lp-rating-bar-row">
+          <span>${n}★</span>
+          <div class="lp-rating-bar-track"><div class="lp-rating-bar-fill" style="width:${pct}%"></div></div>
+          <span>${count}</span>
+        </div>`;
+    }).join("");
+
+    const badgesHtml = (badges || []).slice(0, 3).map((b) => `<span class="lp-review-badge">${escapeHtml(b)}</span>`).join("");
+
+    return `
+      <div class="lp-rating-score">
+        <div class="lp-rating-score-num">${avg ? avg.toFixed(1) : "—"}</div>
+        <div class="lp-rating-score-stars">${starRow(avg, 14)}</div>
+        <div class="lp-rating-score-count">${total} review${total === 1 ? "" : "s"}</div>
+      </div>
+      <div class="lp-rating-bars">${rows}</div>
+      ${badgesHtml ? `<div class="lp-review-badges-row">${badgesHtml}</div>` : ""}
+    `;
+  }
+
+  // ---------------------------------------------------------------------
+  // Like / dislike reaction bar
+  // ---------------------------------------------------------------------
+  function renderReactionBar(stats, myReaction) {
+    const likes = stats.likes_count || 0;
+    const dislikes = stats.dislikes_count || 0;
+    return `
+      <div class="lp-reaction-bar">
+        <button class="lp-reaction-btn ${myReaction === "like" ? "lp-reaction-active-like" : ""}" data-reaction="like" aria-label="Like this brand">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
+          <span class="lp-reaction-count">${likes}</span>
+        </button>
+        <button class="lp-reaction-btn ${myReaction === "dislike" ? "lp-reaction-active-dislike" : ""}" data-reaction="dislike" aria-label="Dislike this brand">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/><path d="M17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>
+          <span class="lp-reaction-count">${dislikes}</span>
+        </button>
+      </div>`;
+  }
+
+  // ---------------------------------------------------------------------
+  // Single review card
+  // ---------------------------------------------------------------------
+  function renderReviewCard(r, isOwner) {
+    const authorLabel = r.display_name || "Anonymous";
+    const date = new Date(r.created_at.replace(" ", "T") + "Z").toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const verifiedTag = r.is_verified_customer ? '<span class="lp-review-verified-tag">Verified</span>' : "";
+    const featuredTag = r.is_featured ? '<span class="lp-review-featured-tag">★ Featured</span>' : "";
+    const recommendTag = r.recommend === 1 ? '<span class="lp-review-recommend-tag">Recommends</span>' : "";
+
+    const ownerReplyHtml = r.owner_reply ? `
+      <div class="lp-review-owner-reply">
+        <div class="lp-review-owner-reply-label">Response from the owner</div>
+        <p>${escapeHtml(r.owner_reply)}</p>
+      </div>` : "";
+
+    // Owner-only controls: reply (only if no reply yet) and feature/unfeature toggle.
+    const ownerControlsHtml = isOwner ? `
+      <div class="lp-review-owner-controls">
+        ${!r.owner_reply ? `<button class="lp-review-owner-btn" data-action="reply" data-review-id="${r.id}">Reply</button>` : ""}
+        <button class="lp-review-owner-btn ${r.is_featured ? "lp-review-owner-btn-active" : ""}" data-action="feature" data-review-id="${r.id}" data-currently-featured="${r.is_featured ? "1" : "0"}">
+          ${r.is_featured ? "★ Unfeature" : "☆ Feature"}
+        </button>
+      </div>` : "";
+
+    return `
+      <div class="lp-review-card" data-review-id="${r.id}">
+        <div class="lp-review-top">
+          <span class="lp-review-author">${escapeHtml(authorLabel)} ${verifiedTag}${featuredTag}</span>
+          <span class="lp-review-stars">${starRow(r.rating, 13)}</span>
+        </div>
+        ${r.title ? `<div class="lp-review-title">${escapeHtml(r.title)}</div>` : ""}
+        <p class="lp-review-text">${escapeHtml(r.review_text)}</p>
+        <div class="lp-review-date">${date} ${recommendTag}</div>
+        <button class="lp-review-helpful-btn" data-review-id="${r.id}">
+          Helpful ${r.helpful_count ? `(${r.helpful_count})` : ""}
+        </button>
+        ${ownerReplyHtml}
+        ${ownerControlsHtml}
+        <div class="lp-review-reply-form" id="lp-reply-form-${r.id}" hidden>
+          <textarea class="lp-field-textarea lp-reply-textarea" maxlength="500" rows="3" placeholder="Write a public reply..."></textarea>
+          <div class="lp-reply-form-actions">
+            <button class="lp-btn lp-btn-tertiary lp-reply-cancel-btn" data-review-id="${r.id}">Cancel</button>
+            <button class="lp-btn lp-btn-primary lp-reply-submit-btn" data-review-id="${r.id}">Post Reply</button>
+          </div>
+          <div class="lp-edit-form-status" id="lp-reply-status-${r.id}"></div>
+        </div>
+      </div>`;
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str || "";
+    return div.innerHTML;
+  }
+
+  // ---------------------------------------------------------------------
+  // Public entry point — called from bindReviews(p) in profile-js.txt
+  // ---------------------------------------------------------------------
+  async function mountReviews(p, isOwner) {
+    const section = document.getElementById("lp-reviews-section");
+    const summaryEl = document.getElementById("lp-rating-summary");
+    const listEl = document.getElementById("lp-reviews-list");
+    const viewAllBtn = document.getElementById("lp-view-all-reviews");
+    if (!section || !summaryEl || !listEl) return;
+
+    const stats = p.review_stats || { rating_count: 0 };
+    const hasAnyReviews = (stats.rating_count || 0) > 0;
+    const hasReactions = (stats.likes_count || 0) + (stats.dislikes_count || 0) > 0;
+
+    // Always show the section if reviews OR reactions exist, or the
+    // viewer can be the first to review — this is the growth surface.
+    section.hidden = false;
+
+    summaryEl.innerHTML = renderRatingSummary(stats, p.review_badges);
+
+    const reactionMount = document.createElement("div");
+    reactionMount.innerHTML = renderReactionBar(stats, p.my_reaction);
+    summaryEl.appendChild(reactionMount.firstElementChild);
+    wireReactionButtons(summaryEl, p.id);
+
+    // "Write a review" CTA — always visible except for the profile owner.
+    if (!isOwner) {
+      const cta = document.createElement("button");
+      cta.className = "lp-btn lp-btn-secondary lp-write-review-cta";
+      cta.textContent = "Write a Review";
+      cta.addEventListener("click", () => openReviewForm(p));
+      summaryEl.parentElement.insertBefore(cta, listEl);
+    }
+
+    if (!hasAnyReviews) {
+      listEl.innerHTML = `<p class="lp-no-reviews-yet">No reviews yet — be the first to share your experience.</p>`;
+      if (viewAllBtn) viewAllBtn.hidden = true;
+      return;
+    }
+
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/reviews/${encodeURIComponent(p.id)}?sort=recent&offset=0`);
+      const data = await res.json();
+      const previewReviews = (data.reviews || []).slice(0, 3);
+      listEl.innerHTML = previewReviews.map((r) => renderReviewCard(r, isOwner)).join("");
+      wireHelpfulButtons(listEl);
+      if (isOwner) wireOwnerControls(listEl);
+
+      if (viewAllBtn && (data.reviews || []).length) {
+        viewAllBtn.hidden = false;
+        viewAllBtn.addEventListener("click", () => openAllReviewsSheet(p, isOwner));
+      }
+    } catch (e) {
+      console.error("Failed to load reviews:", e);
+    }
+  }
+
+  function wireReactionButtons(root, profileId) {
+    root.querySelectorAll(".lp-reaction-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const reaction = btn.dataset.reaction;
+        btn.disabled = true;
+        try {
+          const res = await fetch(`${WORKER_BASE}/api/reactions`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ profile_id: profileId, reaction, device_signal: getDeviceSignal() })
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          // Refresh just the reaction bar + counts from live stats.
+          const statsRes = await fetch(`${WORKER_BASE}/api/reviews/${encodeURIComponent(profileId)}/stats`);
+          const statsData = await statsRes.json();
+          const wrap = document.createElement("div");
+          wrap.innerHTML = renderReactionBar(statsData.stats, reaction);
+          root.querySelector(".lp-reaction-bar").replaceWith(wrap.firstElementChild);
+          wireReactionButtons(root, profileId);
+        } catch (e) {
+          console.error("Reaction failed:", e);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  function wireHelpfulButtons(root) {
+    root.querySelectorAll(".lp-review-helpful-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const reviewId = btn.dataset.reviewId;
+        btn.disabled = true;
+        try {
+          const res = await fetch(`${WORKER_BASE}/api/reviews/${encodeURIComponent(reviewId)}/helpful`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ device_signal: getDeviceSignal() })
+          });
+          const data = await res.json();
+          if (!data.alreadyVoted) {
+            const current = parseInt((btn.textContent.match(/\((\d+)\)/) || [0, 0])[1], 10) || 0;
+            btn.textContent = `Helpful (${current + 1})`;
+          }
+        } catch (e) { console.error("Helpful vote failed:", e); }
+        finally { btn.disabled = false; }
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Owner controls: reply + feature/unfeature. Wired only when isOwner
+  // is true, so these buttons never even render for visitors.
+  // ---------------------------------------------------------------------
+  function wireOwnerControls(root) {
+    root.querySelectorAll('.lp-review-owner-btn[data-action="reply"]').forEach((btn) => {
+      btn.addEventListener("click", () => openReplyBox(btn));
+    });
+    root.querySelectorAll('.lp-review-owner-btn[data-action="feature"]').forEach((btn) => {
+      btn.addEventListener("click", () => toggleFeature(btn));
+    });
+  }
+
+  function openReplyBox(btn) {
+    const reviewId = btn.dataset.reviewId;
+    const card = btn.closest(".lp-review-card");
+    if (card.querySelector(".lp-review-reply-box")) return; // already open
+
+    const box = document.createElement("div");
+    box.className = "lp-review-reply-box";
+    box.innerHTML = `
+      <textarea class="lp-field-textarea" maxlength="500" rows="2" placeholder="Write a public reply..."></textarea>
+      <div class="lp-review-reply-box-actions">
+        <button type="button" class="lp-btn-text-cancel">Cancel</button>
+        <button type="button" class="lp-btn lp-btn-primary lp-btn-small">Post Reply</button>
+      </div>
+      <div class="lp-edit-form-status" style="margin-top:6px;"></div>`;
+    btn.closest(".lp-review-owner-controls").insertAdjacentElement("afterend", box);
+
+    const textarea = box.querySelector("textarea");
+    const statusEl = box.querySelector(".lp-edit-form-status");
+    textarea.focus();
+
+    box.querySelector(".lp-btn-text-cancel").addEventListener("click", () => box.remove());
+    box.querySelector(".lp-btn-primary").addEventListener("click", async (e) => {
+      const replyText = textarea.value.trim();
+      if (!replyText) { statusEl.textContent = "Reply can't be empty."; statusEl.className = "lp-edit-form-status lp-edit-error"; return; }
+      e.target.disabled = true;
+      e.target.textContent = "Posting…";
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/reviews/${encodeURIComponent(reviewId)}/reply`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reply_text: replyText })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        const ownerReplyHtml = document.createElement("div");
+        ownerReplyHtml.className = "lp-review-owner-reply";
+        ownerReplyHtml.innerHTML = `<div class="lp-review-owner-reply-label">Response from the owner</div><p></p>`;
+        ownerReplyHtml.querySelector("p").textContent = replyText;
+        box.replaceWith(ownerReplyHtml);
+        btn.remove(); // hide the Reply button now that a reply exists
+      } catch (err) {
+        statusEl.textContent = err.message || "Something went wrong.";
+        statusEl.className = "lp-edit-form-status lp-edit-error";
+        e.target.disabled = false;
+        e.target.textContent = "Post Reply";
+      }
+    });
+  }
+
+  async function toggleFeature(btn) {
+    const reviewId = btn.dataset.reviewId;
+    const currentlyFeatured = btn.dataset.currentlyFeatured === "1";
+    btn.disabled = true;
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/reviews/${encodeURIComponent(reviewId)}/feature`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ featured: !currentlyFeatured })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const nowFeatured = !currentlyFeatured;
+      btn.dataset.currentlyFeatured = nowFeatured ? "1" : "0";
+      btn.textContent = nowFeatured ? "★ Unfeature" : "☆ Feature";
+      btn.classList.toggle("lp-review-owner-btn-active", nowFeatured);
+
+      const featuredTag = btn.closest(".lp-review-card").querySelector(".lp-review-featured-tag");
+      if (nowFeatured && !featuredTag) {
+        const authorSpan = btn.closest(".lp-review-card").querySelector(".lp-review-author");
+        authorSpan.insertAdjacentHTML("beforeend", ' <span class="lp-review-featured-tag">★ Featured</span>');
+      } else if (!nowFeatured && featuredTag) {
+        featuredTag.remove();
+      }
+    } catch (err) {
+      alert(err.message || "Couldn't update feature status. Please try again.");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+
+  // ---------------------------------------------------------------------
+  // "All reviews" bottom sheet — reuses your existing .lp-sheet pattern
+  // ---------------------------------------------------------------------
+  async function openAllReviewsSheet(p, isOwner) {
+    const overlay = document.getElementById("lp-reviews-sheet-overlay");
+    const body = document.getElementById("lp-all-reviews-body");
+    if (!overlay || !body) return;
+
+    body.innerHTML = `
+      <div class="lp-review-sort-row">
+        <select class="lp-review-sort-select" id="lp-review-sort">
+          <option value="recent">Most Recent</option>
+          <option value="helpful">Most Helpful</option>
+          <option value="highest">Highest Rated</option>
+          <option value="lowest">Lowest Rated</option>
+        </select>
+      </div>
+      <div id="lp-all-reviews-list"><p class="lp-loading-reviews">Loading reviews…</p></div>`;
+
+    overlay.classList.add("lp-open");
+    document.body.style.overflow = "hidden";
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeThisSheet(); }, { once: true });
+
+    async function loadSorted(sort) {
+      const listWrap = document.getElementById("lp-all-reviews-list");
+      listWrap.innerHTML = `<p class="lp-loading-reviews">Loading reviews…</p>`;
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/reviews/${encodeURIComponent(p.id)}?sort=${sort}&offset=0`);
+        const data = await res.json();
+        listWrap.innerHTML = (data.reviews || []).map((r) => renderReviewCard(r, isOwner)).join("") || `<p class="lp-no-reviews-yet">No reviews yet.</p>`;
+        wireHelpfulButtons(listWrap);
+        if (isOwner) wireOwnerControls(listWrap);
+      } catch (e) {
+        listWrap.innerHTML = `<p class="lp-no-reviews-yet">Couldn't load reviews. Please try again.</p>`;
+      }
+    }
+
+    document.getElementById("lp-review-sort").addEventListener("change", (e) => loadSorted(e.target.value));
+    await loadSorted("recent");
+
+    function closeThisSheet() {
+      overlay.classList.remove("lp-open");
+      document.body.style.overflow = "";
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // "Write a review" form — opens in the same bio-sheet-style overlay,
+  // works for anonymous visitors, logged-in users, and (future) brands
+  // posting as themselves.
+  // ---------------------------------------------------------------------
+  function openReviewForm(p) {
+    const overlay = document.getElementById("lp-bio-sheet-overlay");
+    const sheet = document.getElementById("lp-bio-sheet");
+    if (!overlay || !sheet) return;
+
+    const originalBody = sheet.querySelector(".lp-sheet-body");
+    const originalHeader = sheet.querySelector(".lp-sheet-header");
+    const originalCtaRow = sheet.querySelector(".lp-sheet-cta-row");
+    if (originalHeader) originalHeader.style.display = "none";
+    if (originalCtaRow) originalCtaRow.style.display = "none";
+
+    originalBody.innerHTML = `
+      <h3 class="lp-sheet-title-only" style="margin-bottom:14px;">Write a Review</h3>
+      <div class="lp-review-form">
+        <label class="lp-field-label">Your rating</label>
+        <div id="lp-review-star-picker"></div>
+
+        <label class="lp-field-label" for="lp-review-name">Your name <span class="lp-field-hint">(optional)</span></label>
+        <input class="lp-field-input" id="lp-review-name" maxlength="60" placeholder="Anonymous">
+
+        <label class="lp-field-label" for="lp-review-title">Title <span class="lp-field-hint">(optional)</span></label>
+        <input class="lp-field-input" id="lp-review-title" maxlength="100" placeholder="Sum it up in a few words">
+
+        <label class="lp-field-label" for="lp-review-text">Your review</label>
+        <textarea class="lp-field-textarea" id="lp-review-text" maxlength="1000" rows="4" placeholder="Share your experience with this brand..."></textarea>
+
+        <label class="lp-review-recommend-toggle">
+          <input type="checkbox" id="lp-review-recommend"> I'd recommend this brand
+        </label>
+
+        <div class="lp-edit-form-status" id="lp-review-form-status"></div>
+        <button class="lp-btn lp-btn-primary" id="lp-review-submit-btn">Submit Review</button>
+      </div>`;
+
+    const picker = buildStarPicker(document.getElementById("lp-review-star-picker"), () => {});
+    overlay.classList.add("lp-open");
+    document.body.style.overflow = "hidden";
+
+    document.getElementById("lp-review-submit-btn").addEventListener("click", () => submitReview(p, picker, overlay, originalHeader, originalCtaRow));
+
+    overlay.addEventListener("click", function handler(e) {
+      if (e.target === overlay) {
+        restoreSheet(overlay, originalHeader, originalCtaRow);
+        overlay.removeEventListener("click", handler);
+      }
+    });
+  }
+
+  function restoreSheet(overlay, header, ctaRow) {
+    overlay.classList.remove("lp-open");
+    document.body.style.overflow = "";
+    if (header) header.style.display = "";
+    if (ctaRow) ctaRow.style.display = "";
+  }
+
+  async function submitReview(p, picker, overlay, header, ctaRow) {
+    const statusEl = document.getElementById("lp-review-form-status");
+    const submitBtn = document.getElementById("lp-review-submit-btn");
+    const rating = picker.getValue();
+    const reviewText = document.getElementById("lp-review-text").value.trim();
+    const title = document.getElementById("lp-review-title").value.trim();
+    const authorName = document.getElementById("lp-review-name").value.trim();
+    const recommend = document.getElementById("lp-review-recommend").checked;
+
+    if (!rating) { statusEl.textContent = "Please choose a star rating."; statusEl.className = "lp-edit-form-status lp-edit-error"; return; }
+    if (!reviewText) { statusEl.textContent = "Please write a short review."; statusEl.className = "lp-edit-form-status lp-edit-error"; return; }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Submitting…";
+    statusEl.textContent = "";
+
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/reviews`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          profile_id: p.id,
+          rating, title, review_text: reviewText,
+          author_name: authorName, recommend,
+          device_signal: getDeviceSignal()
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      statusEl.textContent = data.moderationStatus === "pending"
+        ? "Thanks! Your review is being checked and will appear shortly."
+        : "Thanks for sharing your experience!";
+      statusEl.className = "lp-edit-form-status lp-edit-success";
+      submitBtn.textContent = "Submitted";
+      setTimeout(() => window.location.reload(), 1600);
+    } catch (err) {
+      statusEl.textContent = err.message || "Something went wrong. Please try again.";
+      statusEl.className = "lp-edit-form-status lp-edit-error";
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Submit Review";
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Lightweight, privacy-respecting device signal (NOT a raw fingerprint
+  // library — just enough entropy to pair with the server-side IP+UA
+  // hash for rate-limiting). No canvas fingerprinting, no cross-site ID.
+  // ---------------------------------------------------------------------
+  let cachedDeviceSignal = null;
+  function getDeviceSignal() {
+    if (cachedDeviceSignal) return cachedDeviceSignal;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    const lang = navigator.language || "";
+    const screenSig = `${screen.width}x${screen.height}`;
+    cachedDeviceSignal = `${tz}|${lang}|${screenSig}`;
+    return cachedDeviceSignal;
+  }
+
+  // Expose the mount function for profile-js.txt to call.
+  window.LiyogReviews = { mountReviews };
+})();
