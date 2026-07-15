@@ -41,6 +41,34 @@ function getCookie(request, name) {
   return match ? match[1] : null;
 }
 
+/**
+ * Parses a contact string (phone or email) and returns a clean, clickable action URL.
+ * Automatically handles WhatsApp formatting or mailto syntax.
+ */
+function formatContactLink(contact) {
+  if (!contact) return "";
+  const trimmed = contact.trim();
+  
+  // Simple check: if it contains '@' and looks like an email, use mailto
+  if (trimmed.includes("@") && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    return `mailto:${trimmed}`;
+  }
+  
+  // Treat as phone number / WhatsApp link
+  // Strip non-numeric characters except +
+  const numericOnly = trimmed.replace(/[^\d+]/g, "");
+  // Ensure we have a valid country code (clean leading 0s for WhatsApp direct links if necessary)
+  let cleanNumber = numericOnly;
+  if (cleanNumber.startsWith("0") && !cleanNumber.startsWith("+")) {
+    // If it starts with 0 (typical for local Nigerian numbers) we assume country prefix +234
+    cleanNumber = "234" + cleanNumber.slice(1);
+  } else if (cleanNumber.startsWith("+")) {
+    cleanNumber = cleanNumber.replace("+", "");
+  }
+  
+  return `https://wa.me/${cleanNumber}`;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -70,10 +98,7 @@ export default {
     }
 
     // -----------------------------------------------------------------
-    // Auth: sign in with Google — verifies token, creates/finds user,
-    // issues a session cookie. This is the single entry point for both
-    // "new user signing up" and "returning user logging in" — the
-    // distinction only matters for whether they already have a profile.
+    // Auth: sign in with Google
     // -----------------------------------------------------------------
     if (url.pathname === "/api/auth/google" && request.method === "POST") {
       const body = await request.json();
@@ -98,7 +123,7 @@ export default {
       return response;
     }
 
-    // Returns the current logged-in user (if any) based on session cookie.
+    // Returns the current logged-in user
     if (url.pathname === "/api/auth/me") {
       const sessionToken = getCookie(request, "liyog_session");
       if (!sessionToken) return jsonResponse({ loggedIn: false });
@@ -126,9 +151,7 @@ export default {
       return response;
     }
 
-    // -----------------------------------------------------------------
-    // Slug availability check — used live while the user types during signup
-    // -----------------------------------------------------------------
+    // Slug availability check
     if (url.pathname === "/api/check-slug") {
       const slug = (url.searchParams.get("slug") || "").toLowerCase().trim();
       const validFormat = /^[a-z0-9](?:[a-z0-9-]{1,18}[a-z0-9])?$/.test(slug);
@@ -147,8 +170,7 @@ export default {
       return jsonResponse({ available: true });
     }
 
-    // Returns the allowed business categories, so the signup form never
-    // hardcodes a category list that could drift from what's actually valid.
+    // Categories endpoint
     if (url.pathname === "/api/categories") {
       const { results } = await env.DB.prepare(
         "SELECT slug, label FROM business_categories WHERE is_allowed = 1"
@@ -157,9 +179,7 @@ export default {
     }
 
     // -----------------------------------------------------------------
-    // Image upload — accepts a compressed WebP blob from the client,
-    // stores it in R2, returns the public URL. Client does compression
-    // before this ever runs, so this endpoint stays simple and fast.
+    // Image Upload — Instant DB persistence + R2 replacement to prevent orphaned files.
     // -----------------------------------------------------------------
     if (url.pathname === "/api/upload-image" && request.method === "POST") {
       const sessionToken = getCookie(request, "liyog_session");
@@ -171,9 +191,7 @@ export default {
         return jsonResponse({ error: "Only WebP images are accepted" }, 400);
       }
 
-      // Rate limit: cap uploads per user per hour by counting their
-      // existing R2 objects created recently. R2 list is cheap enough
-      // for this scale and avoids needing a separate counter table.
+      // Rate limiting checks
       const listResult = await env.ASSETS.list({ prefix: `profile-images/${userId}/` });
       const oneHourAgo = Date.now() - 60 * 60 * 1000;
       const recentUploads = listResult.objects.filter((obj) => new Date(obj.uploaded).getTime() > oneHourAgo);
@@ -187,48 +205,128 @@ export default {
         return jsonResponse({ error: "Image too large — please use a smaller image" }, 400);
       }
 
-      // Real moderation gate: reject outright before ever touching R2.
-      // The frontend shows this as an immediate toast so the user can
-      // just pick a different photo, rather than discovering later that
-      // their whole profile got silently demoted to "pending".
+      // Image content moderation
       const moderationResult = await checkImage(arrayBuffer, env);
       if (!moderationResult.passed) {
         return jsonResponse({ error: getReadableRejectionMessage(moderationResult.reason) }, 422);
       }
 
-      // Use an SEO-friendly filename when the client provides one (brand
-      // name + field type, e.g. "zion-store-logo"), falling back to a
-      // random id if not — never blocks upload on a missing name.
+      const fieldName = url.searchParams.get("field"); // e.g. "logo_url", "cover_url", "store_photos"
+      const profileId = url.searchParams.get("profile_id");
+
+      if (!fieldName || !profileId) {
+        return jsonResponse({ error: "Missing destination field or profile ID parameters" }, 400);
+      }
+
+      // Verify ownership before altering the database row or bucket
+      const { results: ownerCheck } = await env.DB.prepare(
+        "SELECT owner_id, logo_url, cover_url, store_photos FROM profiles WHERE id = ?"
+      ).bind(profileId).all();
+
+      if (!ownerCheck.length) return jsonResponse({ error: "Profile not found" }, 404);
+      if (ownerCheck[0].owner_id !== userId) return jsonResponse({ error: "Not authorized to edit this profile" }, 403);
+
+      const profileRow = ownerCheck[0];
+
+      // Generate unique name
       const requestedName = (url.searchParams.get("name") || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
       const uniqueSuffix = crypto.randomUUID().slice(0, 8);
       const filename = requestedName ? `${requestedName}-${uniqueSuffix}` : crypto.randomUUID();
       const key = `profile-images/${userId}/${filename}.webp`;
+
+      // Upload key to R2
       await env.ASSETS.put(key, arrayBuffer, {
         httpMetadata: { contentType: "image/webp" }
       });
 
-      // A borderline (needsReview) image still uploads normally. We log
-      // it for visibility, but moderation_queue's profile_id column is a
-      // real foreign key to profiles(id) — at upload time there may not
-      // be a profile yet (e.g. during signup, before the profile row is
-      // created), so we only queue this if the caller told us which
-      // profile it belongs to. Otherwise it's still visible in logs.
-      const relatedProfileId = url.searchParams.get("profile_id") || null;
-      if (moderationResult.needsReview && relatedProfileId) {
+      const publicUrl = `${url.origin}/api/image/${key}`;
+
+      // Handle Immediate DB and R2 replacements
+      let oldImageToDelete = null;
+      let dbValueToStore = publicUrl;
+
+      if (fieldName === "logo_url" || fieldName === "cover_url") {
+        oldImageToDelete = profileRow[fieldName];
+        await env.DB.prepare(
+          `UPDATE profiles SET ${fieldName} = ?, updated_at = datetime('now') WHERE id = ?`
+        ).bind(dbValueToStore, profileId).run();
+      } else if (fieldName === "store_photos") {
+        // Appends to existing photos array immediately
+        const currentPhotos = safeParseArray(profileRow.store_photos);
+        currentPhotos.push(publicUrl);
+        dbValueToStore = JSON.stringify(currentPhotos);
+        await env.DB.prepare(
+          "UPDATE profiles SET store_photos = ?, updated_at = datetime('now') WHERE id = ?"
+        ).bind(dbValueToStore, profileId).run();
+      } else {
+        return jsonResponse({ error: "Invalid upload destination field" }, 400);
+      }
+
+      // Delete the old file immediately to avoid orphaned storage leaks
+      if (oldImageToDelete) {
+        const oldKey = extractR2KeyFromUrl(oldImageToDelete);
+        if (oldKey) {
+          ctx.waitUntil(env.ASSETS.delete(oldKey));
+        }
+      }
+
+      // Moderation review registration
+      if (moderationResult.needsReview) {
         ctx.waitUntil(
           env.DB.prepare(
             "INSERT INTO moderation_queue (profile_id, check_type, field_name, flagged_value, status) VALUES (?, ?, ?, ?, 'open')"
-          ).bind(relatedProfileId, "image_caution", requestedName || "upload", moderationResult.reason).run()
+          ).bind(profileId, "image_caution", fieldName, moderationResult.reason).run()
         );
-      } else if (moderationResult.needsReview) {
-        console.warn("Borderline image uploaded with no profile_id context:", requestedName, moderationResult.reason);
       }
 
-      const publicUrl = `${url.origin}/api/image/${key}`;
       return jsonResponse({ success: true, url: publicUrl });
     }
 
-    // Serves an uploaded image back out of R2.
+    // -----------------------------------------------------------------
+    // Remove Image Endpoint — Solves orphaned media immediately on removal
+    // -----------------------------------------------------------------
+    if (url.pathname === "/api/remove-image" && request.method === "POST") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+
+      const { profile_id, field, target_url } = await request.json();
+      if (!profile_id || !field) {
+        return jsonResponse({ error: "Missing required parameters" }, 400);
+      }
+
+      const { results: ownerCheck } = await env.DB.prepare(
+        "SELECT owner_id, logo_url, cover_url, store_photos FROM profiles WHERE id = ?"
+      ).bind(profile_id).all();
+
+      if (!ownerCheck.length) return jsonResponse({ error: "Profile not found" }, 404);
+      if (ownerCheck[0].owner_id !== userId) return jsonResponse({ error: "Not authorized" }, 403);
+
+      const profileRow = ownerCheck[0];
+      let keyToDelete = null;
+
+      if (field === "logo_url" || field === "cover_url") {
+        keyToDelete = extractR2KeyFromUrl(profileRow[field]);
+        await env.DB.prepare(
+          `UPDATE profiles SET ${field} = NULL, updated_at = datetime('now') WHERE id = ?`
+        ).bind(profile_id).run();
+      } else if (field === "store_photos" && target_url) {
+        const photos = safeParseArray(profileRow.store_photos);
+        const filteredPhotos = photos.filter(u => u !== target_url);
+        keyToDelete = extractR2KeyFromUrl(target_url);
+        await env.DB.prepare(
+          "UPDATE profiles SET store_photos = ?, updated_at = datetime('now') WHERE id = ?"
+        ).bind(JSON.stringify(filteredPhotos), profile_id).run();
+      }
+
+      if (keyToDelete) {
+        await env.ASSETS.delete(keyToDelete);
+      }
+
+      return jsonResponse({ success: true });
+    }
+
+    // Serves an uploaded image out of R2
     if (url.pathname.startsWith("/api/image/")) {
       const key = url.pathname.replace("/api/image/", "");
       const object = await env.ASSETS.get(key);
@@ -239,7 +337,7 @@ export default {
     }
 
     // -----------------------------------------------------------------
-    // Create a new brand profile — requires a valid session
+    // Create a new brand profile
     // -----------------------------------------------------------------
     if (url.pathname === "/api/profiles" && request.method === "POST") {
       const sessionToken = getCookie(request, "liyog_session");
@@ -265,21 +363,35 @@ export default {
       ).bind(slug, slug).all();
       if (slugTaken.length) return jsonResponse({ error: "Slug already taken" }, 409);
 
-      // Layer 1 moderation gate — text fields only, at profile-creation time.
+      // Perform text check before inserting
       const nameCheck = checkText(businessName);
       const taglineCheck = checkText(body.tagline || "");
       const flags = [];
-      if (!nameCheck.passed) flags.push({ checkType: "text_auto", fieldName: "business_name", flaggedValue: nameCheck.matchedTerm });
-      if (!taglineCheck.passed) flags.push({ checkType: "text_auto", fieldName: "tagline", flaggedValue: taglineCheck.matchedTerm });
+      const validationErrors = {};
+
+      if (!nameCheck.passed) {
+        validationErrors.business_name = { error: "Prohibited language detected", term: nameCheck.matchedTerm };
+        flags.push({ checkType: "text_auto", fieldName: "business_name", flaggedValue: nameCheck.matchedTerm });
+      }
+      if (!taglineCheck.passed) {
+        validationErrors.tagline = { error: "Prohibited language detected", term: taglineCheck.matchedTerm };
+        flags.push({ checkType: "text_auto", fieldName: "tagline", flaggedValue: taglineCheck.matchedTerm });
+      }
+
+      // If text validation fails, reject immediately with precise feedback
+      if (Object.keys(validationErrors).length > 0) {
+        return jsonResponse({
+          error: "Some text fields contain inappropriate words. Please revise them.",
+          fields: validationErrors
+        }, 422);
+      }
 
       const profileId = crypto.randomUUID();
-      const moderationStatus = flags.length > 0 ? "pending" : "approved";
-
       try {
         await env.DB.prepare(
           `INSERT INTO profiles (id, owner_id, slug, business_name, business_category, tagline, moderation_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).bind(profileId, userId, slug, businessName, category, body.tagline || null, moderationStatus).run();
+           VALUES (?, ?, ?, ?, ?, ?, 'approved')`
+        ).bind(profileId, userId, slug, businessName, category, body.tagline || null).run();
       } catch (dbErr) {
         console.error("Profile creation DB error:", dbErr);
         return jsonResponse(
@@ -288,14 +400,11 @@ export default {
         );
       }
 
-      if (flags.length) await saveModerationFlags(env, profileId, flags);
-
-      return jsonResponse({ success: true, profileId, slug, moderationStatus });
+      return jsonResponse({ success: true, profileId, slug, moderationStatus: "approved" });
     }
 
     // -----------------------------------------------------------------
-    // Update an existing brand profile — owner-only, re-triggers
-    // moderation on any changed text field per the moderation spec.
+    // Update an existing brand profile
     // -----------------------------------------------------------------
     if (url.pathname.startsWith("/api/profiles/") && request.method === "PATCH") {
       const sessionToken = getCookie(request, "liyog_session");
@@ -309,9 +418,11 @@ export default {
 
       const body = await request.json();
 
-      // Slug changes are gated separately from the general field list
-      // below: only one change allowed per 7 days, must pass the same
-      // format/reserved/uniqueness checks as signup.
+      // Check for Strike-Out limit (15 failed edits per session)
+      const attemptKey = `attempts:${userId}`;
+      const failedAttemptsStr = getCookie(request, "liyog_strikes") || "0";
+      let failedAttempts = parseInt(failedAttemptsStr, 10);
+
       let slugUpdate = null;
       if (body.slug !== undefined && body.slug !== results[0].slug) {
         const newSlug = String(body.slug).toLowerCase().trim();
@@ -324,7 +435,7 @@ export default {
           const daysSinceChange = (Date.now() - new Date(results[0].slug_updated_at.replace(" ", "T") + "Z").getTime()) / (1000 * 60 * 60 * 24);
           if (daysSinceChange < 7) {
             const daysLeft = Math.ceil(7 - daysSinceChange);
-            return jsonResponse({ error: `You can change your link again in ${daysLeft} day${daysLeft === 1 ? "" : "s"}. It can only be updated once every 7 days.` }, 429);
+            return jsonResponse({ error: `You can change your link again in ${daysLeft} day${daysLeft === 1 ? "" : "s"}.` }, 429);
           }
         }
 
@@ -350,38 +461,69 @@ export default {
       ];
 
       const updates = {};
+      const validationErrors = {};
       const flags = [];
+
       for (const field of editableFields) {
         if (body[field] !== undefined) {
           if (field === "bio_html") {
-            // The client sends raw rich-text syntax (e.g. "*bold*"), never
-            // HTML. This is the ONLY place that syntax is turned into
-            // markup — parseRichText guarantees the output is always
-            // safe, regardless of what the client actually sent.
             const rawSyntax = String(body[field]).slice(0, RICHTEXT_MAX_LENGTH);
             const plainTextForModeration = stripRichTextSyntax(rawSyntax);
             const check = checkText(plainTextForModeration);
-            if (!check.passed) flags.push({ checkType: "text_auto", fieldName: field, flaggedValue: check.matchedTerm });
+            if (!check.passed) {
+              validationErrors.bio_html = { error: "Inappropriate language detected", term: check.matchedTerm };
+              flags.push({ checkType: "text_auto", fieldName: field, flaggedValue: check.matchedTerm });
+            }
             updates[field] = parseRichText(rawSyntax);
           } else {
             updates[field] = body[field];
             if (["business_name", "tagline"].includes(field)) {
               const check = checkText(body[field]);
-              if (!check.passed) flags.push({ checkType: "text_auto", fieldName: field, flaggedValue: check.matchedTerm });
+              if (!check.passed) {
+                validationErrors[field] = { error: "Inappropriate language detected", term: check.matchedTerm };
+                flags.push({ checkType: "text_auto", fieldName: field, flaggedValue: check.matchedTerm });
+              }
             }
           }
         }
+      }
+
+      // Handle validation failure
+      if (Object.keys(validationErrors).length > 0) {
+        failedAttempts += 1;
+
+        // Auto-lock into pending manual review if user exceeds 15 sequential strikes
+        if (failedAttempts >= 15) {
+          await env.DB.prepare(
+            "UPDATE profiles SET moderation_status = 'pending', updated_at = datetime('now') WHERE id = ?"
+          ).bind(profileId).run();
+
+          if (flags.length) await saveModerationFlags(env, profileId, flags);
+
+          const errorResponse = jsonResponse({
+            error: "Too many failed edits. Your profile has been locked and put in the queue for manual team review.",
+            locked: true,
+            fields: validationErrors
+          }, 422);
+          errorResponse.headers.set("Set-Cookie", `liyog_strikes=0; Path=/; Max-Age=86400; Secure; HttpOnly; SameSite=Lax`);
+          return errorResponse;
+        }
+
+        const errorResponse = jsonResponse({
+          error: "Validation failed. Please correct the marked fields.",
+          fields: validationErrors,
+          strikesRemaining: 15 - failedAttempts
+        }, 422);
+        errorResponse.headers.set("Set-Cookie", `liyog_strikes=${failedAttempts}; Path=/; Max-Age=86400; Secure; HttpOnly; SameSite=Lax`);
+        return errorResponse;
       }
 
       if (!Object.keys(updates).length && !slugUpdate) {
         return jsonResponse({ error: "No valid fields to update" }, 400);
       }
 
-      // Any edit re-triggers moderation review, per the original spec:
-      // an approved profile that changes its bio/logo shouldn't stay
-      // approved on stale content forever.
-      const newStatus = flags.length > 0 ? "pending" : "approved";
-      updates.moderation_status = newStatus;
+      // Cleared validation, reset strikes
+      updates.moderation_status = "approved";
 
       if (slugUpdate) {
         updates.slug = slugUpdate;
@@ -396,10 +538,6 @@ export default {
           `UPDATE profiles SET ${setClauses}, updated_at = datetime('now') WHERE id = ?`
         ).bind(...values, profileId).run();
       } catch (dbErr) {
-        // A CHECK constraint failing here means a field exceeded the
-        // database's own length limit (or similar). Translate this into
-        // a plain message rather than letting a raw D1/SQLite error
-        // surface to the client as an unreadable response.
         console.error("Profile update DB error:", dbErr);
         return jsonResponse(
           { error: "One of your fields is too long or contains an unexpected value. Please review your entries and try again." },
@@ -407,19 +545,12 @@ export default {
         );
       }
 
-      if (flags.length) await saveModerationFlags(env, profileId, flags);
-
-      // Delete any R2-hosted images that this update just replaced, so
-      // storage doesn't silently accumulate orphaned files over time.
-      // Only runs after the DB write succeeds, and only ever deletes
-      // files this platform hosts (never touches external URLs).
-      ctx.waitUntil(cleanupReplacedImages(env, results[0], updates));
-
-      return jsonResponse({ success: true, moderationStatus: newStatus, newSlug: slugUpdate || null });
+      const response = jsonResponse({ success: true, moderationStatus: "approved", newSlug: slugUpdate || null });
+      response.headers.set("Set-Cookie", "liyog_strikes=0; Path=/; Max-Age=86400; Secure; HttpOnly; SameSite=Lax");
+      return response;
     }
 
-    // Owner-only: fetch inquiries sent to a specific profile, most
-    // recent first. Requires the requester to actually own the profile.
+    // Owner-only: fetch inquiries sent to a specific profile
     if (url.pathname.match(/^\/api\/profiles\/[^/]+\/inquiries$/) && request.method === "GET") {
       const sessionToken = getCookie(request, "liyog_session");
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
@@ -436,13 +567,17 @@ export default {
         "SELECT sender_name, sender_contact, message, created_at FROM inquiries WHERE profile_id = ? ORDER BY created_at DESC"
       ).bind(profileId).all();
 
-      return jsonResponse({ inquiries });
+      // Transform sender contacts dynamically into actionable URLs
+      const formattedInquiries = inquiries.map(inq => ({
+        ...inq,
+        action_url: formatContactLink(inq.sender_contact)
+      }));
+
+      return jsonResponse({ inquiries: formattedInquiries });
     }
 
     // -----------------------------------------------------------------
-    // Inquiries — the "Send an inquiry" form on a brand profile. Stores
-    // sender contact temporarily; the existing scheduled cleanup job
-    // deletes rows older than 7 days, per the original privacy design.
+    // Inquiries Form Submission
     // -----------------------------------------------------------------
     if (url.pathname === "/api/inquiries" && request.method === "POST") {
       const body = await request.json();
@@ -455,9 +590,6 @@ export default {
         return jsonResponse({ error: "Message is too long" }, 400);
       }
 
-      // Basic spam guard: block if this exact sender has already sent
-      // 3+ inquiries to ANY profile in the last hour. Coarse but cheap,
-      // and stops simple scripted spam without needing new infra.
       const { results: recentCount } = await env.DB.prepare(
         "SELECT COUNT(*) as count FROM inquiries WHERE sender_contact = ? AND created_at > datetime('now', '-1 hour')"
       ).bind(sender_contact).all();
@@ -484,7 +616,7 @@ export default {
     }
 
     // -----------------------------------------------------------------
-    // Public profile routes (unchanged from before)
+    // Public profile routes
     // -----------------------------------------------------------------
     if (!url.pathname.startsWith("/b/")) {
       return new Response("Not a profile route", { status: 404 });
@@ -581,53 +713,6 @@ async function getSetting(env, key, fallback) {
   }
 }
 
-/**
- * Deletes R2 objects that a profile update just replaced. Compares the
- * old row's image fields against the incoming updates, and for any
- * field that changed, deletes the old file — but ONLY if it's actually
- * hosted on our own domain (via /api/image/), never an external URL,
- * since we can't and shouldn't delete files we don't own.
- */
-async function cleanupReplacedImages(env, oldProfile, updates) {
-  try {
-    const toDelete = [];
-
-    // Single-image fields: logo and cover.
-    for (const field of ["logo_url", "cover_url"]) {
-      if (updates[field] !== undefined && updates[field] !== oldProfile[field]) {
-        const key = extractR2KeyFromUrl(oldProfile[field]);
-        if (key) toDelete.push(key);
-      }
-    }
-
-    // Gallery is an array field — diff old vs new, delete anything
-    // present in the old list but missing from the new one.
-    if (updates.store_photos !== undefined) {
-      const oldPhotos = safeParseArray(oldProfile.store_photos);
-      const newPhotos = safeParseArray(updates.store_photos);
-      const removedPhotos = oldPhotos.filter((url) => !newPhotos.includes(url));
-      for (const url of removedPhotos) {
-        const key = extractR2KeyFromUrl(url);
-        if (key) toDelete.push(key);
-      }
-    }
-
-    if (toDelete.length) {
-      await Promise.all(toDelete.map((key) => env.ASSETS.delete(key)));
-      console.log("Cleaned up orphaned images:", toDelete);
-    }
-  } catch (err) {
-    // Cleanup failing must never affect the profile save itself —
-    // worst case is a harmless orphaned file, not a broken update.
-    console.error("Image cleanup failed:", err);
-  }
-}
-
-/**
- * Extracts the R2 object key from one of our own /api/image/... URLs.
- * Returns null for anything else (external URLs, empty values) — we
- * only ever delete files we actually host and control.
- */
 function extractR2KeyFromUrl(url) {
   if (!url || typeof url !== "string") return null;
   const match = url.match(/\/api\/image\/(.+)$/);
