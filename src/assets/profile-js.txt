@@ -14,17 +14,23 @@
 
   // Dark/light theme sync: overlays (inquiry sheet, edit sheet, help sheet,
   // toasts) are built on demand and were previously appended straight to
-  // document.body. That put them as *siblings* of #lp-root instead of
+  // document.body. That put them as *siblings* of .lp-root instead of
   // descendants of it, so the CSS rule `.dark .lp-root` / `body.dark .lp-root`
   // never matched them — they stayed stuck in light mode even when the
   // Blogger toggle was switched to dark. getOverlayHost() gives every
   // overlay-creating function below a single, stable place to attach to
-  // (#lp-root itself once it exists, falling back to mount, then body only
-  // as a last resort) so every modal inherits the same theme variables as
-  // the rest of the page. Do not change overlay-creation code back to
-  // document.body.appendChild — always use getOverlayHost().appendChild(...).
+  // (the .lp-root element itself once it exists, falling back to mount, then
+  // body only as a last resort) so every modal inherits the same theme
+  // variables as the rest of the page.
+  //
+  // IMPORTANT: lp-root is used as a CLASS throughout this file (every
+  // `mount.innerHTML = ...` block below writes `<div class="lp-root">`,
+  // never an id), so this must look it up with querySelector(".lp-root"),
+  // not getElementById("lp-root"). Do not change overlay-creation code
+  // back to document.body.appendChild — always use
+  // getOverlayHost().appendChild(...).
   function getOverlayHost() {
-    return document.getElementById("lp-root") || mount || document.body;
+    return document.querySelector(".lp-root") || mount || document.body;
   }
 
   const params = new URLSearchParams(window.location.search);
@@ -378,7 +384,11 @@
       <span>Add your ${missing.join(", ")} to help your brand stand out.</span>
       <button id="lp-nudge-edit-btn">Complete now</button>
     `;
-    const root = document.getElementById("lp-root");
+    // lp-root is a class, not an id (see getOverlayHost above) — this was
+    // getElementById("lp-root"), which always returned null and would throw
+    // on root.insertBefore(...). Fixed to match by class instead.
+    const root = document.querySelector(".lp-root");
+    if (!root) return;
     root.insertBefore(banner, root.firstChild);
     document.getElementById("lp-nudge-edit-btn").addEventListener("click", () => openEditPanel(p));
   }
