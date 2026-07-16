@@ -664,6 +664,49 @@ body.dark .lp-root,
 .lp-upload-active { background: rgba(24,119,242,0.75); }
 .lp-upload-error { background: rgba(255,59,48,0.85); }
 
+/* "Remove Current" trigger for logo/cover uploads. Previously this was a
+   plain unstyled <button> with no CSS at all, so it rendered as raw
+   browser-default text sitting inside the upload box, overlapping the
+   image. Restyled as a small circular badge pinned to the top-right tip
+   of the box (like a dismiss/close chip), out of the way of the tap-to-
+   upload area and the image preview underneath. Nothing in profile.js
+   was changed to make this work — same element, same id pattern, same
+   click behavior, only new CSS. */
+.lp-image-remove-trigger {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 1.5px solid var(--surface);
+  border-radius: var(--r-pill);
+  background: var(--liyog-red);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.15s var(--ease), background 0.15s ease;
+}
+.lp-image-remove-trigger:hover {
+  background: var(--liyog-red-dark, #C1271A);
+  transform: scale(1.06);
+}
+.lp-image-remove-trigger:focus-visible {
+  outline: 2px solid var(--liyog-blue);
+  outline-offset: 2px;
+}
+.lp-image-remove-trigger:active { transform: scale(0.95); }
+
 .lp-edit-group-sub { font-size: 12.5px; color: var(--ink-faint); margin: -8px 0 14px; }
 .lp-field-hint { font-size: 11.5px; color: var(--ink-faint); margin: 5px 0 0; line-height: 1.4; }
 
