@@ -51,7 +51,44 @@
   --c-website: var(--liyog-orange);
 }
 
-[data-theme="dark"] {
+/* =====================================================================
+   DARK MODE — universal sync layer
+   =====================================================================
+   This block is the ONLY place dark-mode colors are defined. Everything
+   else in this file just references var(--ink), var(--bg), etc., so it
+   automatically re-themes whenever these variables change — no matter
+   which trigger below fires.
+
+   Three triggers, in priority order:
+   1. Blogger toggle → adds class="dark" to <body id="mainContent">.
+   2. Manual override → [data-theme="dark"]/"light" on .lp-root or an
+      ancestor (for embedding this profile outside the Blogger theme).
+   3. OS-level fallback → prefers-color-scheme, only applies when
+      nothing explicit has been set. Defined FIRST so explicit rules
+      below always win by source order. Do not reorder these sections.
+   ===================================================================== */
+
+/* --- 3. OS-level fallback (lowest priority) --- */
+@media (prefers-color-scheme: dark) {
+  .lp-root {
+    --bg: #0F0E0C;
+    --surface: #1A1A1A;
+    --surface-soft: #201E1A;
+    --ink: #F3F0E8;
+    --ink-soft: #B0AA98;
+    --ink-faint: #6D6858;
+    --line: #2E2B24;
+    --shadow-sm: 0 2px 10px rgba(0,0,0,0.35);
+    --shadow-md: 0 10px 28px rgba(0,0,0,0.45);
+    --shadow-lg: 0 24px 56px rgba(0,0,0,0.65);
+  }
+}
+
+/* --- 1. Blogger theme toggle (body.dark) + 2. manual [data-theme="dark"] --- */
+body.dark .lp-root,
+.dark .lp-root,
+[data-theme="dark"],
+[data-theme="dark"] .lp-root {
   --bg: #0F0E0C;
   --surface: #1A1A1A;
   --surface-soft: #201E1A;
@@ -62,6 +99,21 @@
   --shadow-sm: 0 2px 10px rgba(0,0,0,0.35);
   --shadow-md: 0 10px 28px rgba(0,0,0,0.45);
   --shadow-lg: 0 24px 56px rgba(0,0,0,0.65);
+}
+
+/* Explicit light override — wins even if OS is set to dark. */
+[data-theme="light"],
+[data-theme="light"] .lp-root {
+  --bg: #F3F1EA;
+  --surface: #FFFFFF;
+  --surface-soft: #FAF8F2;
+  --ink: #111111;
+  --ink-soft: #625F53;
+  --ink-faint: #9B9686;
+  --line: #E4DFD1;
+  --shadow-sm: 0 2px 10px rgba(17, 17, 17, 0.07);
+  --shadow-md: 0 10px 28px rgba(17, 17, 17, 0.12);
+  --shadow-lg: 0 24px 56px rgba(17, 17, 17, 0.22);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -1152,7 +1204,13 @@ select.lp-field-input {
 }
 .lp-review-form #lp-review-submit-btn { margin-top: 16px; }
 
-@media (prefers-color-scheme: dark) {
-  .lp-review-badge { color: var(--liyog-black); }
-}
+/* .lp-review-badge already uses var(--liyog-black) as its text color
+   (set earlier in the file), and --liyog-black is a fixed brand color,
+   not a theme variable — so it never needs a dark-mode override here.
+   (Previously this file had a stray `@media (prefers-color-scheme: dark)`
+   block re-declaring this same rule. It was harmless on its own, but it
+   was a leftover from before the unified dark-mode layer above existed,
+   and having a second, disconnected dark-mode trigger in the file is
+   exactly the kind of thing that causes future edits to drift out of
+   sync with the Blogger toggle. Removed for a single source of truth.) */
 
