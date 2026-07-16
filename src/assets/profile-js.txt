@@ -12,6 +12,21 @@
   const mount = document.getElementById("liyog-profile-root");
   if (!mount) { console.error("liyog-profile-root not found."); return; }
 
+  // Dark/light theme sync: overlays (inquiry sheet, edit sheet, help sheet,
+  // toasts) are built on demand and were previously appended straight to
+  // document.body. That put them as *siblings* of #lp-root instead of
+  // descendants of it, so the CSS rule `.dark .lp-root` / `body.dark .lp-root`
+  // never matched them — they stayed stuck in light mode even when the
+  // Blogger toggle was switched to dark. getOverlayHost() gives every
+  // overlay-creating function below a single, stable place to attach to
+  // (#lp-root itself once it exists, falling back to mount, then body only
+  // as a last resort) so every modal inherits the same theme variables as
+  // the rest of the page. Do not change overlay-creation code back to
+  // document.body.appendChild — always use getOverlayHost().appendChild(...).
+  function getOverlayHost() {
+    return document.getElementById("lp-root") || mount || document.body;
+  }
+
   const params = new URLSearchParams(window.location.search);
   const slug = params.get("biz");
   const claimSlug = params.get("claim");
@@ -195,7 +210,7 @@
       overlay = document.createElement("div");
       overlay.className = "lp-sheet-overlay";
       overlay.id = "lp-inquiry-sheet-overlay";
-      document.body.appendChild(overlay);
+      getOverlayHost().appendChild(overlay); // was document.body — kept overlay outside .lp-root, breaking dark mode
       overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
     }
 
@@ -394,7 +409,7 @@
           </div>
         </div>
       `;
-      document.body.appendChild(overlay);
+      getOverlayHost().appendChild(overlay); // was document.body — kept overlay outside .lp-root, breaking dark mode
       overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
       document.getElementById("lp-edit-sheet-close").addEventListener("click", () => closeSheet(overlay));
     }
@@ -828,7 +843,7 @@
       overlay = document.createElement("div");
       overlay.className = "lp-sheet-overlay";
       overlay.id = "lp-help-sheet-overlay";
-      document.body.appendChild(overlay);
+      getOverlayHost().appendChild(overlay); // was document.body — kept overlay outside .lp-root, breaking dark mode
       overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
     }
 
@@ -1740,7 +1755,7 @@
     if (!container) {
       container = document.createElement("div");
       container.id = "lp-toast-container";
-      document.body.appendChild(container);
+      getOverlayHost().appendChild(container); // was document.body — kept toasts outside .lp-root, breaking dark mode
     }
     const toast = document.createElement("div");
     toast.className = `lp-toast lp-toast-${type}`;
@@ -1766,6 +1781,3 @@
     return String(str).replace(/"/g, "&quot;");
   }
 })();
-
-
-
