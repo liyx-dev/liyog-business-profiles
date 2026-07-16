@@ -1213,4 +1213,3 @@ select.lp-field-input {
    and having a second, disconnected dark-mode trigger in the file is
    exactly the kind of thing that causes future edits to drift out of
    sync with the Blogger toggle. Removed for a single source of truth.) */
-
