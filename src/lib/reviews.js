@@ -437,6 +437,209 @@ function computeBadges(stats) {
   return badges;
 }
 
+// =====================================================================
+// LiyX AI — review insight generation
+//
+// Storage: brand_review_monthly_summary (name is legacy — behavior is
+// threshold-based, not actually monthly; see maybeGenerateInsight).
+// One row per profile, always overwritten, never accumulates history.
+//
+// IMPORTANT: nothing in this section is ever awaited inline in the
+// request path that responds to a review submission. Callers in
+// index.js must invoke maybeGenerateInsight() via ctx.waitUntil()
+// AFTER the jsonResponse(...) for the review has already been
+// constructed/returned — never before, never inside the same
+// try/catch that guards that response. If the AI call fails or is
+// slow, it must never affect review submission.
+// =====================================================================
+
+const INSIGHT_REGEN_THRESHOLD = 3; // regenerate once this many new reviews have landed since last generation
+const INSIGHT_SOURCE_REVIEW_LIMIT = 25; // live reviews fed to the model (recent + featured mix)
+const INSIGHT_ARCHIVE_SUMMARY_LIMIT = 25; // archived one-line summaries fed to the model
+
+async function getInsight(env, profileId) {
+  const { results } = await env.DB.prepare(
+    "SELECT profile_id, period, summary_text, top_keywords, review_count_at_generation, generated_at FROM brand_review_monthly_summary WHERE profile_id = ?"
+  ).bind(profileId).all();
+  if (!results.length) return null;
+  return {
+    ...results[0],
+    top_keywords: safeParseArray(results[0].top_keywords)
+  };
+}
+
+/**
+ * Decides whether a new LiyX AI insight should be generated for a
+ * profile, and generates+stores it if so. Safe to call after every
+ * review submission and from the scheduled cron — it's a cheap no-op
+ * read (two small queries) whenever regeneration isn't due yet.
+ *
+ * Generation rule:
+ *  - No insight row exists yet AND profile has >= 1 approved review
+ *    -> generate immediately (the "first review" case).
+ *  - Insight row exists AND current rating_count - review_count_at_
+ *    generation >= INSIGHT_REGEN_THRESHOLD -> regenerate.
+ *  - Otherwise -> do nothing.
+ *
+ * Never throws in a way that should reach the caller's user-facing
+ * response — callers should invoke this via ctx.waitUntil() and this
+ * function itself also swallows and logs its own errors as a second
+ * layer of protection.
+ */
+async function maybeGenerateInsight(env, profileId) {
+  try {
+    if (!profileId) return;
+
+    const stats = await getStats(env, profileId);
+    const ratingCount = stats.rating_count || 0;
+    if (ratingCount < 1) return; // nothing to summarize yet
+
+    const existing = await getInsight(env, profileId);
+
+    const shouldGenerate = !existing || (ratingCount - (existing.review_count_at_generation || 0)) >= INSIGHT_REGEN_THRESHOLD;
+    if (!shouldGenerate) return;
+
+    await generateAndStoreInsight(env, profileId, ratingCount);
+  } catch (err) {
+    console.error("maybeGenerateInsight failed:", err);
+    // Swallow — this feature must never surface as a user-facing error.
+  }
+}
+
+/**
+ * Runs the same generation check across every profile that has at
+ * least one review, for the scheduled cron. Cheap to run frequently:
+ * for the vast majority of profiles the threshold check short-circuits
+ * with no AI call and no write.
+ */
+async function runScheduledInsights(env) {
+  const { results: profileIds } = await env.DB.prepare(
+    "SELECT profile_id FROM brand_review_stats WHERE rating_count >= 1"
+  ).all();
+
+  let generated = 0;
+  for (const row of profileIds) {
+    const before = await getInsight(env, row.profile_id);
+    await maybeGenerateInsight(env, row.profile_id);
+    const after = await getInsight(env, row.profile_id);
+    if (!before || (after && after.generated_at !== before.generated_at)) generated++;
+  }
+  return { checked: profileIds.length, generated };
+}
+
+/**
+ * Builds the prompt from live reviews + archived summaries, calls
+ * Workers AI, parses the result, and upserts the single insight row.
+ * Never called directly from a request-response path — only from
+ * maybeGenerateInsight above.
+ */
+async function generateAndStoreInsight(env, profileId, ratingCountAtGeneration) {
+  const { results: profileRows } = await env.DB.prepare(
+    "SELECT business_name FROM profiles WHERE id = ?"
+  ).bind(profileId).all();
+  const businessName = profileRows.length ? profileRows[0].business_name : "This brand";
+
+  // Live reviews: prioritize featured + recent, matching how the
+  // profile page itself already orders reviews (is_featured DESC first).
+  const liveReviews = await listReviews(env, profileId, {
+    sort: "recent",
+    limit: INSIGHT_SOURCE_REVIEW_LIMIT,
+    offset: 0
+  });
+
+  // Archived reviews only ever contribute their short summary + rating
+  // — full archived review text is intentionally never read anywhere,
+  // preserving the "don't store reviews forever" principle.
+  const { results: archivedSummaries } = await env.DB.prepare(
+    `SELECT rating, summary FROM brand_review_archive
+     WHERE profile_id = ? ORDER BY archived_at DESC LIMIT ?`
+  ).bind(profileId, INSIGHT_ARCHIVE_SUMMARY_LIMIT).all();
+
+  const prompt = buildInsightPrompt(businessName, liveReviews, archivedSummaries, ratingCountAtGeneration);
+
+  let parsed;
+  try {
+    const aiResponse = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+      messages: [
+        { role: "system", content: INSIGHT_SYSTEM_PROMPT },
+        { role: "user", content: prompt }
+      ],
+      max_tokens: 300
+    });
+    parsed = parseInsightResponse(aiResponse);
+  } catch (err) {
+    console.error("LiyX AI generation call failed:", err);
+    return; // no partial/garbage row written — leave existing insight (or none) in place
+  }
+
+  if (!parsed || !parsed.summary_text) return;
+
+  await env.DB.prepare(
+    `INSERT INTO brand_review_monthly_summary
+       (profile_id, period, summary_text, top_keywords, review_count_at_generation, generated_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(profile_id) DO UPDATE SET
+       period = excluded.period,
+       summary_text = excluded.summary_text,
+       top_keywords = excluded.top_keywords,
+       review_count_at_generation = excluded.review_count_at_generation,
+       generated_at = datetime('now')`
+  ).bind(
+    profileId,
+    new Date().toISOString().slice(0, 7), // "period" kept as a YYYY-MM stamp of when this snapshot was taken; purely informational, not a behavior driver
+    parsed.summary_text.slice(0, 400),
+    JSON.stringify((parsed.top_keywords || []).slice(0, 6)),
+    ratingCountAtGeneration
+  ).run();
+}
+
+const INSIGHT_SYSTEM_PROMPT = `You are LiyX AI, a review-insight writer for Liyog World, a brand directory. You write short, warm, specific summaries of what customers are saying about a business, based only on the reviews given to you. Never invent details not present in the reviews. Never mention that you are an AI language model or refer to your own limitations. Reply with strict JSON only, no markdown, no commentary, in exactly this shape: {"summary_text": "...", "top_keywords": ["...", "..."]}. summary_text should be 1-3 sentences. top_keywords should be 2-5 short recurring phrases (2-4 words each) pulled from real themes in the reviews, lowercase, no punctuation.`;
+
+function buildInsightPrompt(businessName, liveReviews, archivedSummaries, totalRatingCount) {
+  const lines = [];
+  lines.push(`Business: ${businessName}`);
+  lines.push(`Total reviews so far: ${totalRatingCount}`);
+
+  if (totalRatingCount === 1 && liveReviews.length === 1) {
+    const r = liveReviews[0];
+    lines.push(`This business has exactly ONE review so far. Write a warm, encouraging, specific summary based on this single review — do not say "not enough data" or anything generic. Reflect the actual content of this review.`);
+    lines.push(`Review (${r.rating} stars${r.recommend === 1 ? ", recommends" : ""}): ${r.title ? r.title + " — " : ""}${r.review_text}`);
+    return lines.join("\n");
+  }
+
+  lines.push(`Write a summary that synthesizes common themes across these reviews. Focus on what's repeated, not any single outlier.`);
+  lines.push(`Recent reviews:`);
+  for (const r of liveReviews) {
+    lines.push(`- (${r.rating} stars${r.recommend === 1 ? ", recommends" : r.recommend === 0 ? ", does not recommend" : ""}) ${r.title ? r.title + ": " : ""}${r.review_text}`);
+  }
+  if (archivedSummaries.length) {
+    lines.push(`Older reviews (summarized only):`);
+    for (const a of archivedSummaries) {
+      lines.push(`- (${a.rating} stars) ${a.summary || ""}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function parseInsightResponse(aiResponse) {
+  const text = (aiResponse && (aiResponse.response || aiResponse.result || aiResponse)) || "";
+  const raw = typeof text === "string" ? text : JSON.stringify(text);
+  try {
+    // Model may wrap JSON in a code fence despite instructions; strip if present.
+    const cleaned = raw.replace(/```json\s*|\s*```/g, "").trim();
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned);
+    if (!parsed.summary_text || typeof parsed.summary_text !== "string") return null;
+    return {
+      summary_text: parsed.summary_text.trim(),
+      top_keywords: Array.isArray(parsed.top_keywords) ? parsed.top_keywords.filter((k) => typeof k === "string").map((k) => k.trim()).filter(Boolean) : []
+    };
+  } catch (err) {
+    console.error("Failed to parse LiyX AI response:", err, raw.slice(0, 200));
+    return null;
+  }
+}
+
 module.exports = {
   createReview,
   setReaction,
@@ -450,5 +653,9 @@ module.exports = {
   runScheduledArchive,
   recalculateStats,
   buildFingerprint,
-  UserFacingError
+  UserFacingError,
+  getInsight,
+  maybeGenerateInsight,
+  runScheduledInsights
 };
+
