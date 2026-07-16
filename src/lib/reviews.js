@@ -58,8 +58,8 @@ async function hasAlreadyReviewed(env, profileId, { userId, fingerprint }) {
 
 // ---------------------------------------------------------------------
 // Review text -> short summary extraction (used at archive time).
-// Heuristic fallback — used only if the AI call fails, so archiving
-// never blocks or breaks on an AI hiccup.
+// Lightweight heuristic now; designed to be swapped for an AI call
+// later without changing the archive table shape.
 // ---------------------------------------------------------------------
 function extractSummary(reviewText, title) {
   const source = (title ? `${title}. ` : "") + (reviewText || "");
@@ -68,35 +68,6 @@ function extractSummary(reviewText, title) {
   const firstSentence = cleaned.split(/(?<=[.!?])\s/)[0];
   const base = firstSentence.length <= 100 ? firstSentence : cleaned.slice(0, 80) + "…";
   return base;
-}
-
-/**
- * LiyX AI — Touch-point 1: summarizes a single review into ~10 words
- * before its full text is discarded at archive time. Falls back to the
- * heuristic extractSummary() if Workers AI is unavailable or errors,
- * so archiving (and thus the live-cap enforcement) never fails because
- * of an AI outage.
- */
-async function aiSummarizeReview(env, reviewText, title, rating) {
-  if (!env.AI) return extractSummary(reviewText, title);
-  try {
-    const prompt = `Summarize this customer review in under 12 words. Capture the sentiment and the single most important point. Do not use quotation marks. Do not start with "The reviewer" or "This review" — write it as a short standalone phrase.
-
-Rating: ${rating}/5
-${title ? `Title: ${title}\n` : ""}Review: ${reviewText}`;
-
-    const result = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 40
-    });
-
-    const text = (result?.response || "").replace(/^["']|["']$/g, "").replace(/\s+/g, " ").trim();
-    if (!text || text.length > 200) return extractSummary(reviewText, title); // sanity guard against a malformed/empty AI response
-    return text;
-  } catch (err) {
-    console.error("aiSummarizeReview failed, using heuristic fallback:", err);
-    return extractSummary(reviewText, title);
-  }
 }
 
 // ---------------------------------------------------------------------
@@ -278,14 +249,13 @@ async function enforceLiveCap(env, profileId) {
 
   for (const review of overflow) {
     const archiveId = crypto.randomUUID();
-    const summary = await aiSummarizeReview(env, review.review_text, review.title, review.rating);
     await env.DB.prepare(
       `INSERT INTO brand_review_archive
          (id, profile_id, source_review_id, rating, recommend, summary, original_created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       archiveId, profileId, review.id, review.rating, review.recommend,
-      summary, review.created_at
+      extractSummary(review.review_text, review.title), review.created_at
     ).run();
     await env.DB.prepare("DELETE FROM brand_reviews WHERE id = ?").bind(review.id).run();
   }
@@ -467,172 +437,6 @@ function computeBadges(stats) {
   return badges;
 }
 
-// ---------------------------------------------------------------------
-// LiyX AI — Touch-point 2: brand insight rollup. One row per profile,
-// overwritten every generation (no history kept). Two triggers:
-//   1. Immediately, the first time a profile gets its first review —
-//      so even a brand-new profile shows a premium "AI Insight" from
-//      day one instead of waiting weeks for a monthly cron.
-//   2. On the monthly cron, but ONLY for profiles that picked up 3+
-//      new reviews since the last generation — this is what keeps AI
-//      calls cheap: quiet profiles are skipped entirely, active ones
-//      stay fresh.
-// ---------------------------------------------------------------------
-
-const REGENERATE_AFTER_N_NEW_REVIEWS = 3;
-
-/** Total signal available for a profile right now — live + archived. */
-async function getReviewSignalCount(env, profileId) {
-  const { results } = await env.DB.prepare(
-    `SELECT
-       (SELECT COUNT(*) FROM brand_reviews WHERE profile_id = ? AND moderation_status = 'approved') +
-       (SELECT COUNT(*) FROM brand_review_archive WHERE profile_id = ?) AS total`
-  ).bind(profileId, profileId).all();
-  return results[0]?.total || 0;
-}
-
-/**
- * Call this right after a review is successfully created (fire-and-
- * forget, via ctx.waitUntil at the route level — never blocks the
- * review submission response). Generates the FIRST insight the moment
- * a profile has at least 1 review, so new brands feel premium
- * immediately. After that, this is a no-op until the monthly cron
- * decides a real regeneration is due — so this hook never causes
- * repeated AI calls on every single new review.
- */
-async function maybeGenerateRollupOnNewReview(env, profileId) {
-  const existing = await getMonthlyRollupRaw(env, profileId);
-  if (existing) return; // already has an insight — monthly cron owns regeneration from here
-  await generateMonthlyRollup(env, profileId);
-}
-
-async function getMonthlyRollupRaw(env, profileId) {
-  const { results } = await env.DB.prepare(
-    `SELECT * FROM brand_review_monthly_summary WHERE profile_id = ?`
-  ).bind(profileId).all();
-  return results.length ? results[0] : null;
-}
-
-async function generateMonthlyRollup(env, profileId) {
-  if (!env.AI) return null; // Workers AI not bound — skip silently, this is a nice-to-have feature
-
-  const { results: liveReviews } = await env.DB.prepare(
-    `SELECT rating, title, review_text FROM brand_reviews
-     WHERE profile_id = ? AND moderation_status = 'approved'
-     ORDER BY created_at DESC LIMIT 100`
-  ).bind(profileId).all();
-
-  const { results: archivedSummaries } = await env.DB.prepare(
-    `SELECT rating, summary FROM brand_review_archive
-     WHERE profile_id = ? ORDER BY archived_at DESC LIMIT 50`
-  ).bind(profileId).all();
-
-  const totalCount = liveReviews.length + archivedSummaries.length;
-  if (totalCount < 1) return null; // nothing to summarize at all
-
-  const reviewLines = [
-    ...liveReviews.map((r) => `[${r.rating}★] ${r.title ? r.title + ": " : ""}${r.review_text}`),
-    ...archivedSummaries.map((r) => `[${r.rating}★] ${r.summary}`)
-  ].slice(0, 100).join("\n");
-
-  const isSingleReview = totalCount === 1;
-  const prompt = isSingleReview
-    ? `You are analyzing the first customer review for a new business. Based on the review below, write a short, warm 1 sentence insight highlighting the key positive point (or honest concern, if the review is negative). Do not start with "The reviewer" or "This review".
-
-Respond ONLY in this exact JSON format, nothing else:
-{"summary": "...", "keywords": ["...", "..."]}
-
-Review:
-${reviewLines}`
-    : `You are analyzing customer reviews for a business. Based on the reviews below, write:
-1. A short 1-2 sentence summary of what customers commonly say (start directly with the insight, e.g. "Customers frequently mention...")
-2. A list of 3-5 short keyword phrases (2-3 words each) that came up repeatedly
-
-Respond ONLY in this exact JSON format, nothing else:
-{"summary": "...", "keywords": ["...", "..."]}
-
-Reviews:
-${reviewLines}`;
-
-  try {
-    const result = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 200
-    });
-
-    const raw = (result?.response || "").trim();
-    const jsonMatch = raw.match(/\{[\s\S]*\}/); // tolerate the model wrapping JSON in prose/backticks
-    if (!jsonMatch) throw new Error("AI response did not contain valid JSON");
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    const summaryText = (parsed.summary || "").slice(0, 300);
-    const keywords = Array.isArray(parsed.keywords) ? parsed.keywords.slice(0, 5) : [];
-    if (!summaryText) throw new Error("AI response missing summary text");
-
-    const period = new Date().toISOString().slice(0, 7); // "2026-07"
-
-    await env.DB.prepare(
-      `INSERT INTO brand_review_monthly_summary (profile_id, period, summary_text, top_keywords, review_count_at_generation, generated_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(profile_id) DO UPDATE SET
-         period = excluded.period,
-         summary_text = excluded.summary_text,
-         top_keywords = excluded.top_keywords,
-         review_count_at_generation = excluded.review_count_at_generation,
-         generated_at = datetime('now')`
-    ).bind(profileId, period, summaryText, JSON.stringify(keywords), totalCount).run();
-
-    return { summaryText, keywords };
-  } catch (err) {
-    console.error(`generateMonthlyRollup failed for profile ${profileId}:`, err);
-    return null; // never throw — this is a background enhancement, not a critical path
-  }
-}
-
-/**
- * Called from the monthly cron. Regenerates ONLY for profiles that
- * have picked up REGENERATE_AFTER_N_NEW_REVIEWS or more new reviews
- * since their last generation — this is the cost-control mechanism.
- * Profiles with an insight already and no meaningful new signal are
- * skipped entirely (zero AI calls), keeping this cheap at scale.
- */
-async function runMonthlyRollupForAllProfiles(env) {
-  const { results: candidates } = await env.DB.prepare(
-    `SELECT DISTINCT profile_id FROM brand_reviews WHERE moderation_status = 'approved'
-     UNION
-     SELECT DISTINCT profile_id FROM brand_review_archive`
-  ).all();
-
-  let generated = 0, skipped = 0;
-  for (const row of candidates) {
-    const profileId = row.profile_id;
-    const existing = await getMonthlyRollupRaw(env, profileId);
-    const currentCount = await getReviewSignalCount(env, profileId);
-
-    if (existing && (currentCount - existing.review_count_at_generation) < REGENERATE_AFTER_N_NEW_REVIEWS) {
-      skipped++;
-      continue; // not enough new signal yet — save the AI call
-    }
-
-    const result = await generateMonthlyRollup(env, profileId);
-    if (result) generated++;
-  }
-  return { profilesChecked: candidates.length, rollupsGenerated: generated, skipped };
-}
-
-async function getMonthlyRollup(env, profileId) {
-  const { results } = await env.DB.prepare(
-    `SELECT summary_text, top_keywords, period, generated_at FROM brand_review_monthly_summary WHERE profile_id = ?`
-  ).bind(profileId).all();
-  if (!results.length) return null;
-  return {
-    summary_text: results[0].summary_text,
-    top_keywords: safeParseArray(results[0].top_keywords),
-    period: results[0].period,
-    generated_at: results[0].generated_at
-  };
-}
-
 module.exports = {
   createReview,
   setReaction,
@@ -646,9 +450,5 @@ module.exports = {
   runScheduledArchive,
   recalculateStats,
   buildFingerprint,
-  runMonthlyRollupForAllProfiles,
-  generateMonthlyRollup,
-  maybeGenerateRollupOnNewReview,
-  getMonthlyRollup,
   UserFacingError
 };
