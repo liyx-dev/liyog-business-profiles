@@ -559,7 +559,7 @@ async function generateAndStoreInsight(env, profileId, ratingCountAtGeneration) 
 
   let parsed;
   try {
-    const aiResponse = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+    const aiResponse = await env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
       messages: [
         { role: "system", content: INSIGHT_SYSTEM_PROMPT },
         { role: "user", content: prompt }
@@ -567,6 +567,9 @@ async function generateAndStoreInsight(env, profileId, ratingCountAtGeneration) 
       max_tokens: 300
     });
     parsed = parseInsightResponse(aiResponse);
+    if (!parsed) {
+      console.error("LiyX AI: raw response could not be parsed:", JSON.stringify(aiResponse));
+    }
   } catch (err) {
     console.error("LiyX AI generation call failed:", err);
     return; // no partial/garbage row written — leave existing insight (or none) in place
