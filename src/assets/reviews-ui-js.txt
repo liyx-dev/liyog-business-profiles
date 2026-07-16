@@ -72,7 +72,7 @@
   // ---------------------------------------------------------------------
   // Rating summary + horizontal bar chart (5★ down to 1★)
   // ---------------------------------------------------------------------
-  function renderRatingSummary(stats, badges, aiInsight) {
+  function renderRatingSummary(stats, badges) {
     const total = stats.rating_count || 0;
     const avg = stats.average_rating || 0;
     const rows = [5, 4, 3, 2, 1].map((n) => {
@@ -88,7 +88,6 @@
     }).join("");
 
     const badgesHtml = (badges || []).slice(0, 3).map((b) => `<span class="lp-review-badge">${escapeHtml(b)}</span>`).join("");
-    const aiInsightHtml = renderAiInsight(aiInsight);
 
     return `
       <div class="lp-rating-score">
@@ -98,50 +97,13 @@
       </div>
       <div class="lp-rating-bars">${rows}</div>
       ${badgesHtml ? `<div class="lp-review-badges-row">${badgesHtml}</div>` : ""}
-      ${aiInsightHtml}
     `;
   }
 
   // ---------------------------------------------------------------------
   // Like / dislike reaction bar
   // ---------------------------------------------------------------------
-  // ---------------------------------------------------------------------
-  // LiyX AI insight — small badge + short summary text, styled like
-  // Google Play's "AI-generated review summary" treatment. The sparkle
-  // icon below is a placeholder; it gets replaced with the real LiyX AI
-  // logo (traced to SVG) once provided.
-  // ---------------------------------------------------------------------
-  function liyxSparkleSvg(size = 16) {
-    return `
-<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" class="lp-liyx-sparkle">
-  <path d="M12 2l1.8 5.6L19.4 9l-5.6 1.8L12 16.4l-1.8-5.6L4.6 9l5.6-1.8L12 2z" fill="url(#liyx-grad)"/>
-  <path d="M19 14l0.7 2.1L22 17l-2.3 0.7L19 20l-0.7-2.3L16 17l2.3-0.9L19 14z" fill="url(#liyx-grad)" opacity="0.8"/>
-  <defs>
-    <linearGradient id="liyx-grad" x1="0" y1="0" x2="24" y2="24">
-      <stop offset="0%" stop-color="var(--liyog-green-light)"/>
-      <stop offset="100%" stop-color="var(--liyog-gold)"/>
-    </linearGradient>
-  </defs>
-</svg>`.trim();
-  }
-
-  function renderAiInsight(aiInsight) {
-    if (!aiInsight || !aiInsight.summary_text) return "";
-    const keywordsHtml = (aiInsight.top_keywords || []).slice(0, 5)
-      .map((k) => `<span class="lp-ai-keyword">${escapeHtml(k)}</span>`).join("");
-
-    return `
-      <div class="lp-ai-insight-card">
-        <div class="lp-ai-insight-header">
-          ${liyxSparkleSvg(18)}
-          <span class="lp-ai-insight-label">LiyX AI Insight</span>
-        </div>
-        <p class="lp-ai-insight-text">${escapeHtml(aiInsight.summary_text)}</p>
-        ${keywordsHtml ? `<div class="lp-ai-keywords-row">${keywordsHtml}</div>` : ""}
-      </div>`;
-  }
-
-
+  function renderReactionBar(stats, myReaction) {
     const likes = stats.likes_count || 0;
     const dislikes = stats.dislikes_count || 0;
     return `
@@ -221,16 +183,7 @@
     const summaryEl = document.getElementById("lp-rating-summary");
     const listEl = document.getElementById("lp-reviews-list");
     const viewAllBtn = document.getElementById("lp-view-all-reviews");
-
-    // TEMP DEBUG — shows exactly why mountReviews stopped, if it did.
-    if (!section || !summaryEl || !listEl) {
-      var banner = document.createElement("div");
-      banner.style.cssText = "position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#c1271a;color:#fff;padding:12px;font-size:12px;font-family:monospace;white-space:pre-wrap;";
-      banner.textContent = "mountReviews stopped early.\nsection found: " + !!section + "\nsummaryEl found: " + !!summaryEl + "\nlistEl found: " + !!listEl;
-      document.body.appendChild(banner);
-      return;
-    }
-    // END TEMP DEBUG
+    if (!section || !summaryEl || !listEl) return;
 
     const stats = p.review_stats || { rating_count: 0 };
     const hasAnyReviews = (stats.rating_count || 0) > 0;
@@ -240,7 +193,7 @@
     // viewer can be the first to review — this is the growth surface.
     section.hidden = false;
 
-    summaryEl.innerHTML = renderRatingSummary(stats, p.review_badges, p.ai_insight);
+    summaryEl.innerHTML = renderRatingSummary(stats, p.review_badges);
 
     const reactionMount = document.createElement("div");
     reactionMount.innerHTML = renderReactionBar(stats, p.my_reaction);
@@ -621,33 +574,5 @@
   }
 
   // Expose the mount function for profile-js.txt to call.
-  // TEMP DEBUG — wraps mountReviews so we can see on-screen whether it's
-  // ever actually being called by profile-js.txt at all.
-  window.LiyogReviews = {
-    mountReviews: function (p, isOwner) {
-      var marker = document.createElement("div");
-      marker.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;background:#228B22;color:#fff;padding:8px;font-size:11px;font-family:monospace;";
-      marker.textContent = "mountReviews WAS called. p.id=" + (p && p.id) + " isOwner=" + isOwner;
-      document.body.appendChild(marker);
-      return mountReviews(p, isOwner);
-    }
-  };
-  // END TEMP DEBUG
-
-  // ---------------------------------------------------------------------
-  // TEMPORARY DEBUG AID — shows any JS error directly on the page as a
-  // small red banner, since there's no desktop console available right
-  // now. Safe to leave in short-term; remove once the section is
-  // confirmed stable again (search "TEMP DEBUG" to find both ends).
-  // ---------------------------------------------------------------------
-  window.addEventListener("error", function (e) {
-    var existing = document.getElementById("lp-temp-debug-banner");
-    if (existing) return; // only show the first error, avoid banner spam
-    var banner = document.createElement("div");
-    banner.id = "lp-temp-debug-banner";
-    banner.style.cssText = "position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#c1271a;color:#fff;padding:12px;font-size:12px;font-family:monospace;white-space:pre-wrap;max-height:40vh;overflow:auto;";
-    banner.textContent = "JS ERROR: " + e.message + "\n\nFile: " + e.filename + "\nLine: " + e.lineno + ":" + e.colno;
-    document.body.appendChild(banner);
-  });
-  // END TEMP DEBUG
+  window.LiyogReviews = { mountReviews };
 })();
