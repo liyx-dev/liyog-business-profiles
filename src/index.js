@@ -687,7 +687,13 @@ if (url.pathname === "/reviews-ui.js") {
           clientDeviceSignal: body.device_signal,
           checkText
         });
-        return jsonResponse({ success: true, ...result });
+        const response = jsonResponse({ success: true, ...result });
+        // LiyX AI: fire-and-forget. Runs after the response above is already
+        // being sent — never awaited, never able to delay or fail review
+        // submission. maybeGenerateInsight() itself also swallows its own
+        // errors as a second layer of protection.
+        ctx.waitUntil(reviews.maybeGenerateInsight(env, body.profile_id));
+        return response;
       } catch (err) {
         if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
         console.error("createReview failed:", err);
@@ -797,6 +803,7 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
     profile.review_stats = reviewStats;
     profile.review_badges = reviews.computeBadges(reviewStats);
     profile.my_reaction = await reviews.getMyReaction(env, profile.id, request, url.searchParams.get("ds"));
+    profile.review_insight = await reviews.getInsight(env, profile.id); // LiyX AI — null if none generated yet
 
     return jsonResponse({ found: true, profile });
 
@@ -805,6 +812,7 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
   async scheduled(event, env, ctx) {
     ctx.waitUntil(cleanupOldLogs(env));
     ctx.waitUntil(reviews.runScheduledArchive(env));
+    ctx.waitUntil(reviews.runScheduledInsights(env)); // LiyX AI — regenerates insights for profiles with 3+ new reviews since last generation
   }
 };
 
