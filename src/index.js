@@ -654,7 +654,12 @@ if (url.pathname === "/reviews-ui.js") {
       const profileId = url.pathname.split("/")[3];
       const sort = url.searchParams.get("sort") || "recent";
       const offset = parseInt(url.searchParams.get("offset") || "0", 10) || 0;
-      const list = await reviews.listReviews(env, profileId, { sort, offset, limit: 20 });
+
+      const sessionToken = getCookie(request, "liyog_session");
+      const viewerUserId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      const viewerFingerprint = viewerUserId ? null : await reviews.buildFingerprint(request, url.searchParams.get("ds"));
+
+      const list = await reviews.listReviews(env, profileId, { sort, offset, limit: 20, viewerUserId, viewerFingerprint });
       return jsonResponse({ reviews: list });
     }
 
@@ -741,6 +746,83 @@ if (url.pathname === "/reviews-ui.js") {
       } catch (err) {
         if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
         console.error("setFeatured failed:", err);
+        return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
+      }
+    }
+
+    // PATCH /api/reviews/:reviewId — the review's own author edits it.
+    // Deliberately NOT gated behind ownerId/profile ownership — this is
+    // an author-only action, checked entirely inside reviews.editReview
+    // via the same userId/fingerprint identity used at creation time.
+    if (url.pathname.match(/^\/api\/reviews\/[^/]+$/) && request.method === "PATCH") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+
+      const reviewId = url.pathname.split("/")[3];
+      const body = await request.json();
+      try {
+        const result = await reviews.editReview(env, {
+          reviewId,
+          userId,
+          request,
+          clientDeviceSignal: body.device_signal,
+          rating: parseInt(body.rating, 10),
+          recommend: typeof body.recommend === "boolean" ? body.recommend : null,
+          title: body.title,
+          reviewText: body.review_text,
+          checkText
+        });
+        ctx.waitUntil(reviews.maybeGenerateInsight(env, result.profileId));
+        return jsonResponse(result);
+      } catch (err) {
+        if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
+        console.error("editReview failed:", err);
+        return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
+      }
+    }
+
+    // DELETE /api/reviews/:reviewId — the review's own author deletes it.
+    // Same author-only scoping as PATCH above — never available to the
+    // profile owner, only to whoever originally wrote the review.
+    if (url.pathname.match(/^\/api\/reviews\/[^/]+$/) && request.method === "DELETE") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+
+      const reviewId = url.pathname.split("/")[3];
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await reviews.deleteReview(env, {
+          reviewId,
+          userId,
+          request,
+          clientDeviceSignal: body.device_signal
+        });
+        return jsonResponse(result);
+      } catch (err) {
+        if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
+        console.error("deleteReview failed:", err);
+        return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
+      }
+    }
+
+    // POST /api/reviews/:reviewId/report — anyone (visitor or profile
+    // owner) flags a review for manual review. Never auto-hides
+    // anything — just queues it in review_reports for a human to check.
+    if (url.pathname.match(/^\/api\/reviews\/[^/]+\/report$/) && request.method === "POST") {
+      const reviewId = url.pathname.split("/")[3];
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await reviews.reportReview(env, {
+          reviewId,
+          reason: body.reason,
+          details: body.details,
+          request,
+          clientDeviceSignal: body.device_signal
+        });
+        return jsonResponse(result);
+      } catch (err) {
+        if (err instanceof reviews.UserFacingError) return jsonResponse({ error: err.message }, err.status);
+        console.error("reportReview failed:", err);
         return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
       }
     }
