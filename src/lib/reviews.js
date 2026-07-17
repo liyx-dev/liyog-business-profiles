@@ -329,15 +329,15 @@ function safeParseArray(val) {
   catch (e) { return []; }
 }
 
-async function listReviews(env, profileId, { sort = "recent", limit = 20, offset = 0, featuredOnly = false } = {}) {
+async function listReviews(env, profileId, { sort = "recent", limit = 20, offset = 0, featuredOnly = false, viewerUserId = null, viewerFingerprint = null } = {}) {
   const orderBy = SORT_COLUMNS[sort] || SORT_COLUMNS.recent;
   const featuredClause = featuredOnly ? "AND r.is_featured = 1" : "";
   const { results } = await env.DB.prepare(
-    `SELECT r.id, r.profile_id, r.author_user_id, r.author_profile_id, r.author_name,
+    `SELECT r.id, r.profile_id, r.author_user_id, r.author_profile_id, r.author_name, r.device_hash,
             u.display_name AS user_display_name,
             ap.business_name AS author_profile_name,
             r.rating, r.recommend, r.title, r.review_text, r.photos, r.owner_reply, r.owner_replied_at,
-            r.helpful_count, r.is_verified_customer, r.is_featured, r.created_at
+            r.helpful_count, r.is_verified_customer, r.is_featured, r.is_edited, r.created_at
      FROM brand_reviews r
      LEFT JOIN users u ON u.id = r.author_user_id
      LEFT JOIN profiles ap ON ap.id = r.author_profile_id
@@ -346,12 +346,21 @@ async function listReviews(env, profileId, { sort = "recent", limit = 20, offset
      LIMIT ? OFFSET ?`
   ).bind(profileId, limit, offset).all();
 
-  return results.map((r) => ({
-    ...r,
-    photos: safeParseArray(r.photos),
-    // Resolution order: brand-profile author name > logged-in user's real name > typed anonymous name > "Anonymous"
-    display_name: r.author_profile_name || r.user_display_name || r.author_name || "Anonymous"
-  }));
+  return results.map((r) => {
+    const isMine = (viewerUserId && r.author_user_id === viewerUserId) ||
+                   (!viewerUserId && viewerFingerprint && r.device_hash === viewerFingerprint);
+    // device_hash is intentionally never sent to the client — only the
+    // derived is_mine boolean is, so no visitor's fingerprint leaks to
+    // another visitor via the reviews list.
+    const { device_hash, ...safe } = r;
+    return {
+      ...safe,
+      photos: safeParseArray(r.photos),
+      // Resolution order: brand-profile author name > logged-in user's real name > typed anonymous name > "Anonymous"
+      display_name: r.author_profile_name || r.user_display_name || r.author_name || "Anonymous",
+      is_mine: !!isMine
+    };
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -411,6 +420,119 @@ async function voteHelpful(env, { reviewId, request, clientDeviceSignal }) {
     // Primary key conflict = already voted; treat as a no-op, not an error.
     return { success: true, alreadyVoted: true };
   }
+}
+
+// ---------------------------------------------------------------------
+// Author actions: edit, delete.
+// Deliberately separate from owner actions above — a review's author
+// (the reviewer) and a profile's owner (the business) have completely
+// different, non-overlapping powers. The business owner can reply to
+// and feature reviews, but can never edit or delete someone else's
+// review — that stays exclusively with whoever wrote it, same as
+// Google/Yelp. This keeps ratings trustworthy: a business can't quietly
+// remove reviews it doesn't like.
+// ---------------------------------------------------------------------
+
+/**
+ * Confirms the requester is the original author of a review, via the
+ * same dual userId/fingerprint identity check createReview already
+ * uses for the "one review per profile" rule — a logged-in author is
+ * matched by user_id, an anonymous author by their device fingerprint.
+ */
+async function assertIsReviewAuthor(env, reviewId, { userId, fingerprint }) {
+  const { results } = await env.DB.prepare(
+    `SELECT author_user_id, device_hash, profile_id FROM brand_reviews WHERE id = ?`
+  ).bind(reviewId).all();
+  if (!results.length) return null;
+
+  const review = results[0];
+  const owns = (userId && review.author_user_id === userId) ||
+               (!userId && fingerprint && review.device_hash === fingerprint);
+  return owns ? review : null;
+}
+
+/**
+ * Lets a review's original author edit their own rating/title/text.
+ * Re-runs the same moderation check createReview uses — an edit that
+ * introduces banned content gets bounced back to 'pending' just like
+ * a brand-new review would, it doesn't stay silently approved.
+ * Marks is_edited so the frontend can show an "edited" note, matching
+ * how Google/Amazon are transparent about edited reviews.
+ */
+async function editReview(env, { reviewId, userId, request, clientDeviceSignal, rating, recommend, title, reviewText, checkText }) {
+  if (!rating || rating < 1 || rating > 5) throw new UserFacingError("Please choose a star rating");
+  if (!reviewText || !reviewText.trim()) throw new UserFacingError("Please write a short review");
+  if (reviewText.length > 1000) throw new UserFacingError("Review is too long");
+
+  const fingerprint = await buildFingerprint(request, clientDeviceSignal);
+  const review = await assertIsReviewAuthor(env, reviewId, { userId, fingerprint });
+  if (!review) throw new UserFacingError("Not authorized", 403);
+
+  const titleCheck = checkText(title || "");
+  const textCheck = checkText(reviewText);
+  const moderationStatus = (!titleCheck.passed || !textCheck.passed) ? "pending" : "approved";
+
+  await env.DB.prepare(
+    `UPDATE brand_reviews
+       SET rating = ?, recommend = ?, title = ?, review_text = ?, moderation_status = ?,
+           is_edited = 1, updated_at = datetime('now')
+     WHERE id = ?`
+  ).bind(
+    rating, recommend === true ? 1 : recommend === false ? 0 : null,
+    (title || "").slice(0, 100), reviewText.slice(0, 1000), moderationStatus, reviewId
+  ).run();
+
+  await recalculateStats(env, review.profile_id);
+
+  return { success: true, moderationStatus, profileId: review.profile_id };
+}
+
+/**
+ * Lets a review's original author delete it outright. Only ever the
+ * author — never the profile owner, never an admin path through this
+ * function. Recalculates stats immediately since a rating disappears.
+ */
+async function deleteReview(env, { reviewId, userId, request, clientDeviceSignal }) {
+  const fingerprint = await buildFingerprint(request, clientDeviceSignal);
+  const review = await assertIsReviewAuthor(env, reviewId, { userId, fingerprint });
+  if (!review) throw new UserFacingError("Not authorized", 403);
+
+  await env.DB.prepare(`DELETE FROM brand_reviews WHERE id = ?`).bind(reviewId).run();
+  await env.DB.prepare(`DELETE FROM review_helpful_votes WHERE review_id = ?`).bind(reviewId).run();
+
+  await recalculateStats(env, review.profile_id);
+
+  return { success: true };
+}
+
+// ---------------------------------------------------------------------
+// Reporting — a human-in-the-loop safety net for whatever checkText's
+// keyword blocklist doesn't catch (coherent-but-fake reviews, off-topic
+// content, defamation, etc). Anyone can report, including the profile
+// owner — but reporting never auto-hides a review; it only queues it
+// for manual review, same as Google Business Profile's "flag" action.
+// ---------------------------------------------------------------------
+
+const REPORT_REASONS = ["fake", "offensive", "spam", "off_topic", "other"];
+
+async function reportReview(env, { reviewId, reason, details, request, clientDeviceSignal }) {
+  if (!REPORT_REASONS.includes(reason)) throw new UserFacingError("Invalid report reason");
+
+  const { results } = await env.DB.prepare(`SELECT id FROM brand_reviews WHERE id = ?`).bind(reviewId).all();
+  if (!results.length) throw new UserFacingError("Review not found", 404);
+
+  const fingerprint = await buildFingerprint(request, clientDeviceSignal);
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO review_reports (id, review_id, reporter_fingerprint, reason, details) VALUES (?, ?, ?, ?, ?)`
+    ).bind(crypto.randomUUID(), reviewId, fingerprint, reason, (details || "").slice(0, 300)).run();
+  } catch (e) {
+    // UNIQUE(review_id, reporter_fingerprint) conflict = already reported; treat as a no-op.
+    return { success: true, alreadyReported: true };
+  }
+
+  return { success: true, alreadyReported: false };
 }
 
 // ---------------------------------------------------------------------
@@ -659,6 +781,9 @@ module.exports = {
   UserFacingError,
   getInsight,
   maybeGenerateInsight,
-  runScheduledInsights
+  runScheduledInsights,
+  editReview,
+  deleteReview,
+  reportReview
 };
 
