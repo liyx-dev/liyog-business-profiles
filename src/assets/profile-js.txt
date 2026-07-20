@@ -12,23 +12,6 @@
   const mount = document.getElementById("liyog-profile-root");
   if (!mount) { console.error("liyog-profile-root not found."); return; }
 
-  // Dark/light theme sync: overlays (inquiry sheet, edit sheet, help sheet,
-  // toasts) are built on demand and were previously appended straight to
-  // document.body. That put them as *siblings* of .lp-root instead of
-  // descendants of it, so the CSS rule `.dark .lp-root` / `body.dark .lp-root`
-  // never matched them — they stayed stuck in light mode even when the
-  // Blogger toggle was switched to dark. getOverlayHost() gives every
-  // overlay-creating function below a single, stable place to attach to
-  // (the .lp-root element itself once it exists, falling back to mount, then
-  // body only as a last resort) so every modal inherits the same theme
-  // variables as the rest of the page.
-  //
-  // IMPORTANT: lp-root is used as a CLASS throughout this file (every
-  // `mount.innerHTML = ...` block below writes `<div class="lp-root">`,
-  // never an id), so this must look it up with querySelector(".lp-root"),
-  // not getElementById("lp-root"). Do not change overlay-creation code
-  // back to document.body.appendChild — always use
-  // getOverlayHost().appendChild(...).
   function getOverlayHost() {
     return document.querySelector(".lp-root") || mount || document.body;
   }
@@ -117,6 +100,7 @@
     bindInquiry(p);
     bindBio(p);
     bindGallery(safeParseArray(p.store_photos), p.business_name);
+    bindProducts(p, isOwner); // <--- ADDED PRODUCT BINDING HERE
     bindReviews(p, isOwner);
     bindVideo(p.youtube_url, p.business_name);
     bindMap(p);
@@ -216,7 +200,7 @@
       overlay = document.createElement("div");
       overlay.className = "lp-sheet-overlay";
       overlay.id = "lp-inquiry-sheet-overlay";
-      getOverlayHost().appendChild(overlay); // was document.body — kept overlay outside .lp-root, breaking dark mode
+      getOverlayHost().appendChild(overlay); 
       overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
     }
 
@@ -384,9 +368,6 @@
       <span>Add your ${missing.join(", ")} to help your brand stand out.</span>
       <button id="lp-nudge-edit-btn">Complete now</button>
     `;
-    // lp-root is a class, not an id (see getOverlayHost above) — this was
-    // getElementById("lp-root"), which always returned null and would throw
-    // on root.insertBefore(...). Fixed to match by class instead.
     const root = document.querySelector(".lp-root");
     if (!root) return;
     root.insertBefore(banner, root.firstChild);
@@ -399,6 +380,7 @@
       overlay = document.createElement("div");
       overlay.className = "lp-sheet-overlay";
       overlay.id = "lp-edit-sheet-overlay";
+      // ADDED PRODUCTS TAB AND PANEL HERE
       overlay.innerHTML = `
         <div class="lp-sheet lp-edit-sheet">
           <div class="lp-sheet-top-bar">
@@ -410,6 +392,7 @@
           <div class="lp-edit-tabs">
             <button type="button" class="lp-edit-tab lp-edit-tab-active" id="lp-tab-details">Details</button>
             <button type="button" class="lp-edit-tab" id="lp-tab-inquiries">Inquiries <span class="lp-edit-tab-badge" id="lp-inquiries-count" hidden></span></button>
+            <button type="button" class="lp-edit-tab" id="lp-tab-products">Products</button>
           </div>
           <div id="lp-tab-panel-details">
             <form id="lp-edit-form"></form>
@@ -417,9 +400,10 @@
           <div id="lp-tab-panel-inquiries" hidden>
             <div id="lp-inquiries-list"></div>
           </div>
+          <div id="lp-tab-panel-products" hidden></div>
         </div>
       `;
-      getOverlayHost().appendChild(overlay); // was document.body — kept overlay outside .lp-root, breaking dark mode
+      getOverlayHost().appendChild(overlay); 
       overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
       document.getElementById("lp-edit-sheet-close").addEventListener("click", () => closeSheet(overlay));
     }
@@ -475,32 +459,53 @@
     });
   }
 
+  // UPDATED WITH PRODUCTS TAB LOGIC
   function wireEditTabs(p) {
     const detailsTab = document.getElementById("lp-tab-details");
     const inquiriesTab = document.getElementById("lp-tab-inquiries");
+    const productsTab = document.getElementById("lp-tab-products");
+    
     const detailsPanel = document.getElementById("lp-tab-panel-details");
     const inquiriesPanel = document.getElementById("lp-tab-panel-inquiries");
-    if (!detailsTab || !inquiriesTab) return;
+    const productsPanel = document.getElementById("lp-tab-panel-products");
+    
+    if (!detailsTab || !inquiriesTab || !productsTab) return;
 
     detailsTab.onclick = () => {
       detailsTab.classList.add("lp-edit-tab-active");
       inquiriesTab.classList.remove("lp-edit-tab-active");
+      productsTab.classList.remove("lp-edit-tab-active");
       detailsPanel.hidden = false;
       inquiriesPanel.hidden = true;
+      productsPanel.hidden = true;
     };
 
     inquiriesTab.onclick = () => {
       inquiriesTab.classList.add("lp-edit-tab-active");
       detailsTab.classList.remove("lp-edit-tab-active");
+      productsTab.classList.remove("lp-edit-tab-active");
       inquiriesPanel.hidden = false;
       detailsPanel.hidden = true;
+      productsPanel.hidden = true;
       loadInquiriesForOwner(p.id);
+    };
+
+    productsTab.onclick = () => {
+      productsTab.classList.add("lp-edit-tab-active");
+      detailsTab.classList.remove("lp-edit-tab-active");
+      inquiriesTab.classList.remove("lp-edit-tab-active");
+      productsPanel.hidden = false;
+      detailsPanel.hidden = true;
+      inquiriesPanel.hidden = true;
+      if (typeof wireProductsTab === "function") wireProductsTab(p); 
     };
 
     detailsTab.classList.add("lp-edit-tab-active");
     inquiriesTab.classList.remove("lp-edit-tab-active");
+    productsTab.classList.remove("lp-edit-tab-active");
     detailsPanel.hidden = false;
     inquiriesPanel.hidden = true;
+    productsPanel.hidden = true;
   }
 
   async function loadInquiriesForOwner(profileId) {
@@ -525,7 +530,6 @@
         return;
       }
 
-      // Updated rendering logic to utilize the backend's clean action_url (WhatsApp directly format)
       listEl.innerHTML = inquiries.map((inq) => `
         <div class="lp-inquiry-list-item">
           <div class="lp-inquiry-list-top">
@@ -670,7 +674,6 @@
           statusEl.className = "lp-gallery-slot-status lp-upload-active";
 
           try {
-            // Call premium instant deletion endpoint with target profile and array index tracking
             const res = await fetch(`${WORKER_BASE}/api/remove-image?field=store_photos&profile_id=${p.id}&url=${encodeURIComponent(oldUrl)}`, {
               method: "POST",
               credentials: "include"
@@ -681,7 +684,6 @@
             photos[idx] = null;
             syncHiddenInput();
             renderGalleryGrid();
-            // Re-bind page gallery view in real-time
             bindGallery(photos.filter(Boolean), p.business_name);
           } catch (err) {
             statusEl.textContent = "Error";
@@ -707,9 +709,6 @@
           statusEl.textContent = "Uploading…";
           const filename = buildSeoFilename(p.business_name, `gallery-${idx + 1}`);
 
-          // If this slot already has a photo, tell the backend which URL to
-          // replace (and delete from R2), instead of just appending a new one.
-          // Without this, replacing a filled gallery slot orphans the old file.
           const existingUrl = photos[idx];
           const replaceParam = existingUrl ? `&replace_url=${encodeURIComponent(existingUrl)}` : "";
 
@@ -725,7 +724,6 @@
           photos[idx] = data.url;
           syncHiddenInput();
           renderGalleryGrid();
-          // Update presentation page container instantly
           bindGallery(photos.filter(Boolean), p.business_name);
         } catch (err) {
           statusEl.textContent = err.message;
@@ -853,7 +851,7 @@
       overlay = document.createElement("div");
       overlay.className = "lp-sheet-overlay";
       overlay.id = "lp-help-sheet-overlay";
-      getOverlayHost().appendChild(overlay); // was document.body — kept overlay outside .lp-root, breaking dark mode
+      getOverlayHost().appendChild(overlay); 
       overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
     }
 
@@ -1118,7 +1116,6 @@
           statusEl.textContent = "";
           removeBtn.remove();
 
-          // Sync interface instantly
           if (fieldName === "logo_url") setImg(".lp-logo", "https://placehold.co/300x300/1877F2/FFFFFF?text=Logo", "Logo removed");
           if (fieldName === "cover_url") setImg("[data-bind='cover_url']", "https://placehold.co/1200x560/3F3D9E/FFFFFF?text=Add+Your+Cover+Photo", "Cover photo removed");
         } catch (err) {
@@ -1145,7 +1142,6 @@
         const nameForFilename = businessNameInput ? businessNameInput.value : (form.dataset.businessName || "brand");
         const filename = buildSeoFilename(nameForFilename, fieldLabel);
 
-        // CRITICAL FIX: Add field and profile_id parameters to sync properly with src/index.js
         const res = await fetch(`${WORKER_BASE}/api/upload-image?name=${encodeURIComponent(filename)}&field=${fieldName}&profile_id=${p.id}`, {
           method: "POST",
           credentials: "include",
@@ -1161,7 +1157,6 @@
         placeholder.style.display = "none";
         statusEl.textContent = "";
 
-        // Dynamically add the Remove button if not already there
         if (!document.getElementById(`lp-remove-${fieldName}`)) {
           const remTrigger = document.createElement("button");
           remTrigger.type = "button";
@@ -1170,11 +1165,9 @@
           remTrigger.dataset.field = fieldName;
           remTrigger.textContent = "Remove Current";
           box.appendChild(remTrigger);
-          // Recursively wire the newly created button
           wireImageUpload(form, fieldName, p);
         }
 
-        // Live page UI sync
         if (fieldName === "logo_url") setImg(".lp-logo", data.url, `${p.business_name} logo`);
         if (fieldName === "cover_url") setImg("[data-bind='cover_url']", data.url, `${p.business_name} cover`);
       } catch (err) {
@@ -1281,12 +1274,10 @@
       }
 
       if (!res.ok) {
-        // Validation failed / Forbidden text check
         if (res.status === 422 && data.fields) {
           let flaggedMsg = data.error || "Inappropriate text detected.";
           for (const [field, info] of Object.entries(data.fields)) {
             flaggedMsg += ` (${FIELD_LABELS[field] || field}: "${info.term}")`;
-            // Red-outline the flagged input field
             const targetInput = form.querySelector(`[name="${field}"]`);
             if (targetInput) {
               targetInput.style.borderColor = "#FF3B30";
@@ -1331,9 +1322,6 @@
       window.LiyogReviews.mountReviews(p, isOwner);
       return;
     }
-    // reviews-ui.js hasn't finished loading/executing yet — retry briefly
-    // instead of giving up. Stops after ~2 seconds so a genuinely missing
-    // script doesn't retry forever.
     if (attempt < 20) {
       setTimeout(() => bindReviews(p, isOwner, attempt + 1), 100);
     } else {
@@ -1392,7 +1380,7 @@
     const section = document.getElementById("lp-social-section");
     const wrap = document.getElementById("lp-social-row");
     if (!section || !wrap) return;
-    wrap.innerHTML = ""; // Clear out previous items before binding
+    wrap.innerHTML = ""; 
     let any = false;
     links.forEach(([url, label, colorClass, pathData]) => {
       if (!url) return;
@@ -1765,7 +1753,7 @@
     if (!container) {
       container = document.createElement("div");
       container.id = "lp-toast-container";
-      getOverlayHost().appendChild(container); // was document.body — kept toasts outside .lp-root, breaking dark mode
+      getOverlayHost().appendChild(container); 
     }
     const toast = document.createElement("div");
     toast.className = `lp-toast lp-toast-${type}`;
@@ -1790,4 +1778,314 @@
     if (str === null || str === undefined) return "";
     return String(str).replace(/"/g, "&quot;");
   }
+
+/* =====================================================================
+   ADD these functions to your existing profile-js.txt.
+   Follows the exact same pattern as bindGallery/bindReviews already
+   in your file. Uses getOverlayHost() for any modal — never
+   document.body directly — so dark mode stays intact exactly per
+   your existing rule.
+   ===================================================================== */
+
+/* ---------------------------------------------------------------------
+   PUBLIC PROFILE VIEW — call this from your main bindProfile() function,
+   right alongside your existing bindGallery(...) call:
+
+     bindProducts(p, isOwner);
+
+   ------------------------------------------------------------------- */
+function bindProducts(p, isOwner) {
+  const section = document.getElementById("lp-products-section");
+  const lockedSection = document.getElementById("lp-products-locked-section");
+  const grid = document.getElementById("lp-products-grid");
+  if (!section || !grid) return;
+
+  fetch(`${WORKER_BASE}/api/profiles/${p.id}/products`)
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data.unlocked) {
+        // Public visitors never see anything here at all. Only the
+        // owner sees the friendly locked-state card, in the exact
+        // spot Products would otherwise occupy.
+        if (isOwner && lockedSection) {
+          lockedSection.hidden = false;
+          const shareBtn = document.getElementById("lp-products-locked-share-btn");
+          if (shareBtn) {
+            shareBtn.addEventListener("click", () => {
+              const shareUrl = `${WORKER_BASE}/b/${p.slug}`;
+              if (navigator.share) {
+                navigator.share({ title: p.business_name, url: shareUrl }).catch(() => {});
+              } else {
+                navigator.clipboard.writeText(shareUrl).then(() => {
+                  shareBtn.querySelector("span").textContent = "Link Copied!";
+                  setTimeout(() => { shareBtn.querySelector("span").textContent = "Share My Profile"; }, 1800);
+                });
+              }
+            });
+          }
+        }
+        return;
+      }
+
+      if (!data.products || !data.products.length) return; // stays hidden, nothing to show yet
+
+      grid.innerHTML = data.products.map((prod) => `
+        <div class="lp-product-card">
+          <div class="lp-product-image-wrap">
+            ${prod.image_url
+              ? `<img src="${escAttr(prod.image_url)}" alt="${escAttr(prod.name)}" loading="lazy">`
+              : `<div class="lp-product-image-placeholder"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></div>`
+            }
+          </div>
+          <div class="lp-product-info">
+            <div class="lp-product-name">${escHtml(prod.name)}</div>
+            ${prod.price_display ? `<div class="lp-product-price">${escHtml(prod.price_display)}</div>` : ""}
+            ${prod.description ? `<div class="lp-product-desc">${escHtml(prod.description)}</div>` : ""}
+            <div class="lp-product-contact-row">
+              ${p.whatsapp_number ? `
+                <button type="button" class="lp-product-contact-btn lp-product-contact-whatsapp" data-product="${escAttr(prod.name)}" data-action="whatsapp" title="Ask about this on WhatsApp">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2z"/></svg>
+                </button>` : ""}
+              ${p.phone_number ? `
+                <button type="button" class="lp-product-contact-btn lp-product-contact-call" data-action="call" title="Call about this">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                </button>` : ""}
+            </div>
+          </div>
+        </div>
+      `).join("");
+
+      grid.querySelectorAll("[data-action='whatsapp']").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const productName = btn.dataset.product;
+          const text = `Hi ${p.business_name}, I'm interested in "${productName}" — is it available?`;
+          const cleaned = (p.whatsapp_number || "").replace(/[^\d+]/g, "").replace("+", "");
+          window.open(`https://wa.me/${cleaned}?text=${encodeURIComponent(text)}`, "_blank");
+        });
+      });
+      grid.querySelectorAll("[data-action='call']").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          window.location.href = `tel:${(p.phone_number || "").replace(/[^\d+]/g, "")}`;
+        });
+      });
+
+      section.hidden = false;
+    })
+    .catch((err) => console.error("Failed to load products:", err));
+}
+
+/* ---------------------------------------------------------------------
+   EDIT PANEL — Products tab. Call wireProductsTab(p) from wherever you
+   currently wire your other edit-panel tabs (Details/Inquiries).
+   ------------------------------------------------------------------- */
+function wireProductsTab(p) {
+  const panel = document.getElementById("lp-tab-panel-products");
+  if (!panel) return;
+
+  fetch(`${WORKER_BASE}/api/profiles/${p.id}/products`)
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data.unlocked) {
+        panel.innerHTML = `
+          <div class="lp-products-tab-locked">
+            <div class="lp-products-locked-icon" style="margin:0 auto;">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <h3 style="font-family:var(--font-display);margin:12px 0 0;">Not unlocked yet</h3>
+            <p>Share your profile with a friend — once they join and complete their own brand profile, product listings unlock here automatically. No payment needed, just genuine referrals.</p>
+            <button type="button" class="lp-btn lp-btn-primary" id="lp-tab-share-btn"><span>Share My Profile</span></button>
+          </div>
+        `;
+        document.getElementById("lp-tab-share-btn")?.addEventListener("click", () => {
+          const shareUrl = `${WORKER_BASE}/b/${p.slug}`;
+          navigator.clipboard.writeText(shareUrl).then(() => showToast("Link copied — share it with a friend!", "success"));
+        });
+        return;
+      }
+
+      renderProductsManagePanel(panel, p, data.products || [], data.maxProducts || 10);
+    })
+    .catch((err) => {
+      panel.innerHTML = `<p class="lp-inquiry-empty">Couldn't load your products right now.</p>`;
+      console.error(err);
+    });
+}
+
+function renderProductsManagePanel(panel, p, products, maxProducts) {
+  panel.innerHTML = `
+    <div id="lp-products-list"></div>
+    ${products.length < maxProducts ? `
+      <button type="button" class="lp-btn lp-btn-primary" id="lp-add-product-btn" style="width:100%;margin-top:8px;">
+        <span>+ Add a Product or Service</span>
+      </button>
+    ` : ""}
+    <p class="lp-products-cap-note">${products.length} of ${maxProducts} used</p>
+  `;
+
+  const listEl = document.getElementById("lp-products-list");
+  if (!products.length) {
+    listEl.innerHTML = `<p class="lp-inquiry-empty">No products yet. Add your first one below.</p>`;
+  } else {
+    listEl.innerHTML = products.map((prod) => `
+      <div class="lp-product-manage-item" data-id="${escAttr(prod.id)}">
+        ${prod.image_url
+          ? `<img class="lp-product-manage-thumb" src="${escAttr(prod.image_url)}" alt="">`
+          : `<div class="lp-product-manage-thumb"></div>`}
+        <div class="lp-product-manage-info">
+          <div class="lp-product-manage-name">${escHtml(prod.name)}</div>
+          ${prod.price_display ? `<div class="lp-product-manage-price">${escHtml(prod.price_display)}</div>` : ""}
+        </div>
+        <button type="button" class="lp-product-remove-btn" data-remove-id="${escAttr(prod.id)}" aria-label="Remove">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    `).join("");
+
+    listEl.querySelectorAll("[data-remove-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Remove this product?")) return;
+        try {
+          const res = await fetch(`${WORKER_BASE}/api/products/${btn.dataset.removeId}`, {
+            method: "DELETE", credentials: "include"
+          });
+          if (!res.ok) throw new Error("Failed to remove");
+          wireProductsTab(p); // re-render fresh list
+        } catch (err) {
+          showToast("Couldn't remove that product. Please try again.", "error");
+        }
+      });
+    });
+  }
+
+  document.getElementById("lp-add-product-btn")?.addEventListener("click", () => openAddProductSheet(p));
+}
+
+/* ---------------------------------------------------------------------
+   Add-product modal. Uses getOverlayHost() per your existing dark-mode
+   rule — NEVER document.body directly.
+   ------------------------------------------------------------------- */
+function openAddProductSheet(p) {
+  const host = getOverlayHost();
+  let overlay = document.getElementById("lp-add-product-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "lp-sheet-overlay";
+    overlay.id = "lp-add-product-overlay";
+    host.appendChild(overlay);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
+  }
+
+  overlay.innerHTML = `
+    <div class="lp-sheet">
+      <div class="lp-sheet-top-bar">
+        <div class="lp-sheet-handle"></div>
+        <button class="lp-sheet-close" id="lp-add-product-close" type="button">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <h3 class="lp-sheet-title-only">Add a Product or Service</h3>
+      <form id="lp-add-product-form">
+        <div class="lp-product-form-card">
+          <div class="lp-image-upload-box" id="lp-product-image-box">
+            <div class="lp-image-upload-placeholder" id="lp-product-image-placeholder">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <span>Tap to add a photo (optional)</span>
+            </div>
+            <img class="lp-image-upload-preview" id="lp-product-image-preview" style="display:none;" alt="">
+            <div class="lp-image-upload-status" id="lp-product-image-status"></div>
+          </div>
+          <input type="file" accept="image/*" id="lp-product-file-input" style="display:none;">
+          <input type="hidden" id="lp-product-image-url" value="">
+        </div>
+        <div class="lp-edit-field">
+          <label class="lp-field-label">Product or service name</label>
+          <input type="text" id="lp-product-name-input" class="lp-field-input" maxlength="80" required placeholder="e.g. Ankara Fabric Bundle">
+        </div>
+        <div class="lp-edit-field">
+          <label class="lp-field-label">Price (optional)</label>
+          <input type="text" id="lp-product-price-input" class="lp-field-input" maxlength="40" placeholder="e.g. ₦15,000">
+        </div>
+        <div class="lp-edit-field">
+          <label class="lp-field-label">Description (optional)</label>
+          <textarea id="lp-product-desc-input" class="lp-field-input lp-field-textarea" maxlength="500" placeholder="A short description of what you're offering"></textarea>
+        </div>
+        <div class="lp-edit-form-status" id="lp-add-product-status"></div>
+        <button type="submit" class="lp-btn lp-btn-primary lp-submit-btn" id="lp-add-product-submit">
+          <span>Add Product</span>
+        </button>
+      </form>
+    </div>
+  `;
+  document.getElementById("lp-add-product-close").addEventListener("click", () => closeSheet(overlay));
+  openSheet(overlay);
+
+  const fileBox = document.getElementById("lp-product-image-box");
+  const fileInput = document.getElementById("lp-product-file-input");
+  const preview = document.getElementById("lp-product-image-preview");
+  const placeholder = document.getElementById("lp-product-image-placeholder");
+  const statusEl = document.getElementById("lp-product-image-status");
+  const hiddenUrl = document.getElementById("lp-product-image-url");
+
+  fileBox.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    statusEl.textContent = "Processing…";
+    statusEl.className = "lp-image-upload-status lp-upload-active";
+    try {
+      const webpBlob = await compressImageToWebp(file, 800);
+      statusEl.textContent = "Uploading…";
+      const filename = buildSeoFilename(p.business_name, "product");
+      const res = await fetch(`${WORKER_BASE}/api/upload-product-image?name=${encodeURIComponent(filename)}`, {
+        method: "POST", credentials: "include",
+        headers: { "content-type": "image/webp" }, body: webpBlob
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Upload failed");
+      hiddenUrl.value = data.url;
+      preview.src = data.url;
+      preview.style.display = "block";
+      placeholder.style.display = "none";
+      statusEl.textContent = "";
+    } catch (err) {
+      statusEl.textContent = err.message;
+      statusEl.className = "lp-image-upload-status lp-upload-error";
+      showToast(err.message, "error");
+    }
+  });
+
+  document.getElementById("lp-add-product-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const submitBtn = document.getElementById("lp-add-product-submit");
+    const statusEl2 = document.getElementById("lp-add-product-status");
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = "<span>Saving…</span>";
+
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/products`, {
+        method: "POST", credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          profile_id: p.id,
+          name: document.getElementById("lp-product-name-input").value.trim(),
+          price_display: document.getElementById("lp-product-price-input").value.trim() || null,
+          description: document.getElementById("lp-product-desc-input").value.trim() || null,
+          image_url: hiddenUrl.value || null
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Couldn't add this product.");
+
+      closeSheet(overlay);
+      showToast("Product added!", "success");
+      wireProductsTab(p);
+    } catch (err) {
+      statusEl2.textContent = err.message;
+      statusEl2.className = "lp-edit-form-status lp-edit-error";
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = "<span>Add Product</span>";
+    }
+  });
+}
+
 })();
