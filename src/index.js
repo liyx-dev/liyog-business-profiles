@@ -7,6 +7,8 @@ import REVIEWS_UI_JS from "./assets/reviews-ui-js.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
 import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage } from "./lib/moderation.js";
 import * as reviews from "./lib/reviews.js";
+import { handleCreateProduct, handleUpdateProduct, handleDeleteProduct, handleListProducts, handleUploadProductImage } from "./lib/products.js";
+import { maybeCreditReferral } from "./lib/referral.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
@@ -575,6 +577,8 @@ if (url.pathname === "/reviews-ui.js") {
         );
       }
 
+ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
+
       const response = jsonResponse({ success: true, moderationStatus: "approved", newSlug: slugUpdate || null });
       response.headers.set("Set-Cookie", "liyog_strikes=0; Path=/; Max-Age=86400; Secure; HttpOnly; SameSite=Lax");
       return response;
@@ -644,6 +648,47 @@ if (url.pathname === "/reviews-ui.js") {
 
       return jsonResponse({ success: true });
     }
+
+// ---- Products: create ----
+    if (url.pathname === "/api/products" && request.method === "POST") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      return handleCreateProduct(request, env, userId);
+    }
+
+    // ---- Products: update ----
+    if (url.pathname.match(/^\/api\/products\/[^/]+$/) && request.method === "PATCH") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      const productId = url.pathname.split("/")[3];
+      return handleUpdateProduct(request, env, userId, productId);
+    }
+
+    // ---- Products: delete ----
+    if (url.pathname.match(/^\/api\/products\/[^/]+$/) && request.method === "DELETE") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      const productId = url.pathname.split("/")[3];
+      return handleDeleteProduct(env, userId, productId);
+    }
+
+    // ---- Products: list (public, used by both profile view and edit panel) ----
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/products$/) && request.method === "GET") {
+      const profileId = url.pathname.split("/")[3];
+      return handleListProducts(env, profileId);
+    }
+
+    // ---- Products: image upload (reuses the same moderation pipeline) ----
+    if (url.pathname === "/api/upload-product-image" && request.method === "POST") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      return handleUploadProductImage(request, env, userId, url);
+    }
+
 
    // -----------------------------------------------------------------
     // Brand Reputation Engine — reviews, reactions, owner replies
@@ -961,3 +1006,5 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
+
+
