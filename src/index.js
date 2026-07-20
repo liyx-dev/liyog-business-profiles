@@ -395,6 +395,26 @@ if (url.pathname === "/reviews-ui.js") {
       ).bind(slug, slug).all();
       if (slugTaken.length) return jsonResponse({ error: "Slug already taken" }, 409);
 
+      // -----------------------------------------------------------------
+      // Resolve referral code (if present) to an actual referring profile.
+      // Invalid/unknown/self codes are silently ignored rather than
+      // blocking signup — a bad ref param should never stop someone from
+      // joining, it just means no referral gets attributed.
+      // -----------------------------------------------------------------
+      let referringProfileId = null;
+      const refCode = (body.referred_by || "").trim();
+      if (refCode && refCode.toLowerCase() !== slug.toLowerCase()) {
+        const { results: referrer } = await env.DB.prepare(
+          "SELECT id, owner_id FROM profiles WHERE referral_code = ? AND moderation_status = 'approved'"
+        ).bind(refCode).all();
+        // Anti-cheat: the referring profile must exist, be approved, and
+        // must not belong to the same Google account creating this new
+        // profile (no self-referral via a second brand under one owner).
+        if (referrer.length && referrer[0].owner_id !== userId) {
+          referringProfileId = referrer[0].id;
+        }
+      }
+
       // Perform text check before inserting
       const nameCheck = checkText(businessName);
       const taglineCheck = checkText(body.tagline || "");
@@ -421,9 +441,9 @@ if (url.pathname === "/reviews-ui.js") {
       const profileId = crypto.randomUUID();
       try {
         await env.DB.prepare(
-          `INSERT INTO profiles (id, owner_id, slug, business_name, business_category, tagline, moderation_status)
-           VALUES (?, ?, ?, ?, ?, ?, 'approved')`
-        ).bind(profileId, userId, slug, businessName, category, body.tagline || null).run();
+          `INSERT INTO profiles (id, owner_id, slug, business_name, business_category, tagline, moderation_status, referral_code, referred_by_profile_id)
+           VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?)`
+        ).bind(profileId, userId, slug, businessName, category, body.tagline || null, slug, referringProfileId).run();
       } catch (dbErr) {
         console.error("Profile creation DB error:", dbErr);
         return jsonResponse(
@@ -1006,5 +1026,4 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
 
