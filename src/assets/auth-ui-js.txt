@@ -179,6 +179,7 @@
     } catch (e) { /* form still works with empty dropdown, shows a message */ }
 
     const slugLocked = !!prefillSlug;
+    const refCode = new URLSearchParams(window.location.search).get("ref");
 
     containerEl.innerHTML = `
       <div class="lp-auth-card">
@@ -290,7 +291,8 @@
             business_name: nameInput.value.trim(),
             business_category: document.getElementById("lp-input-category").value,
             slug: slugInput.value,
-            tagline: document.getElementById("lp-input-tagline").value.trim() || null
+            tagline: document.getElementById("lp-input-tagline").value.trim() || null,
+            referred_by: refCode || null
           })
         });
         const data = await res.json();
