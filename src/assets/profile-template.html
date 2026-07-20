@@ -102,6 +102,35 @@
     <p class="lp-section-sub">A closer look at the experience they deliver</p>
     <div class="lp-gallery" id="lp-gallery"></div>
   </div>
+<!-- =====================================================================
+     INSERT THIS BLOCK into profile-template.html, directly AFTER the
+     closing </div> of your existing lp-gallery-section block, and
+     BEFORE lp-reviews-section (or wherever Reviews currently sits).
+     Same hidden-by-default pattern as every other section — JS decides
+     when to reveal it.
+     ===================================================================== -->
+
+  <div class="lp-section" id="lp-products-section" hidden>
+    <h2 class="lp-section-title">Products &amp; Services</h2>
+    <p class="lp-section-sub">What this brand offers</p>
+    <div class="lp-products-grid" id="lp-products-grid"></div>
+  </div>
+
+  <!-- Owner-only locked-state message — never shown to public visitors.
+       Sits in the same position Products would occupy, so the owner
+       sees exactly where their catalogue will appear once unlocked. -->
+  <div class="lp-section" id="lp-products-locked-section" hidden>
+    <div class="lp-products-locked-card">
+      <div class="lp-products-locked-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </div>
+      <h3>Bring a friend, unlock your catalogue</h3>
+      <p>Share your profile link — once a friend joins and completes their own brand profile, you'll be able to list your products and services right here.</p>
+      <button type="button" class="lp-btn lp-btn-primary" id="lp-products-locked-share-btn">
+        <span>Share My Profile</span>
+      </button>
+    </div>
+  </div>
 
   <div class="lp-section" id="lp-reviews-section" hidden>
     <h2 class="lp-section-title">What People Are Saying</h2>
