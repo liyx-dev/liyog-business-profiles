@@ -8,7 +8,8 @@ import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionT
 import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage } from "./lib/moderation.js";
 import * as reviews from "./lib/reviews.js";
 import { handleCreateProduct, handleUpdateProduct, handleDeleteProduct, handleListProducts, handleUploadProductImage } from "./lib/products.js";
-import { maybeCreditReferral } from "./lib/referral.js";
+import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
+import { handleBoostStatus, handleActivateBoost } from "./lib/boost.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
@@ -709,6 +710,37 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       return handleUploadProductImage(request, env, userId, url);
     }
 
+    // ---- Boost: status (profile + optional batch of product ids) ----
+    // Public — same visibility rule as product listings themselves,
+    // since the badge needs to render for every visitor, not just the owner.
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/boost-status$/) && request.method === "GET") {
+      const profileId = url.pathname.split("/")[3];
+      const productIds = url.searchParams.get("products");
+      return handleBoostStatus(env, profileId, productIds);
+    }
+
+    // ---- Boost: manual activation (admin-only, called by you after
+    // confirming payment over WhatsApp — never exposed to end users) ----
+    if (url.pathname === "/api/boost/activate" && request.method === "POST") {
+      return handleActivateBoost(request, env);
+    }
+
+    // ---- Referrals: who this profile's owner has successfully referred,
+    // plus anyone pending — owner-only, shown in the Products edit tab ----
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/referrals$/) && request.method === "GET") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      const profileId = url.pathname.split("/")[3];
+      const { results: profileRows } = await env.DB.prepare(
+        "SELECT owner_id FROM profiles WHERE id = ?"
+      ).bind(profileId).all();
+      if (!profileRows.length) return jsonResponse({ error: "Profile not found." }, 404);
+      if (profileRows[0].owner_id !== userId) return jsonResponse({ error: "Not your profile." }, 403);
+      const data = await getMyReferrals(env, profileId);
+      return jsonResponse(data);
+    }
+
 
    // -----------------------------------------------------------------
     // Brand Reputation Engine — reviews, reactions, owner replies
@@ -1026,4 +1058,3 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
