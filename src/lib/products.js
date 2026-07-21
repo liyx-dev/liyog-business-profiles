@@ -22,7 +22,7 @@ function jsonResponse(data, status = 200) {
  */
 export async function handleCreateProduct(request, env, userId) {
   const body = await request.json();
-  const { profile_id, name, description, price_display } = body;
+  const { profile_id, name, description, price_display, image_url } = body;
 
   if (!profile_id || !name) {
     return jsonResponse({ error: "Please provide at least a product name." }, 400);
@@ -56,9 +56,9 @@ export async function handleCreateProduct(request, env, userId) {
   const productId = crypto.randomUUID();
   try {
     await env.DB.prepare(
-      `INSERT INTO products (id, profile_id, name, description, price_display)
-       VALUES (?, ?, ?, ?, ?)`
-    ).bind(productId, profile_id, name.slice(0, 80), (description || null), (price_display || null)).run();
+      `INSERT INTO products (id, profile_id, name, description, price_display, image_url)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(productId, profile_id, name.slice(0, 80), (description || null), (price_display || null), (image_url || null)).run();
   } catch (dbErr) {
     console.error("Product creation DB error:", dbErr);
     return jsonResponse({ error: "Couldn't save that product — please check your entries and try again." }, 400);
@@ -135,6 +135,10 @@ export async function handleDeleteProduct(env, userId, productId) {
  * a profile, used both by the public profile view and the owner's edit
  * panel. No auth required (products are public once created), but the
  * profile itself must be active and approved.
+ *
+ * Boosted products are sorted first (most-recently-boosted first among
+ * boosted items), then the rest by newest-first — read via a LEFT JOIN
+ * against boost_log rather than a second round trip.
  */
 export async function handleListProducts(env, profileId) {
   const { results: profileRows } = await env.DB.prepare(
@@ -144,7 +148,12 @@ export async function handleListProducts(env, profileId) {
   const profile = profileRows[0];
 
   const { results: products } = await env.DB.prepare(
-    "SELECT id, name, description, price_display, image_url, created_at FROM products WHERE profile_id = ? AND is_active = 1 ORDER BY created_at DESC"
+    `SELECT p.id, p.name, p.description, p.price_display, p.image_url, p.created_at,
+            b.expires_at as boost_expires_at
+     FROM products p
+     LEFT JOIN boost_log b ON b.product_id = p.id AND b.expires_at > datetime('now')
+     WHERE p.profile_id = ? AND p.is_active = 1
+     ORDER BY (b.expires_at IS NOT NULL) DESC, b.expires_at DESC, p.created_at DESC`
   ).bind(profileId).all();
 
   return jsonResponse({
