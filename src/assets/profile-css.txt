@@ -1350,215 +1350,181 @@ select.lp-field-input {
 .lp-edit-success { color: var(--liyog-green-dark); font-weight: 600; }
 
 /* =====================================================================
-   APPEND to your existing profile-css.txt. Every color below uses
-   existing var(--...) tokens already defined for light/dark mode —
-   nothing new to theme, this inherits dark mode automatically exactly
-   like Gallery and Reviews already do.
+   PRODUCTS v2 ADDITIONS — append to your existing profile-css.txt.
+   Uses only the same var(--...) tokens already in your stylesheet
+   (--surface, --ink, --ink-soft, --ink-faint, --line, --liyog-gold,
+   --liyog-green, --liyog-blue, --r-md, --r-lg, --r-pill, --shadow-sm,
+   --shadow-md, --font-display, --bg) so dark/light mode is inherited
+   automatically — nothing new to theme separately.
    ===================================================================== */
 
 /* ---------------------------------------------------------------------
-   Products grid — premium card layout
+   Google-Play-style horizontal rows — replaces the old CSS-grid layout.
+   Each row is its own edge-to-edge scroll-snap container so 100
+   products render as a handful of rows, never one giant unbroken page.
    --------------------------------------------------------------------- */
 .lp-products-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.lp-products-row-wrap {
+  /* Bleeds to the viewport edge even though the section itself has
+     side padding — the classic Play-Store "peek" effect. */
+  margin: 0 -16px;
+  padding: 0 16px;
+}
+
+.lp-products-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.lp-products-row::-webkit-scrollbar { display: none; }
+
+.lp-products-row .lp-product-card {
+  flex: 0 0 42%;
+  scroll-snap-align: start;
 }
 @media (min-width: 480px) {
-  .lp-products-grid { grid-template-columns: repeat(3, 1fr); }
+  .lp-products-row .lp-product-card { flex-basis: 30%; }
+}
+@media (min-width: 720px) {
+  .lp-products-row .lp-product-card { flex-basis: 19%; }
 }
 
-.lp-product-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
-  position: relative;
-}
-.lp-product-card:hover {
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
-}
-
-.lp-product-image-wrap {
-  width: 100%;
-  aspect-ratio: 1;
+.lp-products-seeall-tile {
+  flex: 0 0 78px;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   background: var(--surface-soft, var(--bg));
-  overflow: hidden;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
 }
-.lp-product-image-wrap img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
+.lp-products-seeall-tile:hover { color: var(--liyog-gold); border-color: var(--liyog-gold); }
+
+/* ---------------------------------------------------------------------
+   "See all" bottom-sheet grid — proper scrollable grid, not more rows.
+   --------------------------------------------------------------------- */
+.lp-sheet-tall { max-height: 88vh; }
+.lp-products-seeall-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  overflow-y: auto;
+  padding: 4px 2px 16px;
+  max-height: 70vh;
 }
-.lp-product-image-placeholder {
+@media (min-width: 480px) {
+  .lp-products-seeall-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 900px) {
+  .lp-products-seeall-grid { grid-template-columns: repeat(4, 1fr); max-height: 75vh; }
+}
+
+/* ---------------------------------------------------------------------
+   Boost badge — small gold pill on any boosted card.
+   --------------------------------------------------------------------- */
+.lp-product-card { position: relative; } /* keep — matches existing rule, badge needs it */
+.lp-boost-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--liyog-gold);
+  color: #1a1400;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  padding: 3px 7px 3px 6px;
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------------------------------------------------------------------
+   Product lightbox — dedicated overlay, mirrors your existing gallery
+   lightbox visuals so it feels like the same product, not a bolt-on.
+   --------------------------------------------------------------------- */
+.lp-lightbox { display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.92); z-index: 90; }
+.lp-lightbox.lp-open { display: flex; }
+.lp-lightbox-stage { max-width: 92vw; max-height: 82vh; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.lp-lightbox-stage img { max-width: 92vw; max-height: 74vh; object-fit: contain; border-radius: var(--r-md); }
+.lp-lightbox-caption { color: #fff; font-size: 13px; text-align: center; opacity: 0.85; }
+.lp-lightbox-close { position: absolute; top: 18px; right: 18px; width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,0.12); border: none; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.lp-lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,0.12); border: none; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.lp-lightbox-prev { left: 12px; }
+.lp-lightbox-next { right: 12px; }
+@media (min-width: 720px) {
+  .lp-lightbox-prev { left: 32px; }
+  .lp-lightbox-next { right: 32px; }
+}
+
+/* ---------------------------------------------------------------------
+   Boost banner + buttons (Products edit tab, top section)
+   --------------------------------------------------------------------- */
+.lp-boost-banner { margin-bottom: 16px; }
+.lp-boost-banner-active {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, rgba(212,175,55,0.12), rgba(212,175,55,0.04));
+  border: 1px solid var(--liyog-gold);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: var(--ink);
+  font-weight: 600;
+}
+.lp-btn-gold {
   width: 100%;
-  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--ink-faint);
-}
-
-.lp-product-info {
-  padding: 10px 12px 12px;
-}
-.lp-product-name {
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 13.5px;
-  color: var(--ink);
-  margin: 0 0 3px;
-  line-height: 1.3;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.lp-product-price {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--liyog-green);
-  margin: 0 0 4px;
-}
-.lp-product-desc {
-  font-size: 11.5px;
-  color: var(--ink-faint);
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  margin: 0 0 8px;
-}
-
-.lp-product-contact-row {
-  display: flex;
-  gap: 6px;
-}
-.lp-product-contact-btn {
-  flex: 1;
-  height: 30px;
+  gap: 8px;
+  background: var(--liyog-gold);
+  color: #1a1400;
   border: none;
   border-radius: var(--r-pill);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: #fff;
-  transition: filter 0.15s ease;
-}
-.lp-product-contact-btn:hover { filter: brightness(1.08); }
-.lp-product-contact-whatsapp { background: var(--liyog-green); }
-.lp-product-contact-call { background: var(--liyog-blue); }
-
-.lp-products-empty {
-  text-align: center;
-  padding: 32px 20px;
-  color: var(--ink-faint);
-  font-size: 13.5px;
-}
-
-/* ---------------------------------------------------------------------
-   Locked-state card — owner-only, friendly not pushy
-   --------------------------------------------------------------------- */
-.lp-products-locked-card {
-  text-align: center;
-  padding: 28px 20px;
-  background: linear-gradient(135deg, rgba(212,175,55,0.08), rgba(24,119,242,0.05));
-  border: 1px dashed var(--liyog-gold);
-  border-radius: var(--r-lg);
-}
-.lp-products-locked-icon {
-  width: 52px;
-  height: 52px;
-  margin: 0 auto 14px;
-  border-radius: 50%;
-  background: var(--surface);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--liyog-gold);
-  box-shadow: var(--shadow-sm);
-}
-.lp-products-locked-card h3 {
-  font-family: var(--font-display);
-  font-size: 16px;
-  color: var(--ink);
-  margin: 0 0 8px;
-}
-.lp-products-locked-card p {
-  font-size: 13.5px;
-  color: var(--ink-soft);
-  line-height: 1.55;
-  margin: 0 0 18px;
-  max-width: 340px;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-/* ---------------------------------------------------------------------
-   Products tab inside the edit panel
-   --------------------------------------------------------------------- */
-.lp-products-tab-locked {
-  text-align: center;
-  padding: 40px 20px;
-}
-.lp-products-tab-locked p {
-  font-size: 13.5px;
-  color: var(--ink-soft);
-  line-height: 1.6;
-  max-width: 320px;
-  margin: 12px auto 18px;
-}
-
-.lp-product-form-card {
-  background: var(--surface-soft, var(--bg));
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  padding: 16px;
-  margin-bottom: 16px;
-}
-
-.lp-products-cap-note {
-  font-size: 12px;
-  color: var(--ink-faint);
-  text-align: center;
-  margin: 10px 0 0;
-}
-
-.lp-product-manage-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  margin-bottom: 8px;
-}
-.lp-product-manage-thumb {
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
-  object-fit: cover;
-  flex-shrink: 0;
-  background: var(--surface-soft, var(--bg));
-}
-.lp-product-manage-info { flex: 1; min-width: 0; }
-.lp-product-manage-name {
+  padding: 11px 16px;
   font-weight: 700;
   font-size: 13.5px;
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  cursor: pointer;
 }
-.lp-product-manage-price { font-size: 12px; color: var(--liyog-green); font-weight: 600; }
-.lp-product-remove-btn {
+.lp-btn-gold:hover { filter: brightness(1.05); }
+
+.lp-btn-secondary {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  border-radius: var(--r-pill);
+  padding: 9px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lp-btn-secondary:hover { border-color: var(--liyog-gold); color: var(--liyog-gold); }
+
+.lp-boost-sheet-content { padding: 4px 4px 8px; }
+
+/* Per-product boost button, sits in the manage-list row */
+.lp-product-boost-btn {
   width: 30px;
   height: 30px;
   border-radius: 50%;
@@ -1571,6 +1537,74 @@ select.lp-field-input {
   cursor: pointer;
   flex-shrink: 0;
 }
-.lp-product-remove-btn:hover { background: var(--liyog-red); color: #fff; }
+.lp-product-boost-btn:hover { background: var(--liyog-gold); color: #1a1400; }
+.lp-product-boost-btn-active { background: var(--liyog-gold); color: #1a1400; }
+
+/* ---------------------------------------------------------------------
+   Referrals list (owner-only, Products edit tab)
+   --------------------------------------------------------------------- */
+.lp-referrals-block { margin-bottom: 18px; }
+.lp-referrals-heading {
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--ink);
+  margin: 0 0 10px;
+}
+.lp-referrals-empty {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  text-align: center;
+  padding: 12px 0;
+}
+.lp-referral-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-soft, var(--bg));
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  margin-bottom: 6px;
+}
+.lp-referral-thumb {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--line);
+  flex-shrink: 0;
+}
+.lp-referral-info { flex: 1; min-width: 0; }
+.lp-referral-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lp-referral-status { font-size: 11px; font-weight: 600; }
+.lp-referral-status-done { color: var(--liyog-green); }
+.lp-referral-status-pending { color: var(--ink-faint); }
+
+.lp-tab-share-row {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.lp-tab-share-note {
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin: 0;
+  max-width: 280px;
+}
+
+
+
 
 
