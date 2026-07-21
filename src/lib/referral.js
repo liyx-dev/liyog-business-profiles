@@ -83,3 +83,34 @@ export async function canAddMoreProducts(env, profileId) {
   return { allowed: current < max, max, current };
 }
 
+/**
+ * List of profiles this profile has successfully referred — i.e. rows
+ * in referral_credits where this profile is the referring one. Used
+ * by the owner-only Products tab so they can see who came through
+ * their link and whether each has already been credited (all rows
+ * here ARE already credited, since referral_credits only ever holds
+ * completed referrals — see maybeCreditReferral above).
+ *
+ * Also separately returns anyone who signed up with this profile's
+ * referral code but hasn't completed their profile yet, so the owner
+ * can see "1 pending" rather than assuming their link did nothing.
+ */
+export async function getMyReferrals(env, profileId) {
+  const { results: completed } = await env.DB.prepare(
+    `SELECT p.id, p.business_name, p.slug, p.logo_url, rc.credited_at
+     FROM referral_credits rc
+     JOIN profiles p ON p.id = rc.referred_profile_id
+     WHERE rc.referring_profile_id = ?
+     ORDER BY rc.credited_at DESC`
+  ).bind(profileId).all();
+
+  const { results: pending } = await env.DB.prepare(
+    `SELECT p.id, p.business_name, p.slug, p.logo_url, p.created_at
+     FROM profiles p
+     WHERE p.referred_by_profile_id = ?
+       AND p.id NOT IN (SELECT referred_profile_id FROM referral_credits WHERE referring_profile_id = ?)
+     ORDER BY p.created_at DESC`
+  ).bind(profileId, profileId).all();
+
+  return { completed, pending };
+}
