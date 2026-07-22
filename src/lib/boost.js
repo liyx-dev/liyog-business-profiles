@@ -59,6 +59,21 @@ export async function handleBoostStatus(env, profileId, productIdsParam) {
 }
 
 /**
+ * GET /api/boost-config — public, read-only. Returns the WhatsApp
+ * number the boost sheet should message, sourced from app_settings so
+ * it's changeable without a redeploy. Falls back to null if not set,
+ * in which case the frontend should just skip the wa.me prefill and
+ * show a plain instruction instead of a broken link.
+ */
+export async function handleBoostConfig(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT value FROM app_settings WHERE key = 'admin_whatsapp_number'"
+  ).all();
+  const number = results.length ? results[0].value : null;
+  return jsonResponse({ adminWhatsapp: (number && number !== "REPLACE_WITH_YOUR_NUMBER") ? number : null });
+}
+
+/**
  * POST /api/boost/activate — NOT called by the customer-facing flow at
  * all. This is the admin-only manual activation endpoint you call
  * yourself (e.g. via a simple authenticated curl/Postman request)
