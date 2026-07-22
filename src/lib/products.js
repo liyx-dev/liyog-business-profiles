@@ -22,9 +22,20 @@ function jsonResponse(data, status = 200) {
  */
 export async function handleCreateProduct(request, env, userId) {
   const body = await request.json();
-  const { profile_id, name, description, price_display, image_url } = body;
+  const { profile_id, name, description, price_display, image_url, is_draft } = body;
 
-  if (!profile_id || !name) {
+  // A draft is created the instant a photo finishes uploading, before
+  // the owner has typed a name — this is what prevents an orphaned R2
+  // file with no matching product row. Drafts still require an image,
+  // since a draft with neither a name nor a photo serves no purpose.
+  const creatingDraft = !!is_draft;
+  if (!profile_id) {
+    return jsonResponse({ error: "Missing profile." }, 400);
+  }
+  if (creatingDraft && !image_url) {
+    return jsonResponse({ error: "An image is required to start a draft." }, 400);
+  }
+  if (!creatingDraft && !name) {
     return jsonResponse({ error: "Please provide at least a product name." }, 400);
   }
 
@@ -44,21 +55,27 @@ export async function handleCreateProduct(request, env, userId) {
     return jsonResponse({ error: `You've reached your limit of ${capCheck.max} products.` }, 403);
   }
 
-  const nameCheck = checkText(name);
-  if (!nameCheck.passed) {
-    return jsonResponse({ error: "That product name isn't allowed. Please rephrase it." }, 422);
+  const nameToSave = creatingDraft ? (name ? String(name).slice(0, 80) : "Untitled product") : name.slice(0, 80);
+
+  if (name) {
+    const nameCheck = checkText(name);
+    if (!nameCheck.passed) {
+      return jsonResponse({ error: "That product name isn't allowed. Please rephrase it." }, 422);
+    }
   }
-  const descCheck = checkText(description || "");
-  if (!descCheck.passed) {
-    return jsonResponse({ error: "That description isn't allowed. Please rephrase it." }, 422);
+  if (description) {
+    const descCheck = checkText(description);
+    if (!descCheck.passed) {
+      return jsonResponse({ error: "That description isn't allowed. Please rephrase it." }, 422);
+    }
   }
 
   const productId = crypto.randomUUID();
   try {
     await env.DB.prepare(
-      `INSERT INTO products (id, profile_id, name, description, price_display, image_url)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).bind(productId, profile_id, name.slice(0, 80), (description || null), (price_display || null), (image_url || null)).run();
+      `INSERT INTO products (id, profile_id, name, description, price_display, image_url, is_draft)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(productId, profile_id, nameToSave, (description || null), (price_display || null), (image_url || null), creatingDraft ? 1 : 0).run();
   } catch (dbErr) {
     console.error("Product creation DB error:", dbErr);
     return jsonResponse({ error: "Couldn't save that product — please check your entries and try again." }, 400);
@@ -87,6 +104,9 @@ export async function handleUpdateProduct(request, env, userId, productId) {
     const check = checkText(body.name);
     if (!check.passed) return jsonResponse({ error: "That product name isn't allowed. Please rephrase it." }, 422);
     updates.name = String(body.name).slice(0, 80);
+    // Providing a real name finalizes a draft into a genuine listing —
+    // this is the only place is_draft ever flips back to 0.
+    if (productRows[0].is_draft) updates.is_draft = 0;
   }
   if (body.description !== undefined) {
     const check = checkText(body.description || "");
@@ -140,19 +160,20 @@ export async function handleDeleteProduct(env, userId, productId) {
  * boosted items), then the rest by newest-first — read via a LEFT JOIN
  * against boost_log rather than a second round trip.
  */
-export async function handleListProducts(env, profileId) {
+export async function handleListProducts(env, profileId, includeDrafts = false) {
   const { results: profileRows } = await env.DB.prepare(
     "SELECT id, moderation_status, is_active, max_products, completed_referrals_count FROM profiles WHERE id = ?"
   ).bind(profileId).all();
   if (!profileRows.length) return jsonResponse({ error: "Profile not found." }, 404);
   const profile = profileRows[0];
 
+  const draftFilter = includeDrafts ? "" : "AND p.is_draft = 0";
   const { results: products } = await env.DB.prepare(
-    `SELECT p.id, p.name, p.description, p.price_display, p.image_url, p.created_at,
+    `SELECT p.id, p.name, p.description, p.price_display, p.image_url, p.created_at, p.is_draft,
             b.expires_at as boost_expires_at
      FROM products p
      LEFT JOIN boost_log b ON b.product_id = p.id AND b.expires_at > datetime('now')
-     WHERE p.profile_id = ? AND p.is_active = 1
+     WHERE p.profile_id = ? AND p.is_active = 1 ${draftFilter}
      ORDER BY (b.expires_at IS NOT NULL) DESC, b.expires_at DESC, p.created_at DESC`
   ).bind(profileId).all();
 
