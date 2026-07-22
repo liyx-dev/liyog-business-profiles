@@ -9,7 +9,7 @@ import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage
 import * as reviews from "./lib/reviews.js";
 import { handleCreateProduct, handleUpdateProduct, handleDeleteProduct, handleListProducts, handleUploadProductImage } from "./lib/products.js";
 import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
-import { handleBoostStatus, handleActivateBoost } from "./lib/boost.js";
+import { handleBoostStatus, handleActivateBoost, handleBoostConfig } from "./lib/boost.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
@@ -699,7 +699,16 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
     // ---- Products: list (public, used by both profile view and edit panel) ----
     if (url.pathname.match(/^\/api\/profiles\/[^/]+\/products$/) && request.method === "GET") {
       const profileId = url.pathname.split("/")[3];
-      return handleListProducts(env, profileId);
+      const sessionToken = getCookie(request, "liyog_session");
+      const requesterId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      let includeDrafts = false;
+      if (requesterId) {
+        const { results: ownerCheck } = await env.DB.prepare(
+          "SELECT owner_id FROM profiles WHERE id = ?"
+        ).bind(profileId).all();
+        includeDrafts = ownerCheck.length > 0 && ownerCheck[0].owner_id === requesterId;
+      }
+      return handleListProducts(env, profileId, includeDrafts);
     }
 
     // ---- Products: image upload (reuses the same moderation pipeline) ----
@@ -708,6 +717,11 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
       if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
       return handleUploadProductImage(request, env, userId, url);
+    }
+
+    // ---- Boost: public config (admin WhatsApp number for the handoff link) ----
+    if (url.pathname === "/api/boost-config" && request.method === "GET") {
+      return handleBoostConfig(env);
     }
 
     // ---- Boost: status (profile + optional batch of product ids) ----
