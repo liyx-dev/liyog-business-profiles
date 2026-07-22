@@ -80,24 +80,36 @@ export default {
 
     // -----------------------------------------------------------------
     // Static assets
+    //
+    // NOTE: These are served with an explicit "no-store" Cache-Control
+    // header. Without it, Cloudflare's edge commonly caches .css/.js
+    // responses by file extension regardless of what the Worker sends,
+    // independent of any browser-side hard refresh — so a real deploy
+    // can silently keep serving a stale asset to visitors. If that
+    // matters more than always-fresh assets (e.g. traffic grows and the
+    // extra origin hits become a cost/latency concern), replace
+    // "no-store" with a short max-age plus a cache-busting version
+    // query param on the <link>/<script> tags in the Blogger template
+    // instead of removing this header outright.
     // -----------------------------------------------------------------
+    const NO_CACHE_HEADERS = { "cache-control": "no-store" };
     if (url.pathname === "/brands.css") {
-      return new Response(PROFILE_CSS, { headers: { "content-type": "text/css; charset=utf-8" } });
+      return new Response(PROFILE_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
     if (url.pathname === "/brands.js") {
-      return new Response(PROFILE_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } });
+      return new Response(PROFILE_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
 if (url.pathname === "/reviews-ui.js") {
-      return new Response(REVIEWS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } });
+      return new Response(REVIEWS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
     if (url.pathname === "/brands-template.html") {
-      return new Response(PROFILE_TEMPLATE_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+      return new Response(PROFILE_TEMPLATE_HTML, { headers: { "content-type": "text/html; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
     if (url.pathname === "/auth-ui.js") {
-      return new Response(AUTH_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } });
+      return new Response(AUTH_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
     if (url.pathname === "/auth-ui.css") {
-      return new Response(AUTH_UI_CSS, { headers: { "content-type": "text/css; charset=utf-8" } });
+      return new Response(AUTH_UI_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
 
     if (url.pathname === "/api/config") {
@@ -1072,3 +1084,4 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
+
