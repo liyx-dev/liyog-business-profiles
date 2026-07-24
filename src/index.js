@@ -8,6 +8,7 @@ import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionT
 import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage } from "./lib/moderation.js";
 import * as reviews from "./lib/reviews.js";
 import { handleCreateProduct, handleUpdateProduct, handleDeleteProduct, handleListProducts, handleUploadProductImage } from "./lib/products.js";
+import * as productsEngagement from "./lib/products-engagement.js";
 import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
 import { handleBoostStatus, handleActivateBoost, handleBoostConfig } from "./lib/boost.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
@@ -687,7 +688,31 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       const sessionToken = getCookie(request, "liyog_session");
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
       if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
-      return handleCreateProduct(request, env, userId);
+
+      const createResponse = await handleCreateProduct(request, env, userId);
+
+      // Backfill a shareable/deep-linkable slug right after creation,
+      // without touching products.js's own internals — read the id it
+      // just returned, then generate+store the slug as a follow-up
+      // step. If anything here fails, product creation itself has
+      // already succeeded and returned to the caller; the product
+      // simply falls back to its id-derived slug until the next edit.
+      try {
+        const cloned = createResponse.clone();
+        const body = await cloned.json();
+        const newProductId = body?.product?.id || body?.id;
+        if (newProductId) {
+          const { results } = await env.DB.prepare("SELECT profile_id, name, slug FROM products WHERE id = ?").bind(newProductId).all();
+          if (results.length && !results[0].slug) {
+            const slug = await productsEngagement.generateUniqueProductSlug(env, results[0].profile_id, results[0].name);
+            await env.DB.prepare("UPDATE products SET slug = ? WHERE id = ?").bind(slug, newProductId).run();
+          }
+        }
+      } catch (err) {
+        console.error("Product slug backfill failed (non-fatal):", err);
+      }
+
+      return createResponse;
     }
 
     // ---- Products: update ----
@@ -729,6 +754,153 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
       if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
       return handleUploadProductImage(request, env, userId, url);
+    }
+
+    // -----------------------------------------------------------------
+    // Product engagement — views, likes, star ratings (preset-text,
+    // no free-text reviews), shares, reports, LiyX AI summaries.
+    // Mirrors the Brand Reputation Engine routes just below in shape.
+    // -----------------------------------------------------------------
+
+    // GET /api/products/rating-presets — the full preset catalogue the
+    // frontend needs to render the rating picker. Static per-deploy,
+    // safe to cache client-side for the session.
+    if (url.pathname === "/api/products/rating-presets" && request.method === "GET") {
+      return jsonResponse({ presets: productsEngagement.getRatingPresets() });
+    }
+
+    // GET /api/products/:productId/engagement — everything a product
+    // card/detail page needs in one call: stats, my rating, my like,
+    // LiyX AI insight. Public — same visibility rule as product
+    // listings themselves.
+    if (url.pathname.match(/^\/api\/products\/[^/]+\/engagement$/) && request.method === "GET") {
+      const productId = url.pathname.split("/")[3];
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+
+      const stats = await productsEngagement.getProductStats(env, productId);
+      const myRating = await productsEngagement.getMyRating(env, productId, request, url.searchParams.get("ds"));
+      const myLike = await productsEngagement.getMyLike(env, productId, userId);
+      const insight = await productsEngagement.getProductInsight(env, productId);
+
+      return jsonResponse({ stats, my_rating: myRating, my_like: myLike, insight });
+    }
+
+    // POST /api/products/:productId/view — record a view (simple
+    // ever-incrementing counter, no per-visitor dedup).
+    if (url.pathname.match(/^\/api\/products\/[^/]+\/view$/) && request.method === "POST") {
+      const productId = url.pathname.split("/")[3];
+      try {
+        const result = await productsEngagement.recordView(env, productId);
+        return jsonResponse(result);
+      } catch (err) {
+        if (err instanceof productsEngagement.UserFacingError) return jsonResponse({ error: err.message }, err.status);
+        console.error("recordView failed:", err);
+        return jsonResponse({ error: "Something went wrong." }, 500);
+      }
+    }
+
+    // POST /api/products/:productId/like — toggle like. Requires
+    // sign-in (product decision — no anonymous likes, unlike reactions).
+    if (url.pathname.match(/^\/api\/products\/[^/]+\/like$/) && request.method === "POST") {
+      const productId = url.pathname.split("/")[3];
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      try {
+        const result = await productsEngagement.toggleLike(env, { productId, userId });
+        return jsonResponse(result);
+      } catch (err) {
+        if (err instanceof productsEngagement.UserFacingError) return jsonResponse({ error: err.message }, err.status);
+        console.error("toggleLike failed:", err);
+        return jsonResponse({ error: "Something went wrong." }, 500);
+      }
+    }
+
+    // POST /api/products/:productId/rating — submit/update a star
+    // rating + one preset primary text + up to 2 preset tags.
+    if (url.pathname.match(/^\/api\/products\/[^/]+\/rating$/) && request.method === "POST") {
+      const productId = url.pathname.split("/")[3];
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await productsEngagement.submitRating(env, {
+          productId,
+          userId,
+          rating: parseInt(body.rating, 10),
+          primaryPresetId: body.primary_preset_id,
+          tagPresetIds: body.tag_preset_ids,
+          request,
+          clientDeviceSignal: body.device_signal
+        });
+        const response = jsonResponse(result);
+        // LiyX AI: fire-and-forget, exactly like the brand-review insight
+        // rule — never awaited, never able to delay or fail this response.
+        ctx.waitUntil(productsEngagement.maybeGenerateProductInsight(env, productId));
+        return response;
+      } catch (err) {
+        if (err instanceof productsEngagement.UserFacingError) return jsonResponse({ error: err.message }, err.status);
+        console.error("submitRating failed:", err);
+        return jsonResponse({ error: "Something went wrong." }, 500);
+      }
+    }
+
+    // POST /api/products/:productId/share — log a share event (also
+    // used by the deep-link page to bump share_count when someone
+    // taps a share button, independent of which channel they chose).
+    if (url.pathname.match(/^\/api\/products\/[^/]+\/share$/) && request.method === "POST") {
+      const productId = url.pathname.split("/")[3];
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await productsEngagement.recordShare(env, productId, body.channel);
+        return jsonResponse(result);
+      } catch (err) {
+        if (err instanceof productsEngagement.UserFacingError) return jsonResponse({ error: err.message }, err.status);
+        console.error("recordShare failed:", err);
+        return jsonResponse({ error: "Something went wrong." }, 500);
+      }
+    }
+
+    // POST /api/products/:productId/report — anyone can report; never
+    // auto-hides, only queues for manual review (same philosophy as
+    // review_reports).
+    if (url.pathname.match(/^\/api\/products\/[^/]+\/report$/) && request.method === "POST") {
+      const productId = url.pathname.split("/")[3];
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await productsEngagement.reportProduct(env, {
+          productId,
+          reason: body.reason,
+          details: body.details,
+          request,
+          clientDeviceSignal: body.device_signal
+        });
+        return jsonResponse(result);
+      } catch (err) {
+        if (err instanceof productsEngagement.UserFacingError) return jsonResponse({ error: err.message }, err.status);
+        console.error("reportProduct failed:", err);
+        return jsonResponse({ error: "Something went wrong." }, 500);
+      }
+    }
+
+    // GET /api/products/:productId/chart?days=30 — daily-bucketed
+    // views/shares/ratings for the per-product engagement chart.
+    // Owner-only — this is a management-facing metric view, not
+    // something every visitor needs to fetch.
+    if (url.pathname.match(/^\/api\/products\/[^/]+\/chart$/) && request.method === "GET") {
+      const productId = url.pathname.split("/")[3];
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+
+      const { results: ownerCheck } = await env.DB.prepare(
+        `SELECT p.owner_id FROM products pr JOIN profiles p ON p.id = pr.profile_id WHERE pr.id = ?`
+      ).bind(productId).all();
+      if (!ownerCheck.length || ownerCheck[0].owner_id !== userId) return jsonResponse({ error: "Not authorized" }, 403);
+
+      const days = parseInt(url.searchParams.get("days") || "30", 10) || 30;
+      const chart = await productsEngagement.getProductEngagementChart(env, productId, days);
+      return jsonResponse({ chart });
     }
 
     // ---- Boost: public config (admin WhatsApp number for the handoff link) ----
@@ -973,6 +1145,78 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
     }
 
     // -----------------------------------------------------------------
+    // Product deep-link — /p/{brand-slug}/product/{product-slug}
+    // Server-renders real <meta property="og:*"> tags for this SPECIFIC
+    // product (image + 2-line description), so WhatsApp/Facebook/
+    // Twitter link previews show the actual product being shared, not
+    // the brand's generic profile card. A crawler only ever reads this
+    // static HTML — no JS execution needed for the preview to work.
+    // A real browser gets the same HTML, then profile.js boots as
+    // normal and hydrates straight into that product's detail view
+    // (see the embedded bootstrap script below), so there's exactly
+    // one visual experience, just reached two different ways.
+    // -----------------------------------------------------------------
+    if (url.pathname.match(/^\/p\/[^/]+\/product\/[^/]+$/)) {
+      const parts = url.pathname.split("/");
+      const brandSlug = parts[2];
+      const productSlug = parts[4];
+
+      const { results: profileRows } = await env.DB.prepare(
+        "SELECT id, business_name, is_active, moderation_status FROM profiles WHERE slug = ?"
+      ).bind(brandSlug).all();
+
+      if (!profileRows.length || !profileRows[0].is_active || profileRows[0].moderation_status !== "approved") {
+        return new Response("Not found", { status: 404 });
+      }
+      const profile = profileRows[0];
+
+      const { results: productRows } = await env.DB.prepare(
+        "SELECT id, name, description, price_display, image_url FROM products WHERE profile_id = ? AND slug = ? AND is_active = 1"
+      ).bind(profile.id, productSlug).all();
+
+      if (!productRows.length) return new Response("Not found", { status: 404 });
+      const product = productRows[0];
+
+      ctx.waitUntil(productsEngagement.recordView(env, product.id));
+
+      const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
+      const canonicalUrl = `${url.origin}${url.pathname}`;
+      const ogDescription = buildOgDescription(product.description, product.price_display);
+      const ogImage = product.image_url || `${url.origin}/default-og-image.png`;
+
+      const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtmlAttr(product.name)} — ${escapeHtmlAttr(profile.business_name)} | Liyog World</title>
+<meta property="og:type" content="product">
+<meta property="og:title" content="${escapeHtmlAttr(product.name)} — ${escapeHtmlAttr(profile.business_name)}">
+<meta property="og:description" content="${escapeHtmlAttr(ogDescription)}">
+<meta property="og:image" content="${escapeHtmlAttr(ogImage)}">
+<meta property="og:url" content="${escapeHtmlAttr(canonicalUrl)}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${escapeHtmlAttr(product.name)}">
+<meta name="twitter:description" content="${escapeHtmlAttr(ogDescription)}">
+<meta name="twitter:image" content="${escapeHtmlAttr(ogImage)}">
+<script>
+  // Real browsers: redirect straight into the normal profile page,
+  // carrying the product id so profile.js opens its detail view on
+  // load. Crawlers never execute this — they only ever read the
+  // meta tags above, which is the whole point of this route existing.
+  var target = ${JSON.stringify(pagePath)} + "?biz=" + ${JSON.stringify(brandSlug)} + "&product=" + ${JSON.stringify(product.id)};
+  window.location.replace(target);
+</script>
+</head>
+<body>
+  <p>Redirecting to <a href="/b/${escapeHtmlAttr(brandSlug)}">${escapeHtmlAttr(profile.business_name)}</a>…</p>
+</body>
+</html>`;
+
+      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } });
+    }
+
+    // -----------------------------------------------------------------
     // Public profile routes
     // -----------------------------------------------------------------
     if (!url.pathname.startsWith("/b/")) {
@@ -1018,6 +1262,7 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
     ctx.waitUntil(cleanupOldLogs(env));
     ctx.waitUntil(reviews.runScheduledArchive(env));
     ctx.waitUntil(reviews.runScheduledInsights(env)); // LiyX AI — regenerates insights for profiles with 3+ new reviews since last generation
+    ctx.waitUntil(productsEngagement.runScheduledProductInsights(env)); // LiyX AI — same rule, per product
   }
 };
 
@@ -1065,6 +1310,31 @@ async function sha256(message) {
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Minimal HTML-attribute escaping for the product deep-link page's
+// server-rendered <meta> tags — this is the ONLY place in index.js
+// that builds raw HTML from database content, so it gets its own
+// small, explicit escaper rather than pulling in a dependency.
+function escapeHtmlAttr(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Builds a short, share-preview-friendly description (roughly 2 lines
+// worth of characters) from a product's full description + price —
+// WhatsApp/Facebook truncate long og:description values anyway, so
+// this keeps the meaningful part front-loaded rather than relying on
+// the platform's own (inconsistent) truncation point.
+function buildOgDescription(description, priceDisplay) {
+  const desc = (description || "").replace(/\s+/g, " ").trim();
+  const pricePart = priceDisplay ? `${priceDisplay} — ` : "";
+  const combined = pricePart + desc;
+  return combined.length > 160 ? combined.slice(0, 157) + "…" : combined || "Check out this product on Liyog World.";
 }
 
 async function getSetting(env, key, fallback) {
