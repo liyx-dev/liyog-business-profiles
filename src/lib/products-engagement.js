@@ -149,9 +149,24 @@ function safeParseArray(val) {
 
 async function getProduct(env, productId) {
   const { results } = await env.DB.prepare(
-    "SELECT id, profile_id, name, slug, is_active FROM products WHERE id = ?"
+    "SELECT id, profile_id, name, slug, is_active, view_count, share_count FROM products WHERE id = ?"
   ).bind(productId).all();
   return results.length ? results[0] : null;
+}
+
+/** Everything the /engagement endpoint needs from the products row
+ *  itself (view_count/share_count live on `products`, NOT on
+ *  product_stats — that table only tracks ratings/likes). Kept as its
+ *  own small export rather than folding into getProductStats, so the
+ *  distinction between "rating/like aggregates" (product_stats) and
+ *  "raw counters" (products.view_count/share_count) stays visible in
+ *  the code, not just in the schema comments. */
+async function getProductCounters(env, productId) {
+  const product = await getProduct(env, productId);
+  return {
+    view_count: product?.view_count || 0,
+    share_count: product?.share_count || 0
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -572,6 +587,177 @@ function parseProductInsightResponse(aiResponse) {
   }
 }
 
+// =====================================================================
+// LiyX AI — CATALOGUE-WIDE insight (2026-07-24), shown in the "See
+// All" sheet after the first couple of products, and reusable later
+// on the brand profile inline page (per product decision). One row
+// per profile in profile_catalogue_insight, always overwritten — same
+// "never accumulates history" shape as product_ai_summary. Computed
+// purely from data that already exists (products.view_count/
+// share_count, product_ratings, product_likes) — no new per-event
+// tables needed. Regenerates roughly monthly OR after enough new
+// signals have accumulated since the last generation, whichever comes
+// first, so an active catalogue gets a fresher read without needing a
+// visitor to wait for a full calendar month.
+// =====================================================================
+
+const CATALOGUE_INSIGHT_SIGNAL_THRESHOLD = 10; // new views+likes+ratings combined since last generation
+const CATALOGUE_INSIGHT_MAX_AGE_DAYS = 30;
+
+async function getCatalogueInsight(env, profileId) {
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM profile_catalogue_insight WHERE profile_id = ?"
+  ).bind(profileId).all();
+  if (!results.length) return null;
+  return {
+    ...results[0],
+    top_keywords: safeParseArray(results[0].top_keywords),
+    flags: safeParseArray(results[0].flags)
+  };
+}
+
+async function computeCatalogueSignals(env, profileId) {
+  const { results: productRows } = await env.DB.prepare(
+    "SELECT id, view_count, share_count FROM products WHERE profile_id = ? AND is_active = 1"
+  ).bind(profileId).all();
+
+  const totalViews = productRows.reduce((sum, p) => sum + (p.view_count || 0), 0);
+  const totalShares = productRows.reduce((sum, p) => sum + (p.share_count || 0), 0);
+
+  const { results: statsRows } = await env.DB.prepare(
+    `SELECT ps.rating_count, ps.average_rating, ps.like_count, pr.name
+     FROM product_stats ps JOIN products pr ON pr.id = ps.product_id
+     WHERE pr.profile_id = ? AND pr.is_active = 1`
+  ).bind(profileId).all();
+
+  const totalRatings = statsRows.reduce((sum, r) => sum + (r.rating_count || 0), 0);
+  const totalLikes = statsRows.reduce((sum, r) => sum + (r.like_count || 0), 0);
+  const weightedRatingSum = statsRows.reduce((sum, r) => sum + (r.average_rating || 0) * (r.rating_count || 0), 0);
+  const overallAverage = totalRatings ? weightedRatingSum / totalRatings : 0;
+
+  return {
+    productCount: productRows.length,
+    totalViews, totalShares, totalRatings, totalLikes, overallAverage,
+    perProductStats: statsRows,
+    signalCount: totalViews + totalLikes + totalRatings + totalShares
+  };
+}
+
+async function maybeGenerateCatalogueInsight(env, profileId) {
+  try {
+    const signals = await computeCatalogueSignals(env, profileId);
+    if (signals.productCount < 1) return;
+
+    const existing = await getCatalogueInsight(env, profileId);
+    const daysSinceGeneration = existing
+      ? (Date.now() - new Date(existing.generated_at + "Z").getTime()) / 86400000
+      : Infinity;
+    const newSignalsSinceGeneration = signals.signalCount - (existing?.signal_count_at_generation || 0);
+
+    const shouldGenerate = !existing
+      || daysSinceGeneration >= CATALOGUE_INSIGHT_MAX_AGE_DAYS
+      || newSignalsSinceGeneration >= CATALOGUE_INSIGHT_SIGNAL_THRESHOLD;
+    if (!shouldGenerate) return;
+
+    await generateAndStoreCatalogueInsight(env, profileId, signals);
+  } catch (err) {
+    console.error("maybeGenerateCatalogueInsight failed:", err);
+  }
+}
+
+async function generateAndStoreCatalogueInsight(env, profileId, signals) {
+  const { results: profileRows } = await env.DB.prepare("SELECT business_name FROM profiles WHERE id = ?").bind(profileId).all();
+  const businessName = profileRows.length ? profileRows[0].business_name : "This brand";
+
+  // Flags are computed directly from the numbers — deterministic,
+  // never invented by the model — then handed to LiyX AI alongside the
+  // raw stats so its prose stays grounded in what's actually true.
+  const flags = [];
+  if (signals.totalViews > 0 && signals.totalRatings === 0) flags.push("Getting views but no ratings yet");
+  if (signals.overallAverage > 0 && signals.overallAverage < 3) flags.push("Average rating is below 3 stars");
+  if (signals.totalLikes === 0 && signals.totalViews > 20) flags.push("Good traffic, but no likes yet");
+  const topRated = signals.perProductStats.filter((r) => r.rating_count > 0).sort((a, b) => b.average_rating - a.average_rating)[0];
+  if (topRated) flags.push(`"${topRated.name}" is the highest-rated item`);
+
+  const prompt = buildCatalogueInsightPrompt(businessName, signals, flags);
+
+  let parsed;
+  try {
+    const aiResponse = await env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
+      messages: [
+        { role: "system", content: CATALOGUE_INSIGHT_SYSTEM_PROMPT },
+        { role: "user", content: prompt }
+      ],
+      max_tokens: 250
+    });
+    parsed = parseProductInsightResponse(aiResponse); // same strict-JSON shape/parser as product insights
+  } catch (err) {
+    console.error("LiyX AI (catalogue) generation call failed:", err);
+    return;
+  }
+  if (!parsed || !parsed.summary_text) return;
+
+  await env.DB.prepare(
+    `INSERT INTO profile_catalogue_insight
+       (profile_id, period, summary_text, top_keywords, flags,
+        total_views, total_likes, total_ratings, average_rating,
+        signal_count_at_generation, generated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(profile_id) DO UPDATE SET
+       period = excluded.period,
+       summary_text = excluded.summary_text,
+       top_keywords = excluded.top_keywords,
+       flags = excluded.flags,
+       total_views = excluded.total_views,
+       total_likes = excluded.total_likes,
+       total_ratings = excluded.total_ratings,
+       average_rating = excluded.average_rating,
+       signal_count_at_generation = excluded.signal_count_at_generation,
+       generated_at = datetime('now')`
+  ).bind(
+    profileId,
+    new Date().toISOString().slice(0, 7),
+    parsed.summary_text.slice(0, 350),
+    JSON.stringify((parsed.top_keywords || []).slice(0, 6)),
+    JSON.stringify(flags.slice(0, 4)),
+    signals.totalViews, signals.totalLikes, signals.totalRatings, signals.overallAverage,
+    signals.signalCount
+  ).run();
+}
+
+const CATALOGUE_INSIGHT_SYSTEM_PROMPT = `You are LiyX AI, writing a short, honest, encouraging catalogue-level insight for a brand's product/service listings on Liyog World. You are given aggregate numbers (views, likes, ratings, average rating) and a list of pre-computed factual flags — never invent numbers or claims beyond what's given. Be truthful, including about weak spots, but frame everything constructively toward improvement. Never mention you are an AI language model. Reply with strict JSON only, no markdown, no commentary, in exactly this shape: {"summary_text": "...", "top_keywords": ["...", "..."]}. summary_text should be 2-3 sentences. top_keywords should be 2-5 short recurring themes (2-4 words each), lowercase, no punctuation.`;
+
+function buildCatalogueInsightPrompt(businessName, signals, flags) {
+  const lines = [];
+  lines.push(`Brand: ${businessName}`);
+  lines.push(`Products/services listed: ${signals.productCount}`);
+  lines.push(`Total views across all items: ${signals.totalViews}`);
+  lines.push(`Total likes: ${signals.totalLikes}`);
+  lines.push(`Total ratings: ${signals.totalRatings}`);
+  lines.push(`Overall average rating: ${signals.overallAverage ? signals.overallAverage.toFixed(1) : "N/A"}`);
+  if (flags.length) {
+    lines.push(`Factual flags (already computed — do not contradict these):`);
+    flags.forEach((f) => lines.push(`- ${f}`));
+  }
+  lines.push(`Write a short, honest, encouraging summary of how this catalogue is performing overall.`);
+  return lines.join("\n");
+}
+
+async function runScheduledCatalogueInsights(env) {
+  const { results: profileIds } = await env.DB.prepare(
+    "SELECT DISTINCT profile_id FROM products WHERE is_active = 1"
+  ).all();
+
+  let generated = 0;
+  for (const row of profileIds) {
+    const before = await getCatalogueInsight(env, row.profile_id);
+    await maybeGenerateCatalogueInsight(env, row.profile_id);
+    const after = await getCatalogueInsight(env, row.profile_id);
+    if (!before || (after && after.generated_at !== before.generated_at)) generated++;
+  }
+  return { checked: profileIds.length, generated };
+}
+
 export {
   getRatingPresets,
   generateUniqueProductSlug,
@@ -581,6 +767,7 @@ export {
   submitRating,
   getMyRating,
   getProductStats,
+  getProductCounters,
   recalculateProductStats,
   recordShare,
   reportProduct,
@@ -588,7 +775,9 @@ export {
   getProductInsight,
   maybeGenerateProductInsight,
   runScheduledProductInsights,
+  getCatalogueInsight,
+  maybeGenerateCatalogueInsight,
+  runScheduledCatalogueInsights,
   buildFingerprint,
   UserFacingError
 };
-
