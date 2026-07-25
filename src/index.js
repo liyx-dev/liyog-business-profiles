@@ -700,7 +700,7 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       try {
         const cloned = createResponse.clone();
         const body = await cloned.json();
-        const newProductId = body?.product?.id || body?.id;
+        const newProductId = body?.productId || body?.product?.id || body?.id;
         if (newProductId) {
           const { results } = await env.DB.prepare("SELECT profile_id, name, slug FROM products WHERE id = ?").bind(newProductId).all();
           if (results.length && !results[0].slug) {
@@ -745,6 +745,13 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
         ).bind(profileId).all();
         includeDrafts = ownerCheck.length > 0 && ownerCheck[0].owner_id === requesterId;
       }
+      // Fire-and-forget: catalogue insight only actually regenerates
+      // once every ~30 days or after enough new signals accumulate
+      // (see maybeGenerateCatalogueInsight's own threshold check), so
+      // this is cheap to call on every product-list fetch rather than
+      // needing a separate trigger point.
+      ctx.waitUntil(productsEngagement.maybeGenerateCatalogueInsight(env, profileId));
+
       return handleListProducts(env, profileId, includeDrafts);
     }
 
@@ -769,6 +776,18 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       return jsonResponse({ presets: productsEngagement.getRatingPresets() });
     }
 
+    // GET /api/profiles/:profileId/catalogue-insight — the cached
+    // LiyX AI summary of the whole catalogue's performance, shown in
+    // the "See All" sheet. Public — same visibility as the products
+    // themselves; generation itself is triggered separately (product
+    // list fetch + scheduled cron), this route only ever reads the
+    // cached row.
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/catalogue-insight$/) && request.method === "GET") {
+      const profileId = url.pathname.split("/")[3];
+      const insight = await productsEngagement.getCatalogueInsight(env, profileId);
+      return jsonResponse({ insight });
+    }
+
     // GET /api/products/:productId/engagement — everything a product
     // card/detail page needs in one call: stats, my rating, my like,
     // LiyX AI insight. Public — same visibility rule as product
@@ -779,11 +798,12 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
 
       const stats = await productsEngagement.getProductStats(env, productId);
+      const counters = await productsEngagement.getProductCounters(env, productId);
       const myRating = await productsEngagement.getMyRating(env, productId, request, url.searchParams.get("ds"));
       const myLike = await productsEngagement.getMyLike(env, productId, userId);
       const insight = await productsEngagement.getProductInsight(env, productId);
 
-      return jsonResponse({ stats, my_rating: myRating, my_like: myLike, insight });
+      return jsonResponse({ stats: { ...stats, ...counters }, my_rating: myRating, my_like: myLike, insight });
     }
 
     // POST /api/products/:productId/view — record a view (simple
@@ -1171,8 +1191,8 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       const profile = profileRows[0];
 
       const { results: productRows } = await env.DB.prepare(
-        "SELECT id, name, description, price_display, image_url FROM products WHERE profile_id = ? AND slug = ? AND is_active = 1"
-      ).bind(profile.id, productSlug).all();
+        "SELECT id, name, description, price_display, image_url FROM products WHERE profile_id = ? AND (slug = ? OR id = ?) AND is_active = 1"
+      ).bind(profile.id, productSlug, productSlug).all();
 
       if (!productRows.length) return new Response("Not found", { status: 404 });
       const product = productRows[0];
@@ -1200,12 +1220,20 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
 <meta name="twitter:description" content="${escapeHtmlAttr(ogDescription)}">
 <meta name="twitter:image" content="${escapeHtmlAttr(ogImage)}">
 <script>
-  // Real browsers: redirect straight into the normal profile page,
+  // Real browsers: navigate straight into the normal profile page,
   // carrying the product id so profile.js opens its detail view on
   // load. Crawlers never execute this — they only ever read the
   // meta tags above, which is the whole point of this route existing.
+  //
+  // location.replace() is deliberately AVOIDED here: it swaps out the
+  // current history entry entirely, so the phone's hardware back
+  // button would jump past this page straight to whatever the visitor
+  // was looking at *before* they tapped the shared link (their chat
+  // app, a search results page, etc.) instead of feeling like "closing
+  // the product". A plain assignment creates a normal history entry,
+  // so back-button behavior matches every other link tap on the web.
   var target = ${JSON.stringify(pagePath)} + "?biz=" + ${JSON.stringify(brandSlug)} + "&product=" + ${JSON.stringify(product.id)};
-  window.location.replace(target);
+  window.location.href = target;
 </script>
 </head>
 <body>
@@ -1263,6 +1291,7 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
     ctx.waitUntil(reviews.runScheduledArchive(env));
     ctx.waitUntil(reviews.runScheduledInsights(env)); // LiyX AI — regenerates insights for profiles with 3+ new reviews since last generation
     ctx.waitUntil(productsEngagement.runScheduledProductInsights(env)); // LiyX AI — same rule, per product
+    ctx.waitUntil(productsEngagement.runScheduledCatalogueInsights(env)); // LiyX AI — catalogue-wide, ~monthly or signal-threshold
   }
 };
 
@@ -1354,3 +1383,4 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
+
