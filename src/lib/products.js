@@ -218,3 +218,4 @@ export async function handleUploadProductImage(request, env, userId, url) {
   const publicUrl = `${url.origin}/api/image/${key}`;
   return jsonResponse({ success: true, url: publicUrl });
 }
+
