@@ -170,6 +170,7 @@ export async function handleListProducts(env, profileId, includeDrafts = false) 
   const draftFilter = includeDrafts ? "" : "AND p.is_draft = 0";
   const { results: products } = await env.DB.prepare(
     `SELECT p.id, p.name, p.description, p.price_display, p.image_url, p.created_at, p.is_draft,
+            p.slug, p.view_count, p.share_count,
             b.expires_at as boost_expires_at
      FROM products p
      LEFT JOIN boost_log b ON b.product_id = p.id AND b.expires_at > datetime('now')
