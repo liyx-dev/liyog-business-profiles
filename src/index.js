@@ -1383,4 +1383,3 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
