@@ -1,5 +1,6 @@
 import PROFILE_CSS from "./assets/profile-css.txt";
 import PROFILE_JS from "./assets/profile-js.txt";
+import PRODUCT_PAGES_CLIENT_JS from "./assets/product-pages-client.txt";
 import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
 import AUTH_UI_JS from "./assets/auth-ui-js.txt";
 import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
@@ -9,6 +10,7 @@ import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage
 import * as reviews from "./lib/reviews.js";
 import { handleCreateProduct, handleUpdateProduct, handleDeleteProduct, handleListProducts, handleUploadProductImage } from "./lib/products.js";
 import * as productsEngagement from "./lib/products-engagement.js";
+import { handleProductsListingPage, handleProductDetailPage } from "./lib/product-pages.js";
 import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
 import { handleBoostStatus, handleActivateBoost, handleBoostConfig } from "./lib/boost.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
@@ -99,6 +101,9 @@ export default {
     }
     if (url.pathname === "/brands.js") {
       return new Response(PROFILE_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+    }
+    if (url.pathname === "/product-pages-client.js") {
+      return new Response(PRODUCT_PAGES_CLIENT_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
 if (url.pathname === "/reviews-ui.js") {
       return new Response(REVIEWS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
@@ -1165,83 +1170,17 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
     }
 
     // -----------------------------------------------------------------
-    // Product deep-link — /p/{brand-slug}/product/{product-slug}
-    // Server-renders real <meta property="og:*"> tags for this SPECIFIC
-    // product (image + 2-line description), so WhatsApp/Facebook/
-    // Twitter link previews show the actual product being shared, not
-    // the brand's generic profile card. A crawler only ever reads this
-    // static HTML — no JS execution needed for the preview to work.
-    // A real browser gets the same HTML, then profile.js boots as
-    // normal and hydrates straight into that product's detail view
-    // (see the embedded bootstrap script below), so there's exactly
-    // one visual experience, just reached two different ways.
+    // Product pages — two real, standalone, server-rendered documents
+    // (not SPA-redirect shims like the old /p/.../product/... route
+    // this replaces). Handlers live in lib/product-pages.js so this
+    // stays a thin router — see that file for the full SEO/JSON-LD/
+    // OG-tag logic and why each route is shaped the way it is.
     // -----------------------------------------------------------------
-    if (url.pathname.match(/^\/p\/[^/]+\/product\/[^/]+$/)) {
-      const parts = url.pathname.split("/");
-      const brandSlug = parts[2];
-      const productSlug = parts[4];
-
-      const { results: profileRows } = await env.DB.prepare(
-        "SELECT id, business_name, is_active, moderation_status FROM profiles WHERE slug = ?"
-      ).bind(brandSlug).all();
-
-      if (!profileRows.length || !profileRows[0].is_active || profileRows[0].moderation_status !== "approved") {
-        return new Response("Not found", { status: 404 });
-      }
-      const profile = profileRows[0];
-
-      const { results: productRows } = await env.DB.prepare(
-        "SELECT id, name, description, price_display, image_url FROM products WHERE profile_id = ? AND (slug = ? OR id = ?) AND is_active = 1"
-      ).bind(profile.id, productSlug, productSlug).all();
-
-      if (!productRows.length) return new Response("Not found", { status: 404 });
-      const product = productRows[0];
-
-      ctx.waitUntil(productsEngagement.recordView(env, product.id));
-
-      const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
-      const canonicalUrl = `${url.origin}${url.pathname}`;
-      const ogDescription = buildOgDescription(product.description, product.price_display);
-      const ogImage = product.image_url || `${url.origin}/default-og-image.png`;
-
-      const html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtmlAttr(product.name)} — ${escapeHtmlAttr(profile.business_name)} | Liyog World</title>
-<meta property="og:type" content="product">
-<meta property="og:title" content="${escapeHtmlAttr(product.name)} — ${escapeHtmlAttr(profile.business_name)}">
-<meta property="og:description" content="${escapeHtmlAttr(ogDescription)}">
-<meta property="og:image" content="${escapeHtmlAttr(ogImage)}">
-<meta property="og:url" content="${escapeHtmlAttr(canonicalUrl)}">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="${escapeHtmlAttr(product.name)}">
-<meta name="twitter:description" content="${escapeHtmlAttr(ogDescription)}">
-<meta name="twitter:image" content="${escapeHtmlAttr(ogImage)}">
-<script>
-  // Real browsers: navigate straight into the normal profile page,
-  // carrying the product id so profile.js opens its detail view on
-  // load. Crawlers never execute this — they only ever read the
-  // meta tags above, which is the whole point of this route existing.
-  //
-  // location.replace() is deliberately AVOIDED here: it swaps out the
-  // current history entry entirely, so the phone's hardware back
-  // button would jump past this page straight to whatever the visitor
-  // was looking at *before* they tapped the shared link (their chat
-  // app, a search results page, etc.) instead of feeling like "closing
-  // the product". A plain assignment creates a normal history entry,
-  // so back-button behavior matches every other link tap on the web.
-  var target = ${JSON.stringify(pagePath)} + "?biz=" + ${JSON.stringify(brandSlug)} + "&product=" + ${JSON.stringify(product.id)};
-  window.location.href = target;
-</script>
-</head>
-<body>
-  <p>Redirecting to <a href="/b/${escapeHtmlAttr(brandSlug)}">${escapeHtmlAttr(profile.business_name)}</a>…</p>
-</body>
-</html>`;
-
-      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } });
+    if (url.pathname.match(/^\/products\/[^/]+$/)) {
+      return handleProductsListingPage(request, env, ctx, url);
+    }
+    if (url.pathname.match(/^\/product\/[^/]+\/[^/]+$/)) {
+      return handleProductDetailPage(request, env, ctx, url);
     }
 
     // -----------------------------------------------------------------
@@ -1341,31 +1280,6 @@ async function sha256(message) {
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Minimal HTML-attribute escaping for the product deep-link page's
-// server-rendered <meta> tags — this is the ONLY place in index.js
-// that builds raw HTML from database content, so it gets its own
-// small, explicit escaper rather than pulling in a dependency.
-function escapeHtmlAttr(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-// Builds a short, share-preview-friendly description (roughly 2 lines
-// worth of characters) from a product's full description + price —
-// WhatsApp/Facebook truncate long og:description values anyway, so
-// this keeps the meaningful part front-loaded rather than relying on
-// the platform's own (inconsistent) truncation point.
-function buildOgDescription(description, priceDisplay) {
-  const desc = (description || "").replace(/\s+/g, " ").trim();
-  const pricePart = priceDisplay ? `${priceDisplay} — ` : "";
-  const combined = pricePart + desc;
-  return combined.length > 160 ? combined.slice(0, 157) + "…" : combined || "Check out this product on Liyog World.";
-}
-
 async function getSetting(env, key, fallback) {
   try {
     const { results } = await env.DB.prepare(
@@ -1383,3 +1297,4 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
+
