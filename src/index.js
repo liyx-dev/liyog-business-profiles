@@ -1,6 +1,7 @@
 import PROFILE_CSS from "./assets/profile-css.txt";
 import PROFILE_JS from "./assets/profile-js.txt";
 import PRODUCT_PAGES_CLIENT_JS from "./assets/product-pages-client.txt";
+import PRODUCT_PAGES_CSS from "./assets/product-pages.css";
 import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
 import AUTH_UI_JS from "./assets/auth-ui-js.txt";
 import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
@@ -104,6 +105,9 @@ export default {
     }
     if (url.pathname === "/product-pages-client.js") {
       return new Response(PRODUCT_PAGES_CLIENT_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+    }
+    if (url.pathname === "/product-pages.css") {
+      return new Response(PRODUCT_PAGES_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
 if (url.pathname === "/reviews-ui.js") {
       return new Response(REVIEWS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
@@ -1297,4 +1301,3 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
