@@ -541,7 +541,7 @@ async function generateAndStoreProductInsight(env, productId, ratingCountAtGener
   ).bind(
     productId,
     new Date().toISOString().slice(0, 7),
-    parsed.summary_text.slice(0, 350),
+    parsed.summary_text.slice(0, 900),
     JSON.stringify((parsed.top_keywords || []).slice(0, 6)),
     ratingCountAtGeneration
   ).run();
@@ -666,8 +666,9 @@ async function maybeGenerateCatalogueInsight(env, profileId) {
 }
 
 async function generateAndStoreCatalogueInsight(env, profileId, signals) {
-  const { results: profileRows } = await env.DB.prepare("SELECT business_name FROM profiles WHERE id = ?").bind(profileId).all();
+  const { results: profileRows } = await env.DB.prepare("SELECT business_name, business_category FROM profiles WHERE id = ?").bind(profileId).all();
   const businessName = profileRows.length ? profileRows[0].business_name : "This brand";
+  const businessCategory = profileRows.length ? profileRows[0].business_category : null;
 
   // Flags are computed directly from the numbers — deterministic,
   // never invented by the model — then handed to LiyX AI alongside the
@@ -679,7 +680,7 @@ async function generateAndStoreCatalogueInsight(env, profileId, signals) {
   const topRated = signals.perProductStats.filter((r) => r.rating_count > 0).sort((a, b) => b.average_rating - a.average_rating)[0];
   if (topRated) flags.push(`"${topRated.name}" is the highest-rated item`);
 
-  const prompt = buildCatalogueInsightPrompt(businessName, signals, flags);
+  const prompt = buildCatalogueInsightPrompt(businessName, businessCategory, signals, flags);
 
   let parsed;
   try {
@@ -688,7 +689,7 @@ async function generateAndStoreCatalogueInsight(env, profileId, signals) {
         { role: "system", content: CATALOGUE_INSIGHT_SYSTEM_PROMPT },
         { role: "user", content: prompt }
       ],
-      max_tokens: 250
+      max_tokens: 400
     });
     parsed = parseProductInsightResponse(aiResponse); // same strict-JSON shape/parser as product insights
   } catch (err) {
@@ -717,7 +718,7 @@ async function generateAndStoreCatalogueInsight(env, profileId, signals) {
   ).bind(
     profileId,
     new Date().toISOString().slice(0, 7),
-    parsed.summary_text.slice(0, 350),
+    parsed.summary_text.slice(0, 900),
     JSON.stringify((parsed.top_keywords || []).slice(0, 6)),
     JSON.stringify(flags.slice(0, 4)),
     signals.totalViews, signals.totalLikes, signals.totalRatings, signals.overallAverage,
@@ -725,11 +726,14 @@ async function generateAndStoreCatalogueInsight(env, profileId, signals) {
   ).run();
 }
 
-const CATALOGUE_INSIGHT_SYSTEM_PROMPT = `You are LiyX AI, writing a short, honest, encouraging catalogue-level insight for a brand's product/service listings on Liyog World. You are given aggregate numbers (views, likes, ratings, average rating) and a list of pre-computed factual flags — never invent numbers or claims beyond what's given. Be truthful, including about weak spots, but frame everything constructively toward improvement. Never mention you are an AI language model. Reply with strict JSON only, no markdown, no commentary, in exactly this shape: {"summary_text": "...", "top_keywords": ["...", "..."]}. summary_text should be 2-3 sentences. top_keywords should be 2-5 short recurring themes (2-4 words each), lowercase, no punctuation.`;
+const CATALOGUE_INSIGHT_SYSTEM_PROMPT = `You are LiyX AI, writing a catalogue-level insight for a brand's product/service listings on Liyog World, a Nigerian business directory. You are given the brand name, business category, aggregate numbers (views, likes, ratings, average rating), and a list of pre-computed factual flags — never invent numbers or claims beyond what's given. Be truthful, including about weak spots, but frame everything constructively toward improvement.
 
-function buildCatalogueInsightPrompt(businessName, signals, flags) {
+Write the summary to be genuinely useful to a reader AND naturally keyword-rich for search engines: work in the brand's name, its business category/niche, and words a real customer would search for (e.g. "trusted", "reviews", "Nigeria", the product category itself) — but only where they fit naturally in a real sentence, never as a stuffed list. Never mention you are an AI language model. Reply with strict JSON only, no markdown, no commentary, in exactly this shape: {"summary_text": "...", "top_keywords": ["...", "..."]}. summary_text should be 3-4 full sentences, naturally readable, not truncated mid-thought. top_keywords should be 3-6 short recurring themes (2-4 words each) that double as real search terms, lowercase, no punctuation.`;
+
+function buildCatalogueInsightPrompt(businessName, businessCategory, signals, flags) {
   const lines = [];
   lines.push(`Brand: ${businessName}`);
+  if (businessCategory) lines.push(`Business category/niche: ${businessCategory}`);
   lines.push(`Products/services listed: ${signals.productCount}`);
   lines.push(`Total views across all items: ${signals.totalViews}`);
   lines.push(`Total likes: ${signals.totalLikes}`);
@@ -739,7 +743,7 @@ function buildCatalogueInsightPrompt(businessName, signals, flags) {
     lines.push(`Factual flags (already computed — do not contradict these):`);
     flags.forEach((f) => lines.push(`- ${f}`));
   }
-  lines.push(`Write a short, honest, encouraging summary of how this catalogue is performing overall.`);
+  lines.push(`Write a complete, naturally keyword-rich summary of how this catalogue is performing overall — do not truncate mid-sentence, finish every thought.`);
   return lines.join("\n");
 }
 
@@ -781,4 +785,3 @@ export {
   buildFingerprint,
   UserFacingError
 };
-
