@@ -147,6 +147,61 @@ function safeParseArray(val) {
   catch (e) { return []; }
 }
 
+// ---------------------------------------------------------------------
+// Sentence-safe truncation for AI-generated summary_text before it's
+// saved to D1. (2026-08-14 fix — see maxLen bump + call sites below.)
+//
+// Previously both generateAndStoreProductInsight and
+// generateAndStoreCatalogueInsight did a raw `.slice(0, 900)` on the
+// model's output. Both system prompts already ask the model to finish
+// every thought and never truncate mid-sentence — but that's only an
+// instruction to the model, not a guarantee it's followed, and a raw
+// character slice has no idea where a sentence ends. If the model's
+// prose ever ran past 900 chars (easy for the catalogue insight, whose
+// own prompt asks for a longer 3-4 sentence summary plus keyword-rich
+// phrasing), the saved text got chopped at an arbitrary character —
+// visibly mid-word or mid-sentence on the brand-profile and product
+// pages, exactly the bug reported.
+//
+// This function never invents or extends text — it only ever trims.
+// If the text is already within maxLen, it's returned untouched. If
+// it's longer, it looks for the LAST sentence-ending punctuation
+// (. ! ?) at or before maxLen and cuts there, keeping the punctuation,
+// so the stored text always ends as a complete sentence. Only if no
+// sentence boundary exists at all within maxLen (a single very long
+// run-on with no punctuation — pathological, but handled rather than
+// crashing or silently keeping an oversized row) does it fall back to
+// a hard cut, and even then at the last whitespace rather than
+// mid-word, with an ellipsis so it's visibly marked as cut rather than
+// looking like a naturally short summary.
+function truncateToSentence(text, maxLen) {
+  const trimmed = (text || "").trim();
+  if (trimmed.length <= maxLen) return trimmed;
+
+  const window = trimmed.slice(0, maxLen);
+  // Find the last ., !, or ? in the window, followed by end-of-string,
+  // a space, or a quote/paren close — avoids matching decimals like
+  // "4.5 stars" or abbreviations followed directly by another letter.
+  const sentenceEndRe = /[.!?]["')\]]?(?=\s|$)/g;
+  let lastEnd = -1;
+  let match;
+  while ((match = sentenceEndRe.exec(window)) !== null) {
+    lastEnd = match.index + match[0].length;
+  }
+
+  if (lastEnd > 0) {
+    return trimmed.slice(0, lastEnd).trim();
+  }
+
+  // No sentence boundary found in-window at all — fall back to the
+  // last whitespace so we at least don't cut a word in half, and mark
+  // it clearly as truncated rather than presenting a fake-complete
+  // sentence.
+  const lastSpace = window.lastIndexOf(" ");
+  const safeCut = lastSpace > 0 ? window.slice(0, lastSpace) : window;
+  return safeCut.trim() + "…";
+}
+
 async function getProduct(env, productId) {
   const { results } = await env.DB.prepare(
     "SELECT id, profile_id, name, slug, is_active, view_count, share_count FROM products WHERE id = ?"
@@ -444,6 +499,14 @@ async function getProductEngagementChart(env, productId, days = 30) {
 
 const PRODUCT_INSIGHT_REGEN_THRESHOLD = 3; // regenerate after this many new ratings since last generation
 const PRODUCT_INSIGHT_SOURCE_LIMIT = 40; // most recent ratings fed to the model
+// 2026-08-14: raised from the old flat 900-char slice (shared with the
+// catalogue insight, which needs meaningfully more room — see
+// CATALOGUE_INSIGHT_MAX_CHARS below). The system prompt asks for only
+// 1-2 sentences, so 500 chars is already generous headroom for that —
+// this ceiling should now only ever be reached by a genuine model
+// outlier, and even then truncateToSentence() (see above) cuts at the
+// last full sentence, never mid-word/mid-thought.
+const PRODUCT_INSIGHT_MAX_CHARS = 500;
 
 async function getProductInsight(env, productId) {
   const { results } = await env.DB.prepare(
@@ -541,7 +604,7 @@ async function generateAndStoreProductInsight(env, productId, ratingCountAtGener
   ).bind(
     productId,
     new Date().toISOString().slice(0, 7),
-    parsed.summary_text.slice(0, 900),
+    truncateToSentence(parsed.summary_text, PRODUCT_INSIGHT_MAX_CHARS),
     JSON.stringify((parsed.top_keywords || []).slice(0, 6)),
     ratingCountAtGeneration
   ).run();
@@ -603,6 +666,13 @@ function parseProductInsightResponse(aiResponse) {
 
 const CATALOGUE_INSIGHT_SIGNAL_THRESHOLD = 10; // new views+likes+ratings combined since last generation
 const CATALOGUE_INSIGHT_MAX_AGE_DAYS = 30;
+// 2026-08-14: the old flat 900-char slice was shared with the
+// (shorter) product insight above; this one gets its own, slightly
+// higher ceiling since its prompt explicitly asks for 3-4 full
+// sentences PLUS naturally-worked-in keywords — legitimately longer
+// prose than the product-level summary. truncateToSentence() is still
+// the actual safety net if the model ever runs past this.
+const CATALOGUE_INSIGHT_MAX_CHARS = 1100;
 
 async function getCatalogueInsight(env, profileId) {
   const { results } = await env.DB.prepare(
@@ -718,7 +788,7 @@ async function generateAndStoreCatalogueInsight(env, profileId, signals) {
   ).bind(
     profileId,
     new Date().toISOString().slice(0, 7),
-    parsed.summary_text.slice(0, 900),
+    truncateToSentence(parsed.summary_text, CATALOGUE_INSIGHT_MAX_CHARS),
     JSON.stringify((parsed.top_keywords || []).slice(0, 6)),
     JSON.stringify(flags.slice(0, 4)),
     signals.totalViews, signals.totalLikes, signals.totalRatings, signals.overallAverage,
