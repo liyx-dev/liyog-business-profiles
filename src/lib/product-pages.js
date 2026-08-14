@@ -232,8 +232,8 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
 <meta name="twitter:title" content="${escapeHtmlAttr(title)}">
 <meta name="twitter:description" content="${escapeHtmlAttr(metaDescription)}">
 <meta name="twitter:image" content="${escapeHtmlAttr(ogImage)}">
-<link rel="stylesheet" href="${origin}/brands.css">
-<link rel="stylesheet" href="${origin}/product-pages.css">
+<link rel="stylesheet" href="${origin}/brands.css" id="lp-css-brands" onerror="window.__lpCssFailed=true">
+<link rel="stylesheet" href="${origin}/product-pages.css" id="lp-css-shop" onerror="window.__lpCssFailed=true">
 <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
 <script>
 // Runs before first paint so a returning visitor's saved dark-mode
@@ -246,6 +246,57 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
     var t = localStorage.getItem("liyog_shop_theme");
     if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
   } catch (e) {}
+})();
+
+// 2026-08-14: self-healing network detector for this server-rendered
+// page. Unlike the brand-profile page, the CONTENT here is already
+// real HTML from the first response — nothing needs a JS fetch to
+// appear. The actual risk on a poor connection is the two
+// stylesheets above (or product-pages-client.js below) failing or
+// stalling mid-load, which leaves correct HTML but unstyled and
+// non-interactive ("awkward and totally unstyled" per the reported
+// issue). This checks for that specific condition rather than
+// guessing:
+//   1. onerror on either <link> sets window.__lpCssFailed immediately
+//      if the browser reports an outright load failure.
+//   2. As a backstop for a request that just STALLS instead of
+//      failing (no onerror fires for that), a short timeout checks
+//      whether the stylesheets actually applied by looking for a CSS
+//      custom property we know profile.css defines at :root — if
+//      it's still empty after the grace period, styling never landed.
+// Either signal shows a small, dismissable "poor network" banner with
+// a one-tap refresh — it never hides or blocks the real page content
+// underneath, since that content is already there regardless.
+(function() {
+  function cssActuallyLoaded() {
+    try {
+      var v = getComputedStyle(document.documentElement).getPropertyValue("--liyog-green");
+      return !!(v && v.trim());
+    } catch (e) { return true; } // if we can't check, don't false-positive
+  }
+  function showNetworkBanner() {
+    if (document.getElementById("lp-asset-fail-banner")) return; // already shown
+    var banner = document.createElement("div");
+    banner.id = "lp-asset-fail-banner";
+    banner.className = "lp-asset-fail-banner";
+    banner.innerHTML = "Your network looks poor — some parts of this page may not have loaded correctly. " +
+      "<button type=\\"button\\" id=\\"lp-asset-fail-refresh\\">Refresh</button>";
+    document.body.insertBefore(banner, document.body.firstChild);
+    var btn = document.getElementById("lp-asset-fail-refresh");
+    if (btn) btn.addEventListener("click", function() { window.location.reload(); });
+  }
+  function check() {
+    if (window.__lpCssFailed || !cssActuallyLoaded()) showNetworkBanner();
+  }
+  // Grace period before checking — a normal (even moderately slow)
+  // load easily finishes well within this, so it never fires on a
+  // healthy connection; this is deliberately generous rather than
+  // twitchy.
+  setTimeout(check, 4000);
+  // Also re-check sooner if the browser reports we're online after
+  // having been offline — catches the "loaded broken, then recovered"
+  // case without waiting the full grace period again.
+  window.addEventListener("online", function() { setTimeout(check, 500); });
 })();
 </script>
 </head>
@@ -405,8 +456,10 @@ async function handleProductsListingPage(request, env, ctx, url) {
   const bodyHtml = `
     <header class="lp-shop-topheader">
       <div class="lp-shop-topheader-inner">
-        ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" class="lp-shop-topheader-logo">` : ""}
-        <span class="lp-shop-topheader-name">${escapeHtmlAttr(profile.business_name)}</span>
+        <div class="lp-shop-topheader-brand">
+          ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" class="lp-shop-topheader-logo">` : ""}
+          <span class="lp-shop-topheader-name">${escapeHtmlAttr(profile.business_name)}</span>
+        </div>
         <nav class="lp-shop-topheader-nav">
           <button type="button" class="lp-shop-theme-toggle" id="lp-shop-theme-toggle-btn" aria-label="Toggle dark mode">
             <svg class="lp-theme-icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
@@ -424,6 +477,16 @@ async function handleProductsListingPage(request, env, ctx, url) {
       <div class="lp-shop-hero">
         <h1 class="lp-shop-hero-title">Products &amp; Services</h1>
         <p class="lp-shop-hero-subtitle">${escapeHtmlAttr(profile.tagline || `Everything ${profile.business_name} offers, all in one place.`)}</p>
+        <div class="lp-shop-hero-actions">
+          <button type="button" class="lp-product-page-share-btn" id="lp-shop-page-share">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.6" x2="15.4" y2="6.4"/><line x1="8.6" y1="13.4" x2="15.4" y2="17.6"/></svg>
+            <span>Share</span>
+          </button>
+          <button type="button" class="lp-product-page-copy-btn" id="lp-shop-page-copy">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span>Copy Link</span>
+          </button>
+        </div>
       </div>
 
       <div class="lp-shop-toolbar">
@@ -446,8 +509,9 @@ async function handleProductsListingPage(request, env, ctx, url) {
         ${!filtered.length ? `<p class="lp-shop-empty">No products match your search.</p>` : ""}
       </div>
       ${filtered.length ? `
-      <div class="lp-shop-infinite-sentinel" id="lp-shop-infinite-sentinel" data-done="${hasMoreThanInitial ? "false" : "true"}">
+      <div class="lp-shop-infinite-sentinel" id="lp-shop-infinite-sentinel" data-done="${hasMoreThanInitial ? "false" : "true"}" data-loading="false">
         <div class="lp-shop-infinite-spinner"></div>
+        <button type="button" class="lp-shop-infinite-loadmore-btn" id="lp-shop-loadmore-btn">Load More Products</button>
         <span class="lp-shop-infinite-done-text">You've seen every product</span>
       </div>` : ""}
     </div>
@@ -618,8 +682,10 @@ async function handleProductDetailPage(request, env, ctx, url) {
   const bodyHtml = `
     <header class="lp-shop-topheader">
       <div class="lp-shop-topheader-inner">
-        ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" class="lp-shop-topheader-logo">` : ""}
-        <span class="lp-shop-topheader-name">${escapeHtmlAttr(profile.business_name)}</span>
+        <div class="lp-shop-topheader-brand">
+          ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" class="lp-shop-topheader-logo">` : ""}
+          <span class="lp-shop-topheader-name">${escapeHtmlAttr(profile.business_name)}</span>
+        </div>
         <nav class="lp-shop-topheader-nav">
           <button type="button" class="lp-shop-theme-toggle" id="lp-shop-theme-toggle-btn" aria-label="Toggle dark mode">
             <svg class="lp-theme-icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
