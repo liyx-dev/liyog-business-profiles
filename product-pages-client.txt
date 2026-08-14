@@ -1,0 +1,303 @@
+/* =====================================================================
+   LIYOG WORLD — src/assets/product-pages-client.txt
+   Client hydration for the two standalone pages:
+     /products/{slug}            — catalogue listing
+     /product/{slug}/{brand}     — individual product page
+   Loaded AFTER profile.js (which exposes window.LiyogProductUI) and
+   AFTER product-pages.css. Deliberately its own file, separate from
+   profile.js, per the "split code for easy debug/maintenance"
+   instruction — this file only ever touches the small public surface
+   profile.js exposes, never its internals directly.
+
+   2026-08-13 additions (all additive — nothing below this comment
+   block changes how the existing hydration functions behave):
+     - Infinite scroll on the listing page grid
+     - Dark-mode toggle wiring (shared helper from profile.js)
+     - Left/right arrow nav for the related-products row
+     - Floating "Send an Inquiry" button (reuses profile.js's existing
+       sheet/form — see openInquirySheet in profile.js, NOT rebuilt)
+     - Owner-only engagement chart on the product detail page
+   ===================================================================== */
+(function () {
+  "use strict";
+
+  const ui = window.LiyogProductUI;
+  if (!ui) { console.error("LiyogProductUI not found — profile.js must load before this script."); return; }
+
+  const WORKER_BASE = "https://www.liyogworld.com.ng";
+
+  // Auto-fill footer year on whichever page has it — never hardcoded.
+  const yearEl = document.getElementById("lp-shop-footer-year");
+  if (yearEl) yearEl.textContent = new Date().getFullYear();
+
+  // Dark-mode toggle + floating inquiry button — present on BOTH
+  // standalone pages, wired once here regardless of which page's
+  // context object is present below.
+  wireShopThemeToggle();
+  wireFloatingInquiryButton();
+
+  if (window.__LIYOG_SHOP_CONTEXT__) {
+    hydrateShopListingPage(window.__LIYOG_SHOP_CONTEXT__);
+  }
+  if (window.__LIYOG_PRODUCT_PAGE_CONTEXT__) {
+    hydrateProductDetailPage(window.__LIYOG_PRODUCT_PAGE_CONTEXT__);
+  }
+
+  // -----------------------------------------------------------------
+  // Dark mode — reads/writes the same data-theme attribute the
+  // dark-mode CSS block in profile.css already knows how to read
+  // (trigger #2 there). initShopThemeToggle is exported from
+  // profile.js so this one small mechanism has a single source of
+  // truth rather than being reimplemented per file.
+  // -----------------------------------------------------------------
+  function wireShopThemeToggle() {
+    const btn = document.getElementById("lp-shop-theme-toggle-btn");
+    if (ui.initShopThemeToggle) ui.initShopThemeToggle(btn);
+  }
+
+  // -----------------------------------------------------------------
+  // Floating "Send an Inquiry" — reuses the EXACT SAME sheet/form
+  // openInquirySheet() already builds and wires on the brand-profile
+  // page (now exported on window.LiyogProductUI). This function only
+  // ever calls it; it does not construct any new form markup.
+  // -----------------------------------------------------------------
+  function wireFloatingInquiryButton() {
+    const btn = document.getElementById("lp-shop-float-inquiry-btn");
+    if (!btn) return;
+    const shopCtx = window.__LIYOG_SHOP_CONTEXT__;
+    const productCtx = window.__LIYOG_PRODUCT_PAGE_CONTEXT__;
+    const profile = (shopCtx && shopCtx.profile) || (productCtx && productCtx.profile);
+    if (!profile) { btn.style.display = "none"; return; }
+    btn.addEventListener("click", () => ui.openInquirySheet(profile));
+  }
+
+  // -----------------------------------------------------------------
+  // Listing page
+  // -----------------------------------------------------------------
+  function hydrateShopListingPage(ctx) {
+    const searchInput = document.getElementById("lp-shop-search-input");
+    const sortGroup = document.getElementById("lp-shop-sort-group");
+    const grid = document.getElementById("lp-shop-grid");
+
+    // Search/sort re-navigate with updated query params rather than
+    // re-rendering client-side — the URL always represents the exact
+    // current view (shareable, bookmarkable, and each filter
+    // combination stays correctly server-rendered/indexed).
+    function applyFilters(sortOverride) {
+      const url = new URL(window.location.href);
+      const q = searchInput.value.trim();
+      if (q) url.searchParams.set("q", q); else url.searchParams.delete("q");
+      if (sortOverride) url.searchParams.set("sort", sortOverride);
+      window.location.href = url.toString();
+    }
+
+    let debounceTimer;
+    if (searchInput) {
+      searchInput.addEventListener("input", () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => applyFilters(), 550);
+      });
+    }
+    if (sortGroup) {
+      sortGroup.querySelectorAll("[data-sort]").forEach((btn) => {
+        btn.addEventListener("click", () => applyFilters(btn.dataset.sort));
+      });
+    }
+
+    // Every card's like/rate/report/whatsapp/call buttons — the SAME
+    // wiring function the brand-profile page uses for its own inline
+    // grid, so behavior (and any future fix to it) stays identical
+    // across both places with zero duplication.
+    if (grid && ctx.profile) {
+      ui.wireProductCardActions(grid, ctx.profile);
+    }
+
+    wireInfiniteScroll(ctx);
+  }
+
+  // Cards past the first INITIAL_VISIBLE are already in the DOM (see
+  // product-pages.js — every product is ALWAYS server-rendered, for
+  // full SEO indexing) with the .lp-shop-card-hidden class. This just
+  // progressively removes that class in batches of ~10 as the visitor
+  // scrolls, using an IntersectionObserver on a sentinel element at
+  // the bottom of the grid — no re-fetching, no re-rendering, nothing
+  // that would risk desyncing from the server-rendered HTML.
+  function wireInfiniteScroll(ctx) {
+    const grid = document.getElementById("lp-shop-grid");
+    const sentinel = document.getElementById("lp-shop-infinite-sentinel");
+    if (!grid || !sentinel) return;
+
+    const BATCH_SIZE = 10;
+    let revealing = false;
+
+    function revealNextBatch() {
+      if (revealing) return;
+      const hidden = grid.querySelectorAll(".lp-shop-card-hidden");
+      if (!hidden.length) {
+        sentinel.dataset.done = "true";
+        observer.disconnect();
+        return;
+      }
+      revealing = true;
+      // Small delay so the loading spinner is actually perceptible —
+      // on a fast connection with cached images this would otherwise
+      // reveal instantly and the spinner would just flash uselessly.
+      setTimeout(() => {
+        for (let i = 0; i < Math.min(BATCH_SIZE, hidden.length); i++) {
+          hidden[i].classList.remove("lp-shop-card-hidden");
+        }
+        revealing = false;
+        if (!grid.querySelectorAll(".lp-shop-card-hidden").length) {
+          sentinel.dataset.done = "true";
+          observer.disconnect();
+        }
+      }, 250);
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => { if (entry.isIntersecting) revealNextBatch(); });
+    }, { rootMargin: "400px 0px" });
+    observer.observe(sentinel);
+  }
+
+  // -----------------------------------------------------------------
+  // Individual product page
+  // -----------------------------------------------------------------
+  async function hydrateProductDetailPage(ctx) {
+    const { profile, product, stats, insight, hasOwnerSessionHint } = ctx;
+
+    const engBarEl = document.getElementById("lp-detail-engbar");
+    const contactEl = document.getElementById("lp-detail-contact");
+    const statsEl = document.getElementById("lp-detail-stats");
+    const insightEl = document.getElementById("lp-detail-insight");
+
+    // The visitor's OWN like/rating state can't be server-rendered
+    // (depends on session/fingerprint) — fetched client-side only.
+    // Note: engBarEl/contactEl already contain real, server-rendered
+    // HTML (logged-out default) for SEO/no-JS visitors — this fetch
+    // only refines that into the personalized version once JS runs;
+    // it does not change what a crawler or no-JS visitor already saw.
+    let myLike = false;
+    let myRating = null;
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/products/${product.id}/engagement?ds=${encodeURIComponent(ui.getDeviceSignal())}`, { credentials: "include" });
+      const data = await res.json();
+      myLike = !!data.my_like;
+      myRating = data.my_rating || null;
+    } catch (e) { /* personalization is an enhancement, not critical path */ }
+
+    const productWithEngagement = { ...product, _engagement: { stats, my_like: myLike, my_rating: myRating } };
+
+    if (engBarEl) {
+      engBarEl.innerHTML = ui.engagementBarHtml(productWithEngagement, true);
+      ui.wireProductCardActions(engBarEl, profile);
+    }
+    if (contactEl) {
+      contactEl.innerHTML = ui.contactButtonsHtml(profile, product, true);
+      ui.wireProductCardActions(contactEl, profile);
+    }
+    if (statsEl) statsEl.innerHTML = ui.detailStatsHtml(stats);
+    if (insightEl) {
+      if (insight && insight.summary_text) insightEl.innerHTML = ui.detailInsightHtml(insight);
+      else insightEl.remove();
+    }
+
+    wireHeroLightbox();
+    wireShareAndCopy(product, profile);
+    wireReportButton(product);
+    wireRelatedProductsArrows();
+    if (hasOwnerSessionHint) wireOwnerChart(product.id);
+  }
+
+  function wireHeroLightbox() {
+    const heroWrap = document.getElementById("lp-product-hero-wrap");
+    const heroImg = document.getElementById("lp-product-hero-img");
+    const lightbox = document.getElementById("lp-product-hero-lightbox");
+    const closeBtn = document.getElementById("lp-product-hero-lightbox-close");
+    if (!heroWrap || !heroImg || !lightbox) return;
+
+    heroWrap.addEventListener("click", () => lightbox.classList.add("lp-open"));
+    if (closeBtn) closeBtn.addEventListener("click", (e) => { e.stopPropagation(); lightbox.classList.remove("lp-open"); });
+    lightbox.addEventListener("click", (e) => { if (e.target === lightbox) lightbox.classList.remove("lp-open"); });
+  }
+
+  function wireShareAndCopy(product, profile) {
+    const shareBtn = document.getElementById("lp-product-page-share");
+    const copyBtn = document.getElementById("lp-product-page-copy");
+    if (!shareBtn && !copyBtn) return;
+
+    const shareUrl = ui.buildProductPageUrl(product, profile);
+
+    if (shareBtn) {
+      shareBtn.addEventListener("click", () => ui.shareProduct(product, profile, shareUrl));
+    }
+    if (copyBtn) {
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(shareUrl);
+          ui.showToast("Link copied!", "success");
+        } catch (e) {
+          ui.showToast("Couldn't copy the link. Please try again.", "error");
+        }
+      });
+    }
+  }
+
+  function wireReportButton(product) {
+    const reportBtn = document.getElementById("lp-product-page-report");
+    if (!reportBtn) return;
+    reportBtn.addEventListener("click", () => {
+      if (ui.openQuickReportConfirm) {
+        ui.openQuickReportConfirm(reportBtn.dataset.productId, reportBtn.dataset.productName);
+      }
+    });
+  }
+
+  // Left/right arrow nav for the "You might also like" row. Only
+  // matters below the 640px breakpoint — at 640px+ product-pages.css
+  // switches that row to a real 5-column grid (no scrolling to
+  // navigate), and hides these arrows entirely via CSS, so this JS
+  // simply has nothing to do there and that's fine.
+  function wireRelatedProductsArrows() {
+    const scroll = document.getElementById("lp-related-products-scroll");
+    const prevBtn = document.getElementById("lp-related-arrow-prev");
+    const nextBtn = document.getElementById("lp-related-arrow-next");
+    if (!scroll || !prevBtn || !nextBtn) return;
+
+    function cardStep() {
+      const card = scroll.querySelector(".lp-related-card");
+      return card ? card.offsetWidth + 12 : 150; // +12 = the row's gap
+    }
+    function updateArrowState() {
+      const maxScroll = scroll.scrollWidth - scroll.clientWidth;
+      prevBtn.disabled = scroll.scrollLeft <= 4;
+      nextBtn.disabled = scroll.scrollLeft >= maxScroll - 4;
+    }
+    prevBtn.addEventListener("click", () => { scroll.scrollBy({ left: -cardStep() * 2, behavior: "smooth" }); });
+    nextBtn.addEventListener("click", () => { scroll.scrollBy({ left: cardStep() * 2, behavior: "smooth" }); });
+    scroll.addEventListener("scroll", updateArrowState, { passive: true });
+    window.addEventListener("resize", updateArrowState);
+    updateArrowState();
+  }
+
+  // Owner-only engagement chart. hasOwnerSessionHint (server-computed
+  // from whether a liyog_session cookie is even present) is ONLY used
+  // to decide whether it's worth attempting this fetch at all — the
+  // actual security boundary is entirely inside the existing
+  // /api/products/:id/chart endpoint itself (session + ownership
+  // check, unmodified, already live). A visitor with a session cookie
+  // who is NOT the owner will get a 403 here and simply see nothing,
+  // exactly as intended.
+  async function wireOwnerChart(productId) {
+    const wrap = document.getElementById("lp-product-page-owner-chart");
+    if (!wrap) return;
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/products/${productId}/chart?days=30`, { credentials: "include" });
+      if (!res.ok) return; // not the owner (or not signed in) — leave the section absent
+      const data = await res.json();
+      if (!data.chart) return;
+      wrap.innerHTML = ui.detailChartHtml(data.chart);
+      wrap.classList.add("lp-visible");
+    } catch (e) { /* owner-only enhancement, safe to skip silently */ }
+  }
+})();
