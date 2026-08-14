@@ -31,6 +31,19 @@ function escapeHtmlAttr(str) {
     .replace(/'/g, "&#39;");
 }
 
+// Local, read-only cookie reader — deliberately duplicated rather than
+// imported from index.js (which doesn't export it) to avoid touching
+// index.js's existing exports/surface at all. Pure, single-purpose,
+// identical behavior to index.js's own getCookie. Only ever used below
+// to decide whether to bother attempting the owner-only chart fetch
+// client-side (a UX nicety) — the actual security boundary remains the
+// existing, unmodified /api/products/:id/chart endpoint in index.js,
+// which independently verifies the session and ownership itself.
+function hasSessionCookie(request) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  return /(?:^|;\s*)liyog_session=/.test(cookieHeader);
+}
+
 function buildMetaDescription(description, priceDisplay, maxLen = 160) {
   const desc = (description || "").replace(/\s+/g, " ").trim();
   const pricePart = priceDisplay ? `${priceDisplay} — ` : "";
@@ -40,10 +53,153 @@ function buildMetaDescription(description, priceDisplay, maxLen = 160) {
 
 async function getApprovedProfileBySlug(env, slug) {
   const { results } = await env.DB.prepare(
-    "SELECT id, slug, business_name, tagline, bio_html, logo_url, cover_url, business_category, is_active, moderation_status, referral_code FROM profiles WHERE slug = ?"
+    "SELECT id, slug, business_name, tagline, bio_html, logo_url, cover_url, business_category, is_active, moderation_status, referral_code, whatsapp_number, phone_number FROM profiles WHERE slug = ?"
   ).bind(slug).all();
   if (!results.length || !results[0].is_active || results[0].moderation_status !== "approved") return null;
   return results[0];
+}
+
+/* =====================================================================
+   SERVER-SIDE CARD RENDERING — full parity with the brand-profile
+   page's inline cards (engagementBarHtml/feedCardHtml/compactCardHtml
+   in profile.js), re-implemented here so the listing page can
+   server-render every product as real, crawlable HTML (profile.js
+   only runs in the browser — it can't be called from the Worker).
+   Every class name, data-action, and data attribute below is copied
+   EXACTLY from profile.js so wireProductCardActions() (loaded from
+   window.LiyogProductUI on the client) can wire these server-rendered
+   cards with ZERO changes to that function — same selectors, same
+   dataset keys, same nesting. If profile.js's card markup ever
+   changes, this needs updating to match — see the comment above
+   feedCardHtml() in profile.js for the counterpart. (2026-08-13)
+   ===================================================================== */
+
+const PRODUCT_PLACEHOLDER_SVG = `<div class="lp-product-image-placeholder"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></div>`;
+
+function serverProductImageBlock(prod) {
+  return prod.image_url
+    ? `<img src="${escapeHtmlAttr(prod.image_url)}" alt="${escapeHtmlAttr(prod.name)}" loading="lazy" data-fallback="true">`
+    : PRODUCT_PLACEHOLDER_SVG;
+}
+
+function serverEyeSvg() {
+  return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
+}
+
+function serverLikeHandSvg(size) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lp-like-hand-svg"><path d="M12 21s-6.7-4.35-9.3-8.2C1.1 10.5 1.6 7.4 4 5.9c2.1-1.3 4.7-.7 6.2 1.1L12 9l1.8-2c1.5-1.8 4.1-2.4 6.2-1.1 2.4 1.5 2.9 4.6 1.3 6.9C18.7 16.65 12 21 12 21z"/></svg>`;
+}
+
+function serverStarSvg(fillPercent, size) {
+  const clipId = `pstar-clip-${Math.random().toString(36).slice(2, 9)}`;
+  const pct = Math.max(0, Math.min(100, fillPercent));
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" class="lp-pstar-svg"><defs><clipPath id="${clipId}"><rect x="0" y="0" width="${(pct / 100) * 24}" height="24" /></clipPath></defs><path class="lp-pstar-bg" d="M12 2.5l2.9 6.6 7.1.7-5.4 4.8 1.6 7-6.2-3.7-6.2 3.7 1.6-7-5.4-4.8 7.1-.7z"/><path class="lp-pstar-fill" clip-path="url(#${clipId})" d="M12 2.5l2.9 6.6 7.1.7-5.4 4.8 1.6 7-6.2-3.7-6.2 3.7 1.6-7-5.4-4.8 7.1-.7z"/></svg>`;
+}
+
+function formatCompactNumberSSR(n) {
+  const num = Number(n) || 0;
+  if (num < 1000) return String(num);
+  if (num < 1000000) return (num / 1000).toFixed(num % 1000 >= 100 ? 1 : 0) + "k";
+  return (num / 1000000).toFixed(1) + "m";
+}
+
+// Same row-split structure as engagementBarHtml() in profile.js after
+// the 2026-08-13 like/rating collision fix — views+rating share a top
+// row, like gets its own full-width row beneath. Server-rendered with
+// the logged-out default (no my_like/my_rating — that per-visitor
+// state doesn't exist pre-hydration); the client-side init in
+// product-pages-client.js re-syncs this against the real per-visitor
+// state right after load for a signed-in visitor.
+function serverEngagementBarHtml(prod, stats, feed) {
+  const views = stats.view_count ?? prod.view_count ?? 0;
+  const avgRating = stats.average_rating || 0;
+  const ratingCount = stats.rating_count || 0;
+  const likeCount = stats.like_count || 0;
+  const sizeCls = feed ? "lp-engbar-feed" : "";
+  const starSize = feed ? 20 : 17;
+  const heartSize = feed ? 20 : 17;
+  return `
+    <div class="lp-engbar ${sizeCls}" data-product-id="${escapeHtmlAttr(prod.id)}" data-product-json="${escapeHtmlAttr(JSON.stringify(prod))}">
+      <div class="lp-engbar-row-top">
+        <span class="lp-engbar-item lp-engbar-views" title="Views">${serverEyeSvg()}<span>${formatCompactNumberSSR(views)}</span></span>
+        <button type="button" class="lp-engbar-item lp-engbar-rate lp-engbar-invite-tap" data-action="rate" aria-label="Rate this product">${serverStarSvg(avgRating ? 100 : 0, starSize)}<span>${avgRating ? avgRating.toFixed(1) : ""}${ratingCount ? ` (${ratingCount})` : ""}</span></button>
+      </div>
+      <div class="lp-engbar-row-like">
+        <button type="button" class="lp-engbar-item lp-engbar-like lp-engbar-invite-tap" data-action="like" aria-label="Like this product">${serverLikeHandSvg(heartSize)}<span>${formatCompactNumberSSR(likeCount)}</span></button>
+      </div>
+    </div>`;
+}
+
+function serverCardReportButtonHtml(prod) {
+  return `<button type="button" class="lp-card-report-btn" data-action="report-flag" data-product-id="${escapeHtmlAttr(prod.id)}" data-product-name="${escapeHtmlAttr(prod.name)}" aria-label="Report this product"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21V4a1 1 0 0 1 1-1h11.5a.5.5 0 0 1 .4.8L14 8l2.9 4.2a.5.5 0 0 1-.4.8H5v8"/></svg></button>`;
+}
+
+function serverContactButtonsHtml(profile, prod, feed) {
+  const hasWhatsapp = !!profile.whatsapp_number;
+  const hasCall = !!profile.phone_number;
+  if (!hasWhatsapp && !hasCall) return "";
+  const wrapClass = feed ? "lp-prodfeed-contacts" : "lp-prodcard-contacts";
+  const btnClass = feed ? "lp-prodfeed-btn" : "lp-prodcard-btn";
+  return `
+    <div class="${wrapClass}">
+      ${hasWhatsapp ? `
+        <button type="button" class="${btnClass} ${btnClass}-whatsapp" data-product-name="${escapeHtmlAttr(prod.name)}" data-action="whatsapp">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2z"/></svg>
+          <span>WhatsApp</span>
+        </button>` : ""}
+      ${hasCall ? `
+        <button type="button" class="${btnClass} ${btnClass}-call" data-action="call">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          <span>Call</span>
+        </button>` : ""}
+    </div>`;
+}
+
+function truncateLinesSSR(text, approxLines) {
+  const charsPerLine = 42;
+  const limit = approxLines * charsPerLine;
+  if (!text || text.length <= limit) return text;
+  return text.slice(0, limit).trim() + "…";
+}
+
+// Full parity with feedCardHtml() in profile.js — same .lp-prodfeed
+// markup, same nesting order (image → name → price → description →
+// engagement bar → contact buttons). This is the "Facebook ad" style
+// edge-to-edge card used for the very first product in the grid.
+function serverFeedCardHtml(prod, profile, stats) {
+  return `
+    <div class="lp-prodfeed" data-product-id="${escapeHtmlAttr(prod.id)}">
+      ${serverCardReportButtonHtml(prod)}
+      <a class="lp-prodfeed-imgwrap" href="/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(profile.slug)}">
+        ${serverProductImageBlock(prod)}
+      </a>
+      <div class="lp-prodfeed-body">
+        <a class="lp-prodfeed-name" href="/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(profile.slug)}" style="text-decoration:none;color:inherit;">${escapeHtmlAttr(prod.name)}</a>
+        ${prod.price_display ? `<div class="lp-prodfeed-price">${escapeHtmlAttr(prod.price_display)}</div>` : ""}
+        ${prod.description ? `<div class="lp-prodfeed-desc">${escapeHtmlAttr(truncateLinesSSR(prod.description, 3))}</div>` : ""}
+        ${serverEngagementBarHtml(prod, stats, true)}
+        ${serverContactButtonsHtml(profile, prod, true)}
+      </div>
+    </div>`;
+}
+
+// Full parity with compactCardHtml() in profile.js — same .lp-prodcard
+// markup used for every card after the first (the 2/3/4-column grid).
+function serverCompactCardHtml(prod, profile, stats) {
+  return `
+    <div class="lp-prodcard" data-product-id="${escapeHtmlAttr(prod.id)}">
+      ${serverCardReportButtonHtml(prod)}
+      <a class="lp-prodcard-imgwrap" href="/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(profile.slug)}">
+        ${serverProductImageBlock(prod)}
+      </a>
+      <div class="lp-prodcard-body">
+        <a class="lp-prodcard-name" href="/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(profile.slug)}" style="text-decoration:none;color:inherit;">${escapeHtmlAttr(prod.name)}</a>
+        ${prod.price_display ? `<div class="lp-prodcard-price">${escapeHtmlAttr(prod.price_display)}</div>` : ""}
+        ${prod.description ? `<div class="lp-prodcard-desc">${escapeHtmlAttr(truncateLinesSSR(prod.description, 2))}</div>` : ""}
+        ${serverEngagementBarHtml(prod, stats, false)}
+        ${serverContactButtonsHtml(profile, prod, false)}
+      </div>
+    </div>`;
 }
 
 // Shared page chrome: header nav linking back to the brand profile,
@@ -52,7 +208,13 @@ async function getApprovedProfileBySlug(env, slug) {
 // rather than shipping a parallel styling system, so a visitor moving
 // between the brand profile, the catalogue page, and a product page
 // never sees a visual seam.
-function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, jsonLd, bodyHtml, origin }) {
+// 2026-08-13: added a dark-mode bootstrap (inline, before paint, so
+// there's no flash-of-wrong-theme) and the floating inquiry button
+// container — both purely additive, both explained in full where the
+// mechanism actually lives (profile.css's dark-mode block + the
+// initShopThemeToggle/openInquirySheet functions profile.js now
+// exports on window.LiyogProductUI).
+function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, jsonLd, bodyHtml, origin, showFloatingInquiry, inquiryContextJs }) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -73,24 +235,81 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
 <link rel="stylesheet" href="${origin}/brands.css">
 <link rel="stylesheet" href="${origin}/product-pages.css">
 <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
+<script>
+// Runs before first paint so a returning visitor's saved dark-mode
+// choice applies immediately — no flash of the wrong theme. Mirrors
+// exactly what profile.css's dark-mode block already reads
+// (data-theme on <html>); if nothing is saved, this does nothing and
+// the page falls back to the OS prefers-color-scheme, same as today.
+(function() {
+  try {
+    var t = localStorage.getItem("liyog_shop_theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
 <div class="lp-root" id="lp-root">
 ${bodyHtml}
+${showFloatingInquiry ? `
+<button type="button" class="lp-shop-float-inquiry" id="lp-shop-float-inquiry-btn" aria-label="Send an inquiry">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+  <span>Send an Inquiry</span>
+</button>` : ""}
 </div>
 <script src="${origin}/brands.js"></script>
 <script src="${origin}/product-pages-client.js"></script>
+${inquiryContextJs || ""}
 </body>
 </html>`;
 }
 
+
+function serverLiyxLogoSvg(size) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 100 100" class="lp-liyx-logo-svg" role="img" aria-label="LiyX AI"><defs><radialGradient id="liyxSphereGradient" cx="35%" cy="30%" r="70%"><stop offset="0%" stop-color="#FFF6D6"/><stop offset="45%" stop-color="#FFC24B"/><stop offset="100%" stop-color="#E8590C"/></radialGradient></defs><ellipse cx="50" cy="50" rx="44" ry="17" fill="none" stroke="#F5A623" stroke-width="2.2" transform="rotate(-20 50 50)"/><ellipse cx="50" cy="50" rx="44" ry="17" fill="none" stroke="#F5A623" stroke-width="2.2" transform="rotate(20 50 50)"/><g fill="none" stroke="#1E7A32" stroke-width="1.6" stroke-linejoin="round"><polygon points="50,10 68,18 78,32 78,50 68,68 50,78 32,68 22,50 22,32 32,18"/><polygon points="50,22 61,27 68,36 68,50 61,61 50,66 39,61 32,50 32,36 39,27"/><line x1="50" y1="10" x2="50" y2="22"/><line x1="68" y1="18" x2="61" y2="27"/><line x1="78" y1="32" x2="68" y2="36"/><line x1="78" y1="50" x2="68" y2="50"/><line x1="68" y1="68" x2="61" y2="61"/><line x1="50" y1="78" x2="50" y2="66"/><line x1="32" y1="68" x2="39" y2="61"/><line x1="22" y1="50" x2="32" y2="50"/><line x1="22" y1="32" x2="32" y2="36"/><line x1="32" y1="18" x2="39" y2="27"/><line x1="50" y1="10" x2="61" y2="27"/><line x1="68" y1="18" x2="68" y2="36"/><line x1="78" y1="32" x2="68" y2="50"/><line x1="78" y1="50" x2="61" y2="61"/><line x1="68" y1="68" x2="50" y2="66"/><line x1="50" y1="78" x2="39" y2="61"/><line x1="32" y1="68" x2="32" y2="50"/><line x1="22" y1="50" x2="32" y2="36"/><line x1="22" y1="32" x2="39" y2="27"/><line x1="32" y1="18" x2="50" y2="22"/></g><circle cx="50" cy="50" r="15" fill="url(#liyxSphereGradient)"/></svg>`;
+}
+
+// Full parity with catalogueInsightCardHtml() in profile.js — same
+// .lp-liyx-insight/.lp-catalogue-insight markup, server-rendered so
+// it's part of the indexable HTML (and visible to no-JS visitors),
+// not injected after the fact.
+function serverCatalogueInsightCardHtml(insight) {
+  const keywords = Array.isArray(insight.top_keywords) ? insight.top_keywords : [];
+  const flags = Array.isArray(insight.flags) ? insight.flags : [];
+  return `
+    <div class="lp-liyx-insight lp-catalogue-insight">
+      <div class="lp-liyx-badge">
+        ${serverLiyxLogoSvg(15)}
+        <span>LiyX AI — Catalogue Insight</span>
+      </div>
+      <p class="lp-liyx-summary">${escapeHtmlAttr(insight.summary_text)}</p>
+      <div class="lp-catalogue-insight-stats">
+        <div class="lp-catalogue-stat"><strong>${formatCompactNumberSSR(insight.total_views || 0)}</strong><span>Views</span></div>
+        <div class="lp-catalogue-stat"><strong>${formatCompactNumberSSR(insight.total_likes || 0)}</strong><span>Likes</span></div>
+        <div class="lp-catalogue-stat"><strong>${formatCompactNumberSSR(insight.total_ratings || 0)}</strong><span>Ratings</span></div>
+        <div class="lp-catalogue-stat"><strong>${insight.average_rating ? insight.average_rating.toFixed(1) : "—"}</strong><span>Avg ★</span></div>
+      </div>
+      ${flags.length ? `<div class="lp-catalogue-flags">${flags.map((f) => `<span class="lp-catalogue-flag">${escapeHtmlAttr(f)}</span>`).join("")}</div>` : ""}
+      ${keywords.length ? `<div class="lp-liyx-keywords">${keywords.slice(0, 5).map((k) => `<span class="lp-liyx-keyword">${escapeHtmlAttr(k)}</span>`).join("")}</div>` : ""}
+    </div>`;
+}
+
 // ---------------------------------------------------------------------
 // Route 1: GET /products/{brand-slug} — the full catalogue listing.
-// Server-renders every product's card markup directly (crawlable,
-// indexable, no JS needed to see the catalogue), then a small inline
-// script hydrates search/filter/sort interactivity and wires the
-// engagement bar (like/rate/share/report) using profile.js's existing
-// functions, exactly as the brand profile's inline grid already does.
+// Server-renders EVERY product's full card markup directly (crawlable,
+// indexable, no JS needed to see the catalogue — full parity with the
+// brand-profile's inline cards: flag/report, views, like, star rating,
+// name, description, WhatsApp/Call all present in the raw HTML), then
+// a small inline script hydrates search/filter/sort interactivity and
+// wires the engagement bar (like/rate/share/report) using profile.js's
+// existing functions, exactly as the brand profile's inline grid does.
+//
+// 2026-08-13: every card is ALWAYS present in the server HTML (so
+// nothing is ever hidden from a crawler or held back from indexing) —
+// infinite scroll only progressively un-hides them for a real browser
+// via the lp-shop-card-hidden class, so a long catalogue doesn't dump
+// every product's image request at once. See product-pages-client.js.
 // ---------------------------------------------------------------------
 async function handleProductsListingPage(request, env, ctx, url) {
   const brandSlug = url.pathname.split("/")[2];
@@ -155,43 +374,33 @@ async function handleProductsListingPage(request, env, ctx, url) {
     }))
   };
 
-  // Every 8th card becomes a full-width "Facebook ad" style feature
-  // break — a dynamic rhythm change for longer catalogues, exactly
-  // like the brand-profile's own inline feed does with its first item.
-  const FEATURE_BREAK_EVERY = 8;
-  const cardsHtml = filtered.map((prod, i) => {
+  // Row 1 uses the full-width .lp-prodfeed "Facebook ad" style card
+  // (exact same treatment as the brand-profile's inline row 1); every
+  // subsequent product uses the compact .lp-prodcard grid tile. The
+  // LiyX AI catalogue insight is server-rendered directly after that
+  // first card, before the rest of the grid — matching the requested
+  // "right after the first row of products" placement, and present in
+  // the raw HTML (not injected later) so it's indexable too.
+  //
+  // Infinite scroll: the first INITIAL_VISIBLE compact cards render
+  // normally; everything past that gets the lp-shop-card-hidden class
+  // — still fully present in the DOM/HTML (so nothing is hidden from
+  // search engines or no-JS visitors), just visually hidden until
+  // product-pages-client.js's IntersectionObserver reveals batches of
+  // 10 as the visitor scrolls.
+  const INITIAL_VISIBLE = 10;
+  const [firstProd, ...restProds] = filtered;
+  const firstCardHtml = firstProd ? serverFeedCardHtml(firstProd, profile, statsByProduct[firstProd.id] || {}) : "";
+  const insightHtml = insight && insight.summary_text ? serverCatalogueInsightCardHtml(insight) : "";
+  const restCardsHtml = restProds.map((prod, i) => {
+    const hiddenCls = i >= INITIAL_VISIBLE ? " lp-shop-card-hidden" : "";
     const stats = statsByProduct[prod.id] || {};
-    const href = `/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(brandSlug)}`;
-    const isFeature = i > 0 && i % FEATURE_BREAK_EVERY === 0;
-
-    if (isFeature) {
-      return `<a class="lp-shop-feature-break" href="${href}">
-        <div class="lp-shop-feature-imgwrap">
-          ${prod.image_url ? `<img src="${escapeHtmlAttr(prod.image_url)}" alt="${escapeHtmlAttr(prod.name)}" loading="lazy">` : ""}
-        </div>
-        <div class="lp-shop-feature-body">
-          <div class="lp-shop-feature-name">${escapeHtmlAttr(prod.name)}</div>
-          ${prod.price_display ? `<div class="lp-shop-card-price">${escapeHtmlAttr(prod.price_display)}</div>` : ""}
-        </div>
-      </a>`;
-    }
-
-    return `<a class="lp-shop-card" href="${href}" data-product-id="${escapeHtmlAttr(prod.id)}">
-      <div class="lp-shop-card-imgwrap">
-        ${prod.image_url
-          ? `<img src="${escapeHtmlAttr(prod.image_url)}" alt="${escapeHtmlAttr(prod.name)}" loading="lazy">`
-          : `<div class="lp-shop-card-imgwrap-empty"></div>`}
-      </div>
-      <div class="lp-shop-card-body">
-        <div class="lp-shop-card-name">${escapeHtmlAttr(prod.name)}</div>
-        ${prod.price_display ? `<div class="lp-shop-card-price">${escapeHtmlAttr(prod.price_display)}</div>` : ""}
-        <div class="lp-shop-card-meta">
-          <span>★ ${stats.average_rating ? stats.average_rating.toFixed(1) : "—"}</span>
-          <span>${prod.view_count || 0} views</span>
-        </div>
-      </div>
-    </a>`;
+    const card = serverCompactCardHtml(prod, profile, stats);
+    // Inject the hidden class onto the outer .lp-prodcard wrapper
+    // without needing a second render pass.
+    return hiddenCls ? card.replace('class="lp-prodcard"', `class="lp-prodcard${hiddenCls}"`) : card;
   }).join("");
+  const hasMoreThanInitial = restProds.length > INITIAL_VISIBLE;
 
   const bodyHtml = `
     <header class="lp-shop-topheader">
@@ -199,6 +408,10 @@ async function handleProductsListingPage(request, env, ctx, url) {
         ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" class="lp-shop-topheader-logo">` : ""}
         <span class="lp-shop-topheader-name">${escapeHtmlAttr(profile.business_name)}</span>
         <nav class="lp-shop-topheader-nav">
+          <button type="button" class="lp-shop-theme-toggle" id="lp-shop-theme-toggle-btn" aria-label="Toggle dark mode">
+            <svg class="lp-theme-icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <svg class="lp-theme-icon-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
           <a href="/b/${escapeHtmlAttr(brandSlug)}" class="lp-shop-nav-btn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M15 18l-6-6 6-6"/></svg>
             <span>Brand Profile</span>
@@ -226,13 +439,17 @@ async function handleProductsListingPage(request, env, ctx, url) {
         </div>
       </div>
 
-      <div class="lp-shop-insight-wrap" id="lp-shop-insight-wrap">
-        ${insight && insight.summary_text ? "" : ""}
+      <div class="lp-shop-grid" id="lp-shop-grid" data-all-products="${escapeHtmlAttr(JSON.stringify(filtered))}">
+        ${firstCardHtml}
+        ${insightHtml}
+        ${restCardsHtml}
+        ${!filtered.length ? `<p class="lp-shop-empty">No products match your search.</p>` : ""}
       </div>
-
-      <div class="lp-shop-grid" id="lp-shop-grid">
-        ${cardsHtml || `<p class="lp-shop-empty">No products match your search.</p>`}
-      </div>
+      ${filtered.length ? `
+      <div class="lp-shop-infinite-sentinel" id="lp-shop-infinite-sentinel" data-done="${hasMoreThanInitial ? "false" : "true"}">
+        <div class="lp-shop-infinite-spinner"></div>
+        <span class="lp-shop-infinite-done-text">You've seen every product</span>
+      </div>` : ""}
     </div>
 
     <footer class="lp-shop-footer">
@@ -249,22 +466,26 @@ async function handleProductsListingPage(request, env, ctx, url) {
     <script>
       window.__LIYOG_SHOP_CONTEXT__ = {
         profileId: ${JSON.stringify(profile.id)},
+        profile: ${JSON.stringify(profile)},
         brandSlug: ${JSON.stringify(brandSlug)},
         businessName: ${JSON.stringify(profile.business_name)},
         products: ${JSON.stringify(filtered)},
         statsByProduct: ${JSON.stringify(statsByProduct)},
-        insight: ${JSON.stringify(insight)}
+        insight: ${JSON.stringify(insight)},
+        initialVisible: ${INITIAL_VISIBLE}
       };
     </script>
   `;
 
   const html = pageShell({
     title, metaDescription, canonicalUrl, ogImage,
-    ogType: "website", jsonLd, bodyHtml, origin: url.origin
+    ogType: "website", jsonLd, bodyHtml, origin: url.origin,
+    showFloatingInquiry: true
   });
 
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60" } });
 }
+
 
 // ---------------------------------------------------------------------
 // Route 2: GET /product/{product-slug}/{brand-slug} — one product's
@@ -310,6 +531,26 @@ async function handleProductDetailPage(request, env, ctx, url) {
     .sort((a, b) => ((b.view_count || 0) + (b.average_rating || 0) * 20) - ((a.view_count || 0) + (a.average_rating || 0) * 20))
     .slice(0, 5);
 
+  // Prev/Next: the same catalogue order the listing page defaults to
+  // (newest first) — lets a visitor walk through every product without
+  // returning to /products/{slug} first. Purely additive: one small
+  // extra query, no schema change, no change to any existing route or
+  // behavior. Falls back to wrapping around (last <-> first) rather
+  // than dead-ending, so the nav is always usable.
+  const { results: catalogueOrder } = await env.DB.prepare(
+    `SELECT id, name, slug, image_url FROM products
+     WHERE profile_id = ? AND is_active = 1 AND is_draft = 0
+     ORDER BY created_at DESC`
+  ).bind(profile.id).all();
+  let prevProduct = null, nextProduct = null;
+  if (catalogueOrder.length > 1) {
+    const idx = catalogueOrder.findIndex((p) => p.id === product.id);
+    if (idx !== -1) {
+      prevProduct = catalogueOrder[(idx - 1 + catalogueOrder.length) % catalogueOrder.length];
+      nextProduct = catalogueOrder[(idx + 1) % catalogueOrder.length];
+    }
+  }
+
   const canonicalUrl = `${url.origin}/product/${encodeURIComponent(product.slug || product.id)}/${brandSlug}`;
   const title = `${product.name} — ${profile.business_name} | Liyog World`;
   const metaDescription = buildMetaDescription(product.description, product.price_display);
@@ -348,12 +589,42 @@ async function handleProductDetailPage(request, env, ctx, url) {
     </a>`;
   }).join("");
 
+  const prevNextHtml = (prevProduct && nextProduct) ? `
+      <div class="lp-product-page-prevnext">
+        <a class="lp-prevnext-btn lp-prevnext-btn-prev" href="/product/${encodeURIComponent(prevProduct.slug || prevProduct.id)}/${escapeHtmlAttr(brandSlug)}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M15 18l-6-6 6-6"/></svg>
+          ${prevProduct.image_url ? `<img class="lp-prevnext-thumb" src="${escapeHtmlAttr(prevProduct.image_url)}" alt="" loading="lazy">` : ""}
+          <span class="lp-prevnext-text"><span class="lp-prevnext-label">Previous</span><span class="lp-prevnext-name">${escapeHtmlAttr(prevProduct.name)}</span></span>
+        </a>
+        <a class="lp-prevnext-btn lp-prevnext-btn-next" href="/product/${encodeURIComponent(nextProduct.slug || nextProduct.id)}/${escapeHtmlAttr(brandSlug)}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M9 18l6-6-6-6"/></svg>
+          ${nextProduct.image_url ? `<img class="lp-prevnext-thumb" src="${escapeHtmlAttr(nextProduct.image_url)}" alt="" loading="lazy">` : ""}
+          <span class="lp-prevnext-text"><span class="lp-prevnext-label">Next</span><span class="lp-prevnext-name">${escapeHtmlAttr(nextProduct.name)}</span></span>
+        </a>
+      </div>` : "";
+
+  // The owner-only chart section only ever renders as an empty,
+  // hidden mount point here — product-pages-client.js attempts the
+  // existing owner-gated /api/products/:id/chart request and only
+  // reveals this (via the lp-visible class) if that request actually
+  // succeeds, i.e. the visitor genuinely is the authenticated owner.
+  // hasOwnerSessionHint is just a cheap signal to skip the attempt
+  // entirely for a visitor with no session cookie at all — it is
+  // NOT the security boundary (the endpoint's own session+ownership
+  // check is), just avoids a wasted network call for the common case
+  // of an anonymous visitor.
+  const hasOwnerSessionHint = hasSessionCookie(request);
+
   const bodyHtml = `
     <header class="lp-shop-topheader">
       <div class="lp-shop-topheader-inner">
         ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" class="lp-shop-topheader-logo">` : ""}
         <span class="lp-shop-topheader-name">${escapeHtmlAttr(profile.business_name)}</span>
         <nav class="lp-shop-topheader-nav">
+          <button type="button" class="lp-shop-theme-toggle" id="lp-shop-theme-toggle-btn" aria-label="Toggle dark mode">
+            <svg class="lp-theme-icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <svg class="lp-theme-icon-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
           <a href="/products/${escapeHtmlAttr(brandSlug)}" class="lp-shop-nav-btn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M15 18l-6-6 6-6"/></svg>
             <span>All Products</span>
@@ -375,11 +646,11 @@ async function handleProductDetailPage(request, env, ctx, url) {
       <h1 class="lp-product-page-name">${escapeHtmlAttr(product.name)}</h1>
       ${product.price_display ? `<div class="lp-product-page-price">${escapeHtmlAttr(product.price_display)}</div>` : ""}
 
-      <div class="lp-product-page-engbar" id="lp-detail-engbar"></div>
+      <div class="lp-product-page-engbar" id="lp-detail-engbar">${serverEngagementBarHtml(product, stats, false)}</div>
 
       ${product.description ? `<p class="lp-product-page-desc">${escapeHtmlAttr(product.description)}</p>` : ""}
 
-      <div class="lp-detail-contact" id="lp-detail-contact"></div>
+      <div class="lp-detail-contact" id="lp-detail-contact">${serverContactButtonsHtml(profile, product, false)}</div>
 
       <div class="lp-product-page-actions">
         <button type="button" class="lp-product-page-share-btn" id="lp-product-page-share">
@@ -399,11 +670,23 @@ async function handleProductDetailPage(request, env, ctx, url) {
       <div class="lp-detail-stats" id="lp-detail-stats"></div>
       <div class="lp-detail-insight" id="lp-detail-insight"></div>
 
+      <div class="lp-product-page-owner-chart" id="lp-product-page-owner-chart" data-has-session-hint="${hasOwnerSessionHint ? "true" : "false"}" data-product-id="${escapeHtmlAttr(product.id)}"></div>
+
       ${related.length ? `
       <div class="lp-related-products">
         <h2 class="lp-related-products-title">You might also like</h2>
-        <div class="lp-related-products-scroll">${relatedHtml}</div>
+        <div class="lp-related-products-row">
+          <button type="button" class="lp-related-arrow lp-related-arrow-prev" id="lp-related-arrow-prev" aria-label="Scroll left" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <div class="lp-related-products-scroll" id="lp-related-products-scroll">${relatedHtml}</div>
+          <button type="button" class="lp-related-arrow lp-related-arrow-next" id="lp-related-arrow-next" aria-label="Scroll right">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M9 18l6-6-6-6"/></svg>
+          </button>
+        </div>
       </div>` : ""}
+
+      ${prevNextHtml}
     </div>
 
     <div class="lp-product-hero-lightbox" id="lp-product-hero-lightbox">
@@ -430,14 +713,16 @@ async function handleProductDetailPage(request, env, ctx, url) {
         product: ${JSON.stringify(product)},
         stats: ${JSON.stringify(stats)},
         insight: ${JSON.stringify(insight)},
-        brandSlug: ${JSON.stringify(brandSlug)}
+        brandSlug: ${JSON.stringify(brandSlug)},
+        hasOwnerSessionHint: ${JSON.stringify(hasOwnerSessionHint)}
       };
     </script>
   `;
 
   const html = pageShell({
     title, metaDescription, canonicalUrl, ogImage,
-    ogType: "product", jsonLd, bodyHtml, origin: url.origin
+    ogType: "product", jsonLd, bodyHtml, origin: url.origin,
+    showFloatingInquiry: true
   });
 
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60" } });
