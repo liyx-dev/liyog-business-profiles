@@ -15,6 +15,58 @@ function jsonResponse(data, status = 200) {
   });
 }
 
+// ---------------------------------------------------------------------
+// Product slug generation (2026-08-15).
+//
+// Root cause of the "untitled-product" URL bug: nothing in this file
+// — on create OR on edit — ever wrote to products.slug. Every URL
+// builder elsewhere (product-pages.js, profile.js) correctly falls
+// back to the raw product id whenever slug is empty (`prod.slug ||
+// prod.id`), so that fallback was silently doing the right thing for
+// every product... until a handful of rows ended up with slug
+// literally SET to the string "untitled-product" by something outside
+// this codebase (traced via direct DB inspection — no trigger exists
+// on the table). Once slug holds ANY truthy value, `slug || id`
+// always prefers it, correct or not, and nothing here ever corrected
+// it afterward.
+//
+// The real fix is for the one place that legitimately owns a
+// product's identity — creation and edit, right here — to actually
+// generate and maintain a proper slug, so the field is never left for
+// something else to fill incorrectly, and any past bad value gets
+// overwritten the next time the product is edited.
+function slugify(text) {
+  return String(text || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")   // strip punctuation/emoji
+    .replace(/\s+/g, "-")            // spaces -> hyphens
+    .replace(/-+/g, "-")             // collapse repeats
+    .replace(/^-|-$/g, "")           // trim leading/trailing hyphens
+    .slice(0, 60);
+}
+
+// Ensures the slug is unique among this profile's OTHER products (two
+// different brands can safely share a slug — the URL is always
+// /product/{slug}/{brandSlug}, and the brand slug already disambiguates
+// globally; only two products under the SAME brand actually collide).
+// excludeProductId lets an edit check uniqueness without tripping over
+// the product's own existing row.
+async function generateUniqueProductSlug(env, profileId, name, excludeProductId) {
+  const base = slugify(name);
+  if (!base) return null; // nothing sluggable (e.g. emoji-only name) — id fallback still covers this
+  let candidate = base;
+  let suffix = 2;
+  while (true) {
+    const { results } = await env.DB.prepare(
+      `SELECT id FROM products WHERE profile_id = ? AND slug = ? AND id != ? LIMIT 1`
+    ).bind(profileId, candidate, excludeProductId || "").all();
+    if (!results.length) return candidate;
+    candidate = `${base}-${suffix}`;
+    suffix++;
+  }
+}
+
 /**
  * POST /api/products — create a product for the authenticated owner's
  * profile. Checks: auth, ownership, referral unlock, dynamic cap,
@@ -71,11 +123,21 @@ export async function handleCreateProduct(request, env, userId) {
   }
 
   const productId = crypto.randomUUID();
+  // Only generate a real slug when there's a real name to base it on —
+  // a nameless draft (photo-only, per the comment above) has nothing
+  // meaningful to slugify yet, so it stays NULL exactly as before and
+  // every URL builder already falls back to the product id correctly
+  // in that case. The slug gets filled in properly the moment a real
+  // name is saved — either right here if the name was provided at
+  // creation, or in handleUpdateProduct below when a draft is finalized.
+  const slugToSave = (!creatingDraft || name)
+    ? await generateUniqueProductSlug(env, profile_id, nameToSave, productId)
+    : null;
   try {
     await env.DB.prepare(
-      `INSERT INTO products (id, profile_id, name, description, price_display, image_url, is_draft)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(productId, profile_id, nameToSave, (description || null), (price_display || null), (image_url || null), creatingDraft ? 1 : 0).run();
+      `INSERT INTO products (id, profile_id, name, description, price_display, image_url, is_draft, slug)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(productId, profile_id, nameToSave, (description || null), (price_display || null), (image_url || null), creatingDraft ? 1 : 0, slugToSave).run();
   } catch (dbErr) {
     console.error("Product creation DB error:", dbErr);
     return jsonResponse({ error: "Couldn't save that product — please check your entries and try again." }, 400);
@@ -107,6 +169,17 @@ export async function handleUpdateProduct(request, env, userId, productId) {
     // Providing a real name finalizes a draft into a genuine listing —
     // this is the only place is_draft ever flips back to 0.
     if (productRows[0].is_draft) updates.is_draft = 0;
+    // Regenerate the slug from the real name whenever the name changes
+    // — covers both finalizing a draft (which had no slug yet) and
+    // renaming an already-real product (whose old slug would
+    // otherwise go stale and stop matching what visitors expect).
+    // This is also what self-heals any product left with a bad slug
+    // from before this fix: the next time its name is saved here, the
+    // wrong value gets overwritten with a correct one.
+    // Nothing breaks for an already-shared link even when the slug
+    // changes — product-pages.js's lookup matches on `slug = ? OR id
+    // = ?`, and the id is permanent, so the URL always still resolves.
+    updates.slug = await generateUniqueProductSlug(env, productRows[0].profile_id, updates.name, productId);
   }
   if (body.description !== undefined) {
     const check = checkText(body.description || "");
@@ -218,3 +291,4 @@ export async function handleUploadProductImage(request, env, userId, url) {
   const publicUrl = `${url.origin}/api/image/${key}`;
   return jsonResponse({ success: true, url: publicUrl });
 }
+
