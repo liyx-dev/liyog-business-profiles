@@ -169,17 +169,40 @@ export async function handleUpdateProduct(request, env, userId, productId) {
     // Providing a real name finalizes a draft into a genuine listing —
     // this is the only place is_draft ever flips back to 0.
     if (productRows[0].is_draft) updates.is_draft = 0;
-    // Regenerate the slug from the real name whenever the name changes
-    // — covers both finalizing a draft (which had no slug yet) and
-    // renaming an already-real product (whose old slug would
-    // otherwise go stale and stop matching what visitors expect).
-    // This is also what self-heals any product left with a bad slug
-    // from before this fix: the next time its name is saved here, the
-    // wrong value gets overwritten with a correct one.
-    // Nothing breaks for an already-shared link even when the slug
-    // changes — product-pages.js's lookup matches on `slug = ? OR id
-    // = ?`, and the id is permanent, so the URL always still resolves.
-    updates.slug = await generateUniqueProductSlug(env, productRows[0].profile_id, updates.name, productId);
+
+    // 2026-08-15: slug is now generated ONCE and then left alone.
+    // Earlier this regenerated on every name edit, which meant a
+    // product's public URL could change after it had already been
+    // shared — an old link still resolved fine (product-pages.js
+    // falls back to matching by id), but it stopped being THE
+    // canonical link, which is worse for SEO and confusing for a
+    // merchant who's already sent someone the old one. A slug should
+    // be set once and stay put, the same way most platforms treat a
+    // permalink — an owner fixing a typo five seconds after saving
+    // shouldn't be blocked by this, so the guard is "does a real slug
+    // already exist", not "is this the first save".
+    //
+    // 2026-08-15 (updated): currentSlug also treats any slug matching
+    // /^untitled-product(-\d+)?$/ as NOT-yet-real. The bad legacy
+    // value wasn't only ever the bare string "untitled-product" — an
+    // owner with more than one abandoned/in-progress draft at the
+    // same time could have ended up with "untitled-product-2",
+    // "untitled-product-3", and so on, from whatever external process
+    // wrote these before this slug system existed (it used the same
+    // kind of numbered-suffix collision handling generateUniqueProductSlug
+    // uses today). A single exact-string check only ever caught the
+    // first one and left every numbered variant permanently locked in
+    // as if it were a real, intentional slug. The regex is anchored
+    // (^...$) so it can only ever match that exact bad shape — it
+    // will NOT match a genuinely different product whose real name
+    // happens to contain the word "untitled" as part of something
+    // longer, e.g. "my-untitled-product-line" or "untitled-2024-drop".
+    const currentSlug = productRows[0].slug;
+    const looksLikeLegacyBadSlug = currentSlug && /^untitled-product(-\d+)?$/.test(currentSlug);
+    const slugNeedsFixing = !currentSlug || looksLikeLegacyBadSlug;
+    if (slugNeedsFixing) {
+      updates.slug = await generateUniqueProductSlug(env, productRows[0].profile_id, updates.name, productId);
+    }
   }
   if (body.description !== undefined) {
     const check = checkText(body.description || "");
