@@ -1,0 +1,311 @@
+/* =====================================================================
+   LIYOG WORLD BRAND PROFILES — tiers-ui.js
+   Product tier upgrade sheet. Self-contained on purpose: profile.js
+   (profile-js.txt) wraps everything in its own IIFE and doesn't expose
+   its internals, so this file does NOT reach into that closure. It
+   defines its own tiny copies of the couple of helpers it needs
+   (escaping, overlay host, sheet open/close, toast) and exposes exactly
+   one entry point on window.LiyogTiersUI — the same pattern already
+   used for window.LiyogProductUI at the bottom of profile-js.txt.
+   Loaded as its own <script src="/tiers-ui.js"> tag, does not modify
+   or depend on profile.js internals in any way.
+   ===================================================================== */
+
+(function () {
+  "use strict";
+
+  const WORKER_BASE = "https://www.liyogworld.com.ng";
+
+  const TIER_LABELS = {
+    tier1: "Basic",
+    tier2: "Plus",
+    tier3: "Business",
+    tier4: "Elite"
+  };
+
+  function esc(str) {
+    return String(str == null ? "" : str).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function getOverlayHost() {
+    return document.querySelector(".lp-root") || document.getElementById("liyog-profile-root") || document.body;
+  }
+
+  function lockBodyScroll() {
+    document.body.style.overflow = "hidden";
+  }
+  function unlockBodyScroll() {
+    // Same caveat as profile.js's own version: only release the lock if
+    // nothing ELSE that also locks scroll is currently open, otherwise a
+    // stacked sheet closing would unlock the one still open beneath it.
+    const somethingStillOpen =
+      document.querySelector(".lp-sheet-overlay.lp-open") ||
+      document.querySelector(".lp-product-lightbox.lp-open");
+    if (!somethingStillOpen) document.body.style.overflow = "";
+  }
+
+  function openSheet(overlay) {
+    overlay.classList.add("lp-open");
+    lockBodyScroll();
+  }
+  function closeSheet(overlay) {
+    overlay.classList.remove("lp-open");
+    unlockBodyScroll();
+  }
+
+  // Minimal, self-contained toast — reuses the same classnames profile.js
+  // uses so it looks identical, but doesn't call into profile.js's
+  // showToast (that function lives inside its private closure).
+  function showToast(message, type = "success") {
+    let host = document.getElementById("lp-tiers-toast-host");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "lp-tiers-toast-host";
+      host.className = "lp-toast-host";
+      getOverlayHost().appendChild(host);
+    }
+    const toast = document.createElement("div");
+    toast.className = `lp-toast lp-toast-${type}`;
+    toast.textContent = message;
+    host.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+  }
+
+  function formatPrice(amountMinorUnits, currency) {
+    const major = amountMinorUnits / 100;
+    const symbols = { NGN: "₦", GHS: "GH₵", ZAR: "R", KES: "KSh", USD: "$" };
+    const symbol = symbols[currency] || currency + " ";
+    return `${symbol}${major.toLocaleString()}`;
+  }
+
+  /**
+   * Fetches pricing for the visitor's detected country. No location is
+   * ever asked of the user — the worker resolves it server-side from
+   * request.cf.country and returns tiers already priced correctly (or
+   * in USD as the fallback), so this is a single, simple GET.
+   */
+  async function fetchPricing() {
+    const res = await fetch(`${WORKER_BASE}/api/tiers/pricing`);
+    if (!res.ok) throw new Error("Pricing fetch failed");
+    return res.json();
+  }
+
+  function tierCardHtml(tier) {
+    const label = TIER_LABELS[tier.tier_id] || tier.tier_id;
+    return `
+      <button type="button" class="lp-tier-card" data-tier-id="${esc(tier.tier_id)}" data-amount="${esc(tier.amount)}" data-currency="${esc(tier.currency)}">
+        <div class="lp-tier-card-name">${esc(label)}</div>
+        <div class="lp-tier-card-count">${esc(tier.max_products)} products</div>
+        <div class="lp-tier-card-price">${esc(formatPrice(tier.amount, tier.currency))}</div>
+        <div class="lp-tier-card-note">one-time payment</div>
+      </button>
+    `;
+  }
+
+  /**
+   * Main entry point. p = the profile object already loaded by
+   * profile.js (needs at least p.id). Shows a bottom sheet listing all
+   * four tiers priced for the visitor's country, lets them pick one,
+   * then choose Paystack (redirect checkout) or Manual (WhatsApp
+   * handoff carrying the exact tier + price so nothing can be
+   * misrepresented).
+   */
+  function openUpgradeSheet(p) {
+    const host = getOverlayHost();
+    let overlay = document.getElementById("lp-tiers-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "lp-sheet-overlay";
+      overlay.id = "lp-tiers-overlay";
+      host.appendChild(overlay);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
+    }
+
+    overlay.innerHTML = `
+      <div class="lp-sheet">
+        <div class="lp-sheet-top-bar">
+          <div class="lp-sheet-handle"></div>
+          <button class="lp-sheet-close" id="lp-tiers-close" type="button">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="lp-tiers-sheet-content">
+          <h3 style="font-family:var(--font-display, inherit);text-align:center;margin:0 0 8px;">Upgrade your product limit</h3>
+          <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 18px;">One-time payment. Pick a plan below — this permanently raises how many products you can list.</p>
+          <div id="lp-tiers-list" class="lp-tiers-list">
+            <p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Loading pricing…</p>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById("lp-tiers-close").addEventListener("click", () => closeSheet(overlay));
+    openSheet(overlay);
+
+    fetchPricing()
+      .then((data) => {
+        const listEl = document.getElementById("lp-tiers-list");
+        if (!listEl) return;
+        if (!data.tiers || !data.tiers.length) {
+          listEl.innerHTML = `<p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Pricing isn't available right now — please try again shortly.</p>`;
+          return;
+        }
+        listEl.innerHTML = data.tiers.map(tierCardHtml).join("");
+        listEl.querySelectorAll("[data-tier-id]").forEach((card) => {
+          card.addEventListener("click", () => {
+            openMethodChoice(overlay, p, {
+              tierId: card.dataset.tierId,
+              amount: Number(card.dataset.amount),
+              currency: card.dataset.currency,
+              label: TIER_LABELS[card.dataset.tierId] || card.dataset.tierId
+            });
+          });
+        });
+      })
+      .catch(() => {
+        const listEl = document.getElementById("lp-tiers-list");
+        if (listEl) listEl.innerHTML = `<p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Couldn't load pricing — check your connection and try again.</p>`;
+      });
+  }
+
+  /**
+   * Second step, shown after a tier is picked: choose Paystack (instant,
+   * redirect checkout) or Manual (WhatsApp — for anyone without a card
+   * or unsure about paying online). Manual creates the same pending
+   * purchase row server-side, so you can verify and confirm it exactly
+   * like the existing boost flow.
+   */
+  function openMethodChoice(overlay, p, tier) {
+    const priceText = formatPrice(tier.amount, tier.currency);
+    overlay.querySelector(".lp-tiers-sheet-content").innerHTML = `
+      <button type="button" id="lp-tiers-back" style="background:none;border:none;color:var(--ink-soft, #666);font-size:13px;cursor:pointer;padding:0 0 14px;">&larr; Back</button>
+      <h3 style="font-family:var(--font-display, inherit);text-align:center;margin:0 0 8px;">${esc(tier.label)} — ${esc(priceText)}</h3>
+      <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 20px;">How would you like to pay?</p>
+      <button type="button" class="lp-btn lp-btn-primary" id="lp-tiers-pay-paystack" style="width:100%;margin-bottom:10px;">
+        <span>Pay Now — Card / Bank</span>
+      </button>
+      <button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-tiers-pay-manual" style="width:100%;">
+        <span>Pay via WhatsApp (Manual)</span>
+      </button>
+    `;
+
+    document.getElementById("lp-tiers-back").addEventListener("click", () => openUpgradeSheet(p));
+
+    document.getElementById("lp-tiers-pay-paystack").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.querySelector("span").textContent = "Starting checkout…";
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/tiers/checkout`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ profile_id: p.id, tier_id: tier.tierId, method: "paystack" })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(data.error || "Couldn't start payment. Please try again.", "error");
+          btn.disabled = false;
+          btn.querySelector("span").textContent = "Pay Now — Card / Bank";
+          return;
+        }
+        window.location.href = data.authorizationUrl;
+      } catch (err) {
+        showToast("Couldn't start payment. Please check your connection.", "error");
+        btn.disabled = false;
+        btn.querySelector("span").textContent = "Pay Now — Card / Bank";
+      }
+    });
+
+    document.getElementById("lp-tiers-pay-manual").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/tiers/checkout`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ profile_id: p.id, tier_id: tier.tierId, method: "manual" })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(data.error || "Couldn't start this — please try again.", "error");
+          btn.disabled = false;
+          return;
+        }
+        openManualHandoff(overlay, p, data.purchase);
+      } catch (err) {
+        showToast("Couldn't start this — please check your connection.", "error");
+        btn.disabled = false;
+      }
+    });
+  }
+
+  /**
+   * Final step for the manual path: build a WhatsApp message carrying
+   * the EXACT tier, price, and currency the user was just shown — same
+   * anti-cheat reasoning as the existing boost WhatsApp handoff. You
+   * confirm payment yourself, then call POST /api/tiers/activate with
+   * this purchase id.
+   */
+  function openManualHandoff(overlay, p, purchase) {
+    const priceText = formatPrice(purchase.amount, purchase.currency);
+    overlay.querySelector(".lp-tiers-sheet-content").innerHTML = `
+      <h3 style="font-family:var(--font-display, inherit);text-align:center;margin:0 0 8px;">Almost done</h3>
+      <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 20px;">Message us on WhatsApp with your payment. We'll confirm and activate your ${esc(TIER_LABELS[purchase.tierId] || purchase.tierId)} plan (${esc(purchase.maxProducts)} products) shortly after.</p>
+      <button type="button" class="lp-btn lp-btn-primary" id="lp-tiers-manual-whatsapp" style="width:100%;">
+        <span>Message Us on WhatsApp</span>
+      </button>
+    `;
+
+    document.getElementById("lp-tiers-manual-whatsapp").addEventListener("click", async () => {
+      const lines = [
+        `I'd like to upgrade my product plan.`,
+        `Brand: ${p.business_name} (${WORKER_BASE}/b/${p.slug})`,
+        `Plan: ${TIER_LABELS[purchase.tierId] || purchase.tierId} (${purchase.maxProducts} products)`,
+        `Amount: ${priceText}`,
+        `Purchase ID: ${purchase.id}`
+      ];
+      const waText = lines.join("\n");
+
+      let adminNumber = "";
+      try {
+        const cfgRes = await fetch(`${WORKER_BASE}/api/boost-config`);
+        const cfg = await cfgRes.json();
+        adminNumber = cfg.adminWhatsapp || "";
+      } catch (e) { /* fall through with no number — wa.me still opens a compose screen */ }
+
+      window.open(`https://wa.me/${adminNumber}?text=${encodeURIComponent(waText)}`, "_blank");
+      closeSheet(overlay);
+    });
+  }
+
+  /**
+   * Called once on page load (from profile.js, if it wants to) after
+   * a Paystack redirect returns with ?tier_result=success|error in the
+   * URL, so the visitor gets a toast confirming what happened instead
+   * of landing back on the page with no feedback at all.
+   */
+  function maybeShowTierResultToast() {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("tier_result");
+    if (!result) return;
+    if (result === "success") {
+      showToast("Payment confirmed — your plan has been upgraded!", "success");
+    } else {
+      showToast("Payment couldn't be confirmed. If you were charged, message us on WhatsApp.", "error");
+    }
+    // Clean the flag out of the URL so refreshing doesn't re-show it.
+    params.delete("tier_result");
+    const newUrl = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, "", newUrl);
+  }
+
+  window.LiyogTiersUI = {
+    openUpgradeSheet,
+    maybeShowTierResultToast
+  };
+})();
+
+
