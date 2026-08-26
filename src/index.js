@@ -6,6 +6,7 @@ import PROFILE_TEMPLATE_HTML from "./assets/profile-template.html";
 import AUTH_UI_JS from "./assets/auth-ui-js.txt";
 import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
 import REVIEWS_UI_JS from "./assets/reviews-ui-js.txt";
+import TIERS_UI_JS from "./assets/tiers-ui.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
 import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage } from "./lib/moderation.js";
 import * as reviews from "./lib/reviews.js";
@@ -14,6 +15,7 @@ import * as productsEngagement from "./lib/products-engagement.js";
 import { handleProductsListingPage, handleProductDetailPage } from "./lib/product-pages.js";
 import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
 import { handleBoostStatus, handleActivateBoost, handleBoostConfig } from "./lib/boost.js";
+import { handleGetPricing, handleCheckout, handlePaystackCallback, handlePaystackWebhook, handleActivateTier, handleTierStatus } from "./lib/tiers.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
@@ -111,6 +113,9 @@ export default {
     }
 if (url.pathname === "/reviews-ui.js") {
       return new Response(REVIEWS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+    }
+    if (url.pathname === "/tiers-ui.js") {
+      return new Response(TIERS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
     if (url.pathname === "/brands-template.html") {
       return new Response(PROFILE_TEMPLATE_HTML, { headers: { "content-type": "text/html; charset=utf-8", ...NO_CACHE_HEADERS } });
@@ -950,6 +955,52 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
     // confirming payment over WhatsApp — never exposed to end users) ----
     if (url.pathname === "/api/boost/activate" && request.method === "POST") {
       return handleActivateBoost(request, env);
+    }
+
+    // -----------------------------------------------------------------
+    // Product tier upgrades — pricing, checkout (Paystack redirect +
+    // manual), verification, admin manual-confirm. See lib/tiers.js
+    // for the full logic; this stays thin route wiring only, same
+    // pattern as the boost routes just above.
+    // -----------------------------------------------------------------
+
+    // ---- Tiers: public pricing, country-detected via request.cf ----
+    if (url.pathname === "/api/tiers/pricing" && request.method === "GET") {
+      return handleGetPricing(request, env);
+    }
+
+    // ---- Tiers: status for a given profile (current tier + cap) ----
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/tier-status$/) && request.method === "GET") {
+      const profileId = url.pathname.split("/")[3];
+      return handleTierStatus(env, profileId);
+    }
+
+    // ---- Tiers: start checkout (Paystack or manual) — owner-only ----
+    if (url.pathname === "/api/tiers/checkout" && request.method === "POST") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      return handleCheckout(request, env, userId);
+    }
+
+    // ---- Tiers: Paystack redirects the browser back here after
+    // checkout — verifies server-side, then redirects on to the
+    // Blogger profile page with a result flag ----
+    if (url.pathname === "/api/tiers/paystack-callback" && request.method === "GET") {
+      return handlePaystackCallback(request, env);
+    }
+
+    // ---- Tiers: Paystack's server-to-server webhook — the reliable
+    // confirmation path, independent of whether the user's browser
+    // made it back to the callback above ----
+    if (url.pathname === "/api/tiers/paystack-webhook" && request.method === "POST") {
+      return handlePaystackWebhook(request, env);
+    }
+
+    // ---- Tiers: manual activation (admin-only, same guard pattern
+    // as /api/boost/activate) ----
+    if (url.pathname === "/api/tiers/activate" && request.method === "POST") {
+      return handleActivateTier(request, env);
     }
 
     // ---- Referrals: who this profile's owner has successfully referred,
