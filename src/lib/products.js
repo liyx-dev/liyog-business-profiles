@@ -98,8 +98,14 @@ export async function handleCreateProduct(request, env, userId) {
   const profile = profileRows[0];
   if (profile.owner_id !== userId) return jsonResponse({ error: "Not your profile." }, 403);
 
-  if (!hasUnlockedProducts(profile)) {
-    return jsonResponse({ error: "Product listings unlock once you refer a friend who completes their brand profile." }, 403);
+  // Two independent unlock paths: a free profile unlocks via referral
+  // (hasUnlockedProducts), a paying profile unlocks the instant a tier
+  // purchase is confirmed (profile.tier_id gets set in tiers.js). Either
+  // one is sufficient — a paying user never needs a referral too.
+  const isUnlockedViaReferral = hasUnlockedProducts(profile);
+  const isUnlockedViaTier = !!profile.tier_id;
+  if (!isUnlockedViaReferral && !isUnlockedViaTier) {
+    return jsonResponse({ error: "Product listings unlock once you refer a friend who completes their brand profile, or upgrade your plan." }, 403);
   }
 
   const capCheck = await canAddMoreProducts(env, profile_id);
@@ -258,7 +264,7 @@ export async function handleDeleteProduct(env, userId, productId) {
  */
 export async function handleListProducts(env, profileId, includeDrafts = false) {
   const { results: profileRows } = await env.DB.prepare(
-    "SELECT id, moderation_status, is_active, max_products, completed_referrals_count FROM profiles WHERE id = ?"
+    "SELECT id, moderation_status, is_active, max_products, completed_referrals_count, tier_id FROM profiles WHERE id = ?"
   ).bind(profileId).all();
   if (!profileRows.length) return jsonResponse({ error: "Profile not found." }, 404);
   const profile = profileRows[0];
@@ -274,11 +280,18 @@ export async function handleListProducts(env, profileId, includeDrafts = false) 
      ORDER BY (b.expires_at IS NOT NULL) DESC, b.expires_at DESC, p.created_at DESC`
   ).bind(profileId).all();
 
+  // Same two-path logic as handleCreateProduct above: unlocked if
+  // EITHER the referral requirement is met OR a tier has been bought.
+  const isUnlockedViaReferral = hasUnlockedProducts(profile);
+  const isUnlockedViaTier = !!profile.tier_id;
+  const isUnlocked = isUnlockedViaReferral || isUnlockedViaTier;
+
   return jsonResponse({
     products,
-    unlocked: hasUnlockedProducts(profile),
+    unlocked: isUnlocked,
+    tierId: profile.tier_id || null,
     maxProducts: profile.max_products ?? 10,
-    referralsNeeded: hasUnlockedProducts(profile) ? 0 : 1
+    referralsNeeded: isUnlockedViaReferral ? 0 : 1
   });
 }
 
