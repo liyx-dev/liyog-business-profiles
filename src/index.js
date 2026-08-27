@@ -1295,7 +1295,14 @@ async function cleanupOldLogs(env) {
       env.DB.prepare("DELETE FROM profile_views WHERE viewed_at < datetime('now', '-30 days')"),
       env.DB.prepare("DELETE FROM share_events WHERE shared_at < datetime('now', '-90 days')"),
       env.DB.prepare("DELETE FROM boost_log WHERE expires_at < datetime('now', '-7 days')"),
-      env.DB.prepare("DELETE FROM inquiries WHERE created_at < datetime('now', '-7 days')")
+      env.DB.prepare("DELETE FROM inquiries WHERE created_at < datetime('now', '-7 days')"),
+      // Manual tier purchases that never got confirmed within 24h — mostly
+      // people exploring the new upgrade flow without actually paying.
+      // Only ever touches 'pending' rows; anything 'confirmed' is kept
+      // forever as the purchase record/audit trail, and 'failed' rows
+      // (from a Paystack verify that didn't match) are left for you to
+      // review rather than silently deleted.
+      env.DB.prepare("DELETE FROM tier_purchases WHERE status = 'pending' AND method = 'manual' AND created_at < datetime('now', '-1 day')")
     ]);
     console.log("Cleanup complete:", JSON.stringify(result.map(r => r.meta)));
   } catch (err) {
