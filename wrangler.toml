@@ -21,4 +21,3 @@ invocation_logs = true
 [ai]
 binding = "AI"
 
-
