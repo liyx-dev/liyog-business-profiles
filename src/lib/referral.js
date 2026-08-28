@@ -74,7 +74,12 @@ export async function canAddMoreProducts(env, profileId) {
   ).bind(profileId).all();
   if (!results.length) return { allowed: false, max: 0, current: 0 };
 
-  const max = results[0].max_products ?? 10;
+  // Fallback of 1 (not 10) — the free/referral-unlock baseline is
+  // intentionally low so Tier 1 (10 products) is a meaningful upgrade.
+  // This only ever applies if max_products is somehow NULL in D1; the
+  // real source of truth is the column value itself, which the
+  // accompanying migration sets to 1 for every non-paying profile.
+  const max = results[0].max_products ?? 1;
   const { results: countResult } = await env.DB.prepare(
     "SELECT COUNT(*) as count FROM products WHERE profile_id = ? AND is_active = 1"
   ).bind(profileId).all();
@@ -114,3 +119,4 @@ export async function getMyReferrals(env, profileId) {
 
   return { completed, pending };
 }
+
