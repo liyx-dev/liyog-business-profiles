@@ -115,9 +115,10 @@
     tier4: "#7B3FE4"
   };
 
-  function tierCardHtml(tier, currentTierId) {
+  function tierCardHtml(tier, currentTierId, currentRank) {
     const label = TIER_LABELS[tier.tier_id] || tier.tier_id;
     const isCurrent = currentTierId && tier.tier_id === currentTierId;
+    const isBelowCurrent = currentRank !== null && tier.rank < currentRank;
     const accent = TIER_ACCENT[tier.tier_id] || "var(--liyog-green, #28A428)";
 
     if (isCurrent) {
@@ -128,6 +129,23 @@
           <div class="lp-tier-card-count">${esc(tier.max_products)} products</div>
           <div class="lp-tier-card-price">${esc(formatPrice(tier.amount, tier.currency))}</div>
           <div class="lp-tier-card-note">already active</div>
+        </div>
+      `;
+    }
+
+    // A tier ranked below whatever the owner already has is not a
+    // downgrade path we offer — one-time payments don't refund/swap,
+    // so these show as locked/included rather than a clickable option.
+    // This is rank-based (array position from the backend, in TIER_IDS
+    // order) rather than comparing tier_id strings directly, so it
+    // keeps working correctly if a 5th/6th tier is added later.
+    if (isBelowCurrent) {
+      return `
+        <div class="lp-tier-card lp-tier-card-included" style="--tier-accent:${accent};">
+          <div class="lp-tier-card-name">${esc(label)}</div>
+          <div class="lp-tier-card-count">${esc(tier.max_products)} products</div>
+          <div class="lp-tier-card-price">${esc(formatPrice(tier.amount, tier.currency))}</div>
+          <div class="lp-tier-card-note">included in your plan</div>
         </div>
       `;
     }
@@ -172,7 +190,14 @@
         </div>
         <div class="lp-tiers-sheet-content">
           <h3 style="font-family:var(--font-display, inherit);text-align:center;margin:0 0 8px;">Upgrade your product limit</h3>
-          <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 18px;">One-time payment. Pick a plan below — this permanently raises how many products you can list.</p>
+          <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 14px;">One-time payment. Pick a plan below — this permanently raises how many products you can list.</p>
+          <div class="lp-tiers-urgency-banner">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" class="lp-tiers-urgency-icon"><path d="M6 3h12l-1 7 4 3-9 8-9-8 4-3-1-7z"/><path d="M6 3l6 7 6-7"/></svg>
+            <div>
+              <div class="lp-tiers-urgency-title">Early Bird Pricing — Here Now, Gone Soon</div>
+              <div class="lp-tiers-urgency-sub">You're seeing our launch prices, locked in for early members only. As we grow, these one-time rates go up — pay once today, and it's yours for good.</div>
+            </div>
+          </div>
           <div id="lp-tiers-list" class="lp-tiers-list">
             <p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Loading pricing…</p>
           </div>
@@ -197,8 +222,10 @@
         // not a broken sheet.
         const status = await fetchTierStatus(p.id);
         const currentTierId = status.tierId || null;
+        const currentTierObj = currentTierId ? data.tiers.find((t) => t.tier_id === currentTierId) : null;
+        const currentRank = currentTierObj ? currentTierObj.rank : null;
 
-        listEl.innerHTML = data.tiers.map((t) => tierCardHtml(t, currentTierId)).join("");
+        listEl.innerHTML = data.tiers.map((t) => tierCardHtml(t, currentTierId, currentRank)).join("");
         listEl.querySelectorAll("[data-tier-id]").forEach((card) => {
           card.addEventListener("click", () => {
             openMethodChoice(overlay, p, {
