@@ -290,7 +290,7 @@ export async function handleListProducts(env, profileId, includeDrafts = false) 
     products,
     unlocked: isUnlocked,
     tierId: profile.tier_id || null,
-    maxProducts: profile.max_products ?? 10,
+    maxProducts: profile.max_products ?? 1,
     referralsNeeded: isUnlockedViaReferral ? 0 : 1
   });
 }
