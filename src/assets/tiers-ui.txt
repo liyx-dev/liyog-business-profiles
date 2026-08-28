@@ -92,10 +92,49 @@
     return res.json();
   }
 
-  function tierCardHtml(tier) {
+  /**
+   * Current tier status for this profile — used to lock/mark the
+   * card matching whatever tier they've already paid for. A referral-
+   * unlocked-only profile has tierId: null, so no card is marked
+   * current for them (exactly right — they haven't bought anything).
+   */
+  async function fetchTierStatus(profileId) {
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/profiles/${profileId}/tier-status`);
+      if (!res.ok) return { tierId: null };
+      return res.json();
+    } catch (e) {
+      return { tierId: null };
+    }
+  }
+
+  const TIER_ACCENT = {
+    tier1: "var(--liyog-green, #28A428)",
+    tier2: "#2F80D6",
+    tier3: "#B8860B",
+    tier4: "#7B3FE4"
+  };
+
+  function tierCardHtml(tier, currentTierId) {
     const label = TIER_LABELS[tier.tier_id] || tier.tier_id;
+    const isCurrent = currentTierId && tier.tier_id === currentTierId;
+    const accent = TIER_ACCENT[tier.tier_id] || "var(--liyog-green, #28A428)";
+
+    if (isCurrent) {
+      return `
+        <div class="lp-tier-card lp-tier-card-current" style="--tier-accent:${accent};">
+          <div class="lp-tier-card-badge lp-tier-card-badge-current">Current Plan</div>
+          <div class="lp-tier-card-name">${esc(label)}</div>
+          <div class="lp-tier-card-count">${esc(tier.max_products)} products</div>
+          <div class="lp-tier-card-price">${esc(formatPrice(tier.amount, tier.currency))}</div>
+          <div class="lp-tier-card-note">already active</div>
+        </div>
+      `;
+    }
+
     return `
-      <button type="button" class="lp-tier-card" data-tier-id="${esc(tier.tier_id)}" data-amount="${esc(tier.amount)}" data-currency="${esc(tier.currency)}">
+      <button type="button" class="lp-tier-card" data-tier-id="${esc(tier.tier_id)}" data-amount="${esc(tier.amount)}" data-currency="${esc(tier.currency)}" style="--tier-accent:${accent};">
+        ${tier.isLast ? `<div class="lp-tier-card-badge lp-tier-card-badge-top">Top Tier</div>` : ""}
         <div class="lp-tier-card-name">${esc(label)}</div>
         <div class="lp-tier-card-count">${esc(tier.max_products)} products</div>
         <div class="lp-tier-card-price">${esc(formatPrice(tier.amount, tier.currency))}</div>
@@ -144,14 +183,22 @@
     openSheet(overlay);
 
     fetchPricing()
-      .then((data) => {
+      .then(async (data) => {
         const listEl = document.getElementById("lp-tiers-list");
         if (!listEl) return;
         if (!data.tiers || !data.tiers.length) {
           listEl.innerHTML = `<p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Pricing isn't available right now — please try again shortly.</p>`;
           return;
         }
-        listEl.innerHTML = data.tiers.map(tierCardHtml).join("");
+
+        // Current tier (if any) is fetched separately and never blocks
+        // rendering pricing — a failed/slow tier-status check just means
+        // no card gets marked "Current Plan," which is a safe fallback,
+        // not a broken sheet.
+        const status = await fetchTierStatus(p.id);
+        const currentTierId = status.tierId || null;
+
+        listEl.innerHTML = data.tiers.map((t) => tierCardHtml(t, currentTierId)).join("");
         listEl.querySelectorAll("[data-tier-id]").forEach((card) => {
           card.addEventListener("click", () => {
             openMethodChoice(overlay, p, {
@@ -307,5 +354,4 @@
     maybeShowTierResultToast
   };
 })();
-
 
