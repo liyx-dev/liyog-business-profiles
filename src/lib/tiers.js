@@ -67,6 +67,11 @@ export async function handleGetPricing(request, env) {
 
   const tiers = TIER_IDS.map((id) => byTier[id]).filter(Boolean);
 
+  // Flag the highest tier explicitly so the frontend never needs to
+  // hardcode "4 tiers" anywhere — adding a tier5 later to TIER_IDS
+  // above is the only change needed; this flag just follows along.
+  tiers.forEach((t, i) => { t.isLast = i === tiers.length - 1; });
+
   return jsonResponse({ countryCode, tiers });
 }
 
@@ -372,5 +377,4 @@ async function hmacSha512Hex(secret, message) {
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-
 
