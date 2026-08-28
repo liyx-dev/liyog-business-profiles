@@ -67,10 +67,15 @@ export async function handleGetPricing(request, env) {
 
   const tiers = TIER_IDS.map((id) => byTier[id]).filter(Boolean);
 
-  // Flag the highest tier explicitly so the frontend never needs to
-  // hardcode "4 tiers" anywhere — adding a tier5 later to TIER_IDS
-  // above is the only change needed; this flag just follows along.
-  tiers.forEach((t, i) => { t.isLast = i === tiers.length - 1; });
+  // Flag the highest tier and give every tier an explicit rank (its
+  // position in TIER_IDS) so the frontend can compare "is this tier
+  // above/below the one the user already has" without ever hardcoding
+  // tier names or count — adding tier5 to TIER_IDS is the only change
+  // needed anywhere in the system for ranking to stay correct.
+  tiers.forEach((t, i) => {
+    t.isLast = i === tiers.length - 1;
+    t.rank = i;
+  });
 
   return jsonResponse({ countryCode, tiers });
 }
