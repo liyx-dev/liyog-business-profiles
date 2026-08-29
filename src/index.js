@@ -468,9 +468,14 @@ if (url.pathname === "/reviews-ui.js") {
 
       const profileId = crypto.randomUUID();
       try {
+        // max_products is set explicitly to 1 here rather than relying
+        // on the D1 column's schema-level DEFAULT (which is 10) — that
+        // default predates the tier-upgrade system and is now the wrong
+        // baseline. Being explicit here means correctness never again
+        // depends on remembering to fix the schema default separately.
         await env.DB.prepare(
-          `INSERT INTO profiles (id, owner_id, slug, business_name, business_category, tagline, moderation_status, referral_code, referred_by_profile_id)
-           VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?)`
+          `INSERT INTO profiles (id, owner_id, slug, business_name, business_category, tagline, moderation_status, referral_code, referred_by_profile_id, max_products)
+           VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, 1)`
         ).bind(profileId, userId, slug, businessName, category, body.tagline || null, slug, referringProfileId).run();
       } catch (dbErr) {
         console.error("Profile creation DB error:", dbErr);
@@ -1359,4 +1364,3 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
