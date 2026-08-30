@@ -1,0 +1,406 @@
+/* =====================================================================
+   LIYOG WORLD BRAND PROFILES — boost-ui.js
+   Boost purchase sheet: choose scope (profile / all products / single
+   product) is decided by the CALLER (profile.js passes it in), then
+   pick a duration (or type a custom one), then Paystack or manual.
+   Self-contained on purpose — same reasoning as tiers-ui.js: profile.js
+   wraps everything in its own IIFE and doesn't expose its internals,
+   so this file never reaches into that closure. Exposes exactly one
+   entry point, window.LiyogBoostUI.openBoostSheet(p, options).
+   ===================================================================== */
+
+(function () {
+  "use strict";
+
+  const WORKER_BASE = "https://www.liyogworld.com.ng";
+
+  const SCOPE_LABELS = {
+    profile: "Your Brand Profile",
+    catalogue: "All Your Products Page",
+    product: "This Product"
+  };
+
+  const DURATION_LABELS = {
+    micro_6h: "6 Hours", micro_12h: "12 Hours", micro_24h: "24 Hours",
+    std_3d: "3 Days", std_7d: "7 Days", std_14d: "14 Days",
+    ext_21d: "3 Weeks", ext_30d: "1 Month"
+  };
+
+  function esc(str) {
+    return String(str == null ? "" : str).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function getOverlayHost() {
+    return document.querySelector(".lp-root") || document.getElementById("liyog-profile-root") || document.body;
+  }
+
+  function lockBodyScroll() { document.body.style.overflow = "hidden"; }
+  function unlockBodyScroll() {
+    const somethingStillOpen =
+      document.querySelector(".lp-sheet-overlay.lp-open") ||
+      document.querySelector(".lp-product-lightbox.lp-open");
+    if (!somethingStillOpen) document.body.style.overflow = "";
+  }
+  function openSheet(overlay) { overlay.classList.add("lp-open"); lockBodyScroll(); }
+  function closeSheet(overlay) { overlay.classList.remove("lp-open"); unlockBodyScroll(); }
+
+  function showToast(message, type = "success") {
+    let host = document.getElementById("lp-boost-toast-host");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "lp-boost-toast-host";
+      host.className = "lp-toast-host";
+      getOverlayHost().appendChild(host);
+    }
+    const toast = document.createElement("div");
+    toast.className = `lp-toast lp-toast-${type}`;
+    toast.textContent = message;
+    host.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+  }
+
+  function formatPrice(amountMinorUnits, currency) {
+    const major = amountMinorUnits / 100;
+    const symbols = { NGN: "₦", GHS: "GH₵", ZAR: "R", KES: "KSh", USD: "$" };
+    const symbol = symbols[currency] || currency + " ";
+    return `${symbol}${major.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  }
+
+  async function fetchBoostPricing() {
+    const res = await fetch(`${WORKER_BASE}/api/boost/pricing`);
+    if (!res.ok) throw new Error("Pricing fetch failed");
+    return res.json();
+  }
+
+  /**
+   * Main entry point. p = the profile object (needs p.id, p.business_name,
+   * p.slug). options = { scope: 'profile'|'catalogue'|'product',
+   * product: {id, name} } — product only required when scope is 'product'.
+   */
+  function openBoostSheet(p, options) {
+    const scope = options && options.scope || "profile";
+    const product = options && options.product || null;
+
+    const host = getOverlayHost();
+    let overlay = document.getElementById("lp-boost-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "lp-sheet-overlay";
+      overlay.id = "lp-boost-overlay";
+      host.appendChild(overlay);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
+    }
+
+    const scopeLabel = scope === "product" && product ? `"${esc(product.name)}"` : SCOPE_LABELS[scope];
+
+    overlay.innerHTML = `
+      <div class="lp-sheet">
+        <div class="lp-sheet-top-bar">
+          <div class="lp-sheet-handle"></div>
+          <button class="lp-sheet-close" id="lp-boost-close" type="button">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="lp-boost-sheet-content">
+          <h3 style="font-family:var(--font-display, inherit);text-align:center;margin:0 0 4px;">Boost ${scopeLabel}</h3>
+          <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 18px;">Get featured placement and stand out to visitors. Choose how long you'd like to boost.</p>
+          <div id="lp-boost-durations" class="lp-tiers-list">
+            <p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Loading pricing…</p>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById("lp-boost-close").addEventListener("click", () => closeSheet(overlay));
+    openSheet(overlay);
+
+    fetchBoostPricing()
+      .then((data) => {
+        const listEl = document.getElementById("lp-boost-durations");
+        if (!listEl) return;
+
+        if (!data.durations || !data.durations.length) {
+          listEl.innerHTML = `<p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Boosting isn't available right now — please check back soon.</p>`;
+          return;
+        }
+
+        listEl.innerHTML = data.durations.map(durationCardHtml).join("") + customDurationHtml();
+
+        listEl.querySelectorAll("[data-duration-id]").forEach((card) => {
+          card.addEventListener("click", () => {
+            openMethodChoice(overlay, p, scope, product, {
+              durationId: card.dataset.durationId,
+              amount: Number(card.dataset.amount),
+              currency: card.dataset.currency,
+              label: DURATION_LABELS[card.dataset.durationId] || card.dataset.durationId
+            });
+          });
+        });
+
+        wireCustomDurationInput(listEl, data.durations);
+      })
+      .catch(() => {
+        const listEl = document.getElementById("lp-boost-durations");
+        if (listEl) listEl.innerHTML = `<p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Couldn't load pricing — check your connection and try again.</p>`;
+      });
+
+    // Store scope/product on the overlay so the method-choice and
+    // custom-duration steps (rendered later, after pricing loads) can
+    // read them back without threading extra parameters everywhere.
+    overlay.dataset.scope = scope;
+    if (product) overlay.dataset.productId = product.id;
+  }
+
+  function durationCardHtml(d) {
+    const label = DURATION_LABELS[d.duration_id] || d.duration_id;
+    return `
+      <button type="button" class="lp-tier-card" data-duration-id="${esc(d.duration_id)}" data-amount="${esc(d.amount)}" data-currency="${esc(d.currency)}">
+        <div class="lp-tier-card-name">${esc(label)}</div>
+        <div class="lp-tier-card-price">${esc(formatPrice(d.amount, d.currency))}</div>
+        <div class="lp-tier-card-note">one-time</div>
+      </button>
+    `;
+  }
+
+  function customDurationHtml() {
+    return `
+      <div class="lp-boost-custom-duration">
+        <label for="lp-boost-custom-hours" class="lp-boost-custom-label">Or choose your own duration</label>
+        <div class="lp-boost-custom-row">
+          <input type="number" id="lp-boost-custom-hours" min="1" max="720" placeholder="e.g. 48" class="lp-field-input lp-boost-custom-input">
+          <span class="lp-boost-custom-unit">hours</span>
+        </div>
+        <p id="lp-boost-custom-preview" class="lp-boost-custom-preview"></p>
+        <button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-boost-custom-continue" style="width:100%;margin-top:10px;" disabled>
+          <span>Continue with Custom Duration</span>
+        </button>
+      </div>
+    `;
+  }
+
+  function wireCustomDurationInput(listEl, durations) {
+    const input = document.getElementById("lp-boost-custom-hours");
+    const preview = document.getElementById("lp-boost-custom-preview");
+    const continueBtn = document.getElementById("lp-boost-custom-continue");
+    if (!input) return;
+
+    let debounceTimer = null;
+
+    input.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      const hours = Number(input.value);
+      if (!hours || hours < 1) {
+        preview.textContent = "";
+        continueBtn.disabled = true;
+        return;
+      }
+      debounceTimer = setTimeout(async () => {
+        preview.textContent = "Calculating…";
+        try {
+          // Price preview reuses the same interpolation the backend
+          // will apply at checkout — computed client-side here from
+          // the already-fetched durations list so it's instant, no
+          // extra request per keystroke. The backend recalculates
+          // authoritatively at checkout time regardless, so this is
+          // purely a preview, never trusted for the actual charge.
+          const amount = estimateCustomPrice(durations, hours);
+          const currency = durations[0].currency;
+          preview.textContent = `Estimated: ${formatPrice(amount, currency)}`;
+          continueBtn.disabled = false;
+          continueBtn.dataset.hours = hours;
+          continueBtn.dataset.amount = amount;
+          continueBtn.dataset.currency = currency;
+        } catch (e) {
+          preview.textContent = "Couldn't calculate — try a listed duration instead.";
+          continueBtn.disabled = true;
+        }
+      }, 350);
+    });
+
+    continueBtn.addEventListener("click", () => {
+      const overlay = document.getElementById("lp-boost-overlay");
+      const scope = overlay.dataset.scope;
+      const productId = overlay.dataset.productId;
+      // p/product are re-derived from what's already on the overlay/DOM
+      // at this point via the closure in openMethodChoice's caller —
+      // simplest path is to re-invoke via a custom event the outer
+      // scope listens for. See openBoostSheet's product/p capture below.
+      continueBtn.dispatchEvent(new CustomEvent("lp-boost-custom-chosen", {
+        bubbles: true,
+        detail: {
+          customHours: Number(continueBtn.dataset.hours),
+          amount: Number(continueBtn.dataset.amount),
+          currency: continueBtn.dataset.currency
+        }
+      }));
+    });
+  }
+
+  function estimateCustomPrice(durations, customHours) {
+    const sorted = [...durations].sort((a, b) => a.hours - b.hours);
+    const withRate = sorted.map((d) => ({ ...d, perHourRate: d.amount / d.hours }));
+    if (customHours <= withRate[0].hours) return Math.ceil(withRate[0].perHourRate * customHours);
+    const last = withRate[withRate.length - 1];
+    if (customHours >= last.hours) return Math.ceil(last.perHourRate * customHours);
+    for (let i = 0; i < withRate.length - 1; i++) {
+      const lower = withRate[i], upper = withRate[i + 1];
+      if (customHours >= lower.hours && customHours <= upper.hours) {
+        const fraction = (customHours - lower.hours) / (upper.hours - lower.hours);
+        const rate = lower.perHourRate + (upper.perHourRate - lower.perHourRate) * fraction;
+        return Math.ceil(rate * customHours);
+      }
+    }
+    return Math.ceil(last.perHourRate * customHours);
+  }
+
+  function openMethodChoice(overlay, p, scope, product, duration) {
+    const priceText = formatPrice(duration.amount, duration.currency);
+    overlay.querySelector(".lp-boost-sheet-content").innerHTML = `
+      <button type="button" id="lp-boost-back" style="background:none;border:none;color:var(--ink-soft, #666);font-size:13px;cursor:pointer;padding:0 0 14px;">&larr; Back</button>
+      <h3 style="font-family:var(--font-display, inherit);text-align:center;margin:0 0 8px;">${esc(duration.label)} — ${esc(priceText)}</h3>
+      <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 20px;">How would you like to pay?</p>
+      <button type="button" class="lp-btn lp-btn-primary" id="lp-boost-pay-paystack" style="width:100%;margin-bottom:10px;">
+        <span>Pay Now — Card / Bank</span>
+      </button>
+      <button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-boost-pay-manual" style="width:100%;">
+        <span>Pay via WhatsApp (Manual)</span>
+      </button>
+    `;
+
+    document.getElementById("lp-boost-back").addEventListener("click", () => openBoostSheet(p, { scope, product }));
+
+    document.getElementById("lp-boost-pay-paystack").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.querySelector("span").textContent = "Starting checkout…";
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/boost/checkout`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            profile_id: p.id,
+            scope,
+            product_id: product ? product.id : null,
+            duration_id: duration.durationId || null,
+            custom_hours: duration.customHours || null,
+            method: "paystack"
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(data.error || "Couldn't start payment. Please try again.", "error");
+          btn.disabled = false;
+          btn.querySelector("span").textContent = "Pay Now — Card / Bank";
+          return;
+        }
+        window.location.href = data.authorizationUrl;
+      } catch (err) {
+        showToast("Couldn't start payment. Please check your connection.", "error");
+        btn.disabled = false;
+        btn.querySelector("span").textContent = "Pay Now — Card / Bank";
+      }
+    });
+
+    document.getElementById("lp-boost-pay-manual").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/boost/checkout`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            profile_id: p.id,
+            scope,
+            product_id: product ? product.id : null,
+            duration_id: duration.durationId || null,
+            custom_hours: duration.customHours || null,
+            method: "manual"
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(data.error || "Couldn't start this — please try again.", "error");
+          btn.disabled = false;
+          return;
+        }
+        openManualHandoff(overlay, p, scope, product, data.purchase);
+      } catch (err) {
+        showToast("Couldn't start this — please check your connection.", "error");
+        btn.disabled = false;
+      }
+    });
+  }
+
+  function openManualHandoff(overlay, p, scope, product, purchase) {
+    const priceText = formatPrice(purchase.amount, purchase.currency);
+    const scopeLabel = scope === "product" && product ? `"${esc(product.name)}"` : SCOPE_LABELS[scope];
+
+    overlay.querySelector(".lp-boost-sheet-content").innerHTML = `
+      <h3 style="font-family:var(--font-display, inherit);text-align:center;margin:0 0 8px;">Almost done</h3>
+      <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 20px;">Message us on WhatsApp with your payment. We'll confirm and activate your boost shortly after.</p>
+      <button type="button" class="lp-btn lp-btn-primary" id="lp-boost-manual-whatsapp" style="width:100%;">
+        <span>Message Us on WhatsApp</span>
+      </button>
+    `;
+
+    document.getElementById("lp-boost-manual-whatsapp").addEventListener("click", async () => {
+      const lines = [
+        `I'd like to boost ${scopeLabel}.`,
+        `Brand: ${p.business_name} (${WORKER_BASE}/b/${p.slug})`,
+        `Duration: ${purchase.hours} hours`,
+        `Amount: ${priceText}`,
+        `Purchase ID: ${purchase.id}`
+      ];
+      const waText = lines.join("\n");
+
+      let adminNumber = "";
+      try {
+        const cfgRes = await fetch(`${WORKER_BASE}/api/boost-config`);
+        const cfg = await cfgRes.json();
+        adminNumber = cfg.adminWhatsapp || "";
+      } catch (e) { /* fall through with no number — wa.me still opens a compose screen */ }
+
+      window.open(`https://wa.me/${adminNumber}?text=${encodeURIComponent(waText)}`, "_blank");
+      closeSheet(overlay);
+    });
+  }
+
+  // Listen for the custom-duration "Continue" event fired from
+  // wireCustomDurationInput and route it into the same method-choice
+  // step used by the listed durations — keeps both paths converging
+  // on one shared checkout flow instead of duplicating it.
+  document.addEventListener("lp-boost-custom-chosen", (e) => {
+    const overlay = document.getElementById("lp-boost-overlay");
+    if (!overlay || !overlay.__lpBoostContext) return;
+    const { p, scope, product } = overlay.__lpBoostContext;
+    openMethodChoice(overlay, p, scope, product, {
+      customHours: e.detail.customHours,
+      amount: e.detail.amount,
+      currency: e.detail.currency,
+      label: `${e.detail.customHours} Hours (Custom)`
+    });
+  });
+
+  // Wrap the exported entry point so we can stash p/scope/product on
+  // the overlay for the custom-duration event listener above to find,
+  // without changing any of the function signatures already in use.
+  function openBoostSheetWithContext(p, options) {
+    openBoostSheet(p, options);
+    const overlay = document.getElementById("lp-boost-overlay");
+    if (overlay) {
+      overlay.__lpBoostContext = {
+        p,
+        scope: (options && options.scope) || "profile",
+        product: (options && options.product) || null
+      };
+    }
+  }
+
+  window.LiyogBoostUI = {
+    openBoostSheet: openBoostSheetWithContext
+  };
+})();
+
