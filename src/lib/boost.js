@@ -44,7 +44,14 @@ export async function handleGetBoostPricing(request, env) {
 
   const durations = results.filter((r) => unlockedGroups.includes(r.tier_group));
 
-  return jsonResponse({ countryCode, durations, customDurationEnabled: durations.length > 0 });
+  let customDuration = null;
+  if (durations.length) {
+    const longestDays = Math.max(...durations.map((d) => d.hours)) / 24;
+    const maxDays = Number(await getSettingLocal(env, "boost_custom_max_days", "90"));
+    customDuration = { minDays: longestDays + 1, maxDays };
+  }
+
+  return jsonResponse({ countryCode, durations, customDuration });
 }
 
 async function getUnlockedTierGroups(env) {
@@ -56,44 +63,53 @@ async function getUnlockedTierGroups(env) {
 }
 
 /**
- * Computes the price for a CUSTOM duration (user-typed hours) by
- * linearly interpolating between the per-hour rate of the two nearest
- * UNLOCKED official durations that bracket it. Clamps to the
- * shortest/longest unlocked duration's rate if the custom value falls
- * outside the available range, rather than extrapolating — prevents
- * a custom duration from ever being priced cheaper than the cheapest
- * official option or absurdly expensive beyond the longest one.
+ * Custom duration is now DAYS-based (not hours) and only allowed
+ * ABOVE the longest currently-unlocked official tier — e.g. today
+ * that's 30 days, so custom starts at 31+. This is deliberate: letting
+ * custom start from 1 hour let people route small/cheap boosts through
+ * the custom path instead of buying an official tier, undercutting the
+ * whole pricing ladder. Restricting custom to "bulk, above the top
+ * tier" makes it a genuine enterprise option, not a workaround.
  *
- * This naturally gets smarter as more tier_groups unlock — with only
- * 'extended' visible today, there are just two anchor points (21d,
- * 30d); once micro/standard unlock, more anchor points exist and
- * interpolation becomes correspondingly more precise, with no code
- * change required here.
+ * The minimum for custom is DERIVED from the longest unlocked tier's
+ * day count — never hardcoded — so it self-adjusts the moment a new,
+ * longer official tier is added or unlocked. The maximum and the
+ * maximum discount percentage are both stored in app_settings, fully
+ * admin-controlled without any code change:
+ *   boost_custom_max_days          (e.g. "90" for 3 months)
+ *   boost_custom_max_discount_pct  (e.g. "35" for up to 35% off)
+ *
+ * Pricing formula — extrapolated from the longest tier's per-day rate,
+ * with a discount that scales from 0% (right at the longest tier's day
+ * count) up to the configured max (right at the configured max days):
+ *   baseRate = longestTier.amount / longestTier.days
+ *   progress = min(1, (customDays - longestTier.days) / (maxDays - longestTier.days))
+ *   discount = (maxDiscountPct / 100) * progress
+ *   price = ceil(baseRate * (1 - discount) * customDays)
  */
-function interpolateCustomPrice(durations, customHours) {
+async function computeCustomBoostPrice(env, durations, customDays) {
   const sorted = [...durations].sort((a, b) => a.hours - b.hours);
   if (!sorted.length) return null;
 
-  const withRate = sorted.map((d) => ({ ...d, perHourRate: d.amount / d.hours }));
+  const longest = sorted[sorted.length - 1];
+  const longestDays = longest.hours / 24;
 
-  if (customHours <= withRate[0].hours) {
-    return Math.ceil(withRate[0].perHourRate * customHours);
-  }
-  const last = withRate[withRate.length - 1];
-  if (customHours >= last.hours) {
-    return Math.ceil(last.perHourRate * customHours);
-  }
+  const maxDays = Number(await getSettingLocal(env, "boost_custom_max_days", "90"));
+  const maxDiscountPct = Number(await getSettingLocal(env, "boost_custom_max_discount_pct", "35"));
 
-  for (let i = 0; i < withRate.length - 1; i++) {
-    const lower = withRate[i];
-    const upper = withRate[i + 1];
-    if (customHours >= lower.hours && customHours <= upper.hours) {
-      const fraction = (customHours - lower.hours) / (upper.hours - lower.hours);
-      const rate = lower.perHourRate + (upper.perHourRate - lower.perHourRate) * fraction;
-      return Math.ceil(rate * customHours);
-    }
-  }
-  return Math.ceil(last.perHourRate * customHours); // unreachable in practice, safe fallback
+  if (customDays <= longestDays) return null; // caller must reject — custom is only valid above the top tier
+
+  const baseRate = longest.amount / longestDays;
+  const denominator = Math.max(1, maxDays - longestDays); // avoid divide-by-zero if misconfigured
+  const progress = Math.min(1, (customDays - longestDays) / denominator);
+  const discount = (maxDiscountPct / 100) * progress;
+  const effectiveRate = baseRate * (1 - discount);
+
+  return {
+    amount: Math.ceil(effectiveRate * customDays),
+    minDays: longestDays,
+    maxDays
+  };
 }
 
 /**
@@ -148,6 +164,27 @@ export async function handleBoostStatus(env, profileId, productIdsParam) {
     catalogueBoost,
     productBoosts: productStatuses
   });
+}
+
+/**
+ * GET /api/profiles/:id/active-boosts — returns EVERY currently-active
+ * boost for a profile in one list (profile + catalogue + every boosted
+ * product, with product names joined in), rather than requiring the
+ * caller to already know which product ids to check. This is what
+ * powers the "Your Active Boosts" summary panel — a single call gets
+ * the full picture instead of piecing it together from multiple
+ * targeted lookups.
+ */
+export async function handleActiveBoosts(env, profileId) {
+  const { results } = await env.DB.prepare(
+    `SELECT bl.id, bl.scope, bl.product_id, bl.boosted_at, bl.expires_at, p.name AS product_name
+     FROM boost_log bl
+     LEFT JOIN products p ON p.id = bl.product_id
+     WHERE bl.profile_id = ? AND bl.expires_at > datetime('now')
+     ORDER BY bl.expires_at ASC`
+  ).bind(profileId).all();
+
+  return jsonResponse({ boosts: results });
 }
 
 /**
@@ -208,7 +245,7 @@ export async function handleActivateBoost(request, env) {
  */
 export async function handleBoostCheckout(request, env, userId) {
   const body = await request.json().catch(() => ({}));
-  const { profile_id, scope, product_id, duration_id, custom_hours, method } = body;
+  const { profile_id, scope, product_id, duration_id, custom_hours, custom_days, method } = body;
 
   if (!profile_id || !scope || !["profile", "catalogue", "product"].includes(scope)) {
     return jsonResponse({ error: "Invalid boost selection." }, 400);
@@ -216,10 +253,11 @@ export async function handleBoostCheckout(request, env, userId) {
   if (scope === "product" && !product_id) {
     return jsonResponse({ error: "A product must be specified for a product boost." }, 400);
   }
-  if (!duration_id && !custom_hours) {
+  const hasCustomInput = custom_days != null || custom_hours != null;
+  if (!duration_id && !hasCustomInput) {
     return jsonResponse({ error: "Choose a duration." }, 400);
   }
-  if (duration_id && custom_hours) {
+  if (duration_id && hasCustomInput) {
     return jsonResponse({ error: "Choose either a listed duration or a custom one, not both." }, 400);
   }
   if (method !== "paystack" && method !== "manual") {
@@ -261,15 +299,31 @@ export async function handleBoostCheckout(request, env, userId) {
     resolvedDurationId = duration_id;
     resolvedCustomHours = null;
   } else {
-    const customHoursNum = Number(custom_hours);
-    if (!Number.isFinite(customHoursNum) || customHoursNum < 1 || customHoursNum > 720) {
-      return jsonResponse({ error: "Enter a valid number of hours (1–720)." }, 400);
+    // custom_days is the new field name (days, not hours) — custom_hours
+    // is still accepted for backward compatibility with any in-flight
+    // client that hasn't refreshed yet, but is interpreted as hours/24.
+    const customDaysNum = body.custom_days != null
+      ? Number(body.custom_days)
+      : (custom_hours != null ? Number(custom_hours) / 24 : NaN);
+
+    if (!Number.isFinite(customDaysNum) || customDaysNum <= 0) {
+      return jsonResponse({ error: "Enter a valid number of days." }, 400);
     }
-    hours = customHoursNum;
-    amount = interpolateCustomPrice(unlockedDurations, customHoursNum);
+
+    const priced = await computeCustomBoostPrice(env, unlockedDurations, customDaysNum);
+    if (!priced) {
+      const longestDays = Math.max(...unlockedDurations.map((d) => d.hours)) / 24;
+      return jsonResponse({ error: `Custom duration must be more than ${longestDays} days — choose a listed duration for anything shorter.` }, 400);
+    }
+    if (customDaysNum > priced.maxDays) {
+      return jsonResponse({ error: `Custom duration can't exceed ${priced.maxDays} days right now.` }, 400);
+    }
+
+    hours = Math.round(customDaysNum * 24);
+    amount = priced.amount;
     currency = unlockedDurations[0].currency;
     resolvedDurationId = null;
-    resolvedCustomHours = customHoursNum;
+    resolvedCustomHours = hours;
   }
 
   const purchaseId = crypto.randomUUID();
