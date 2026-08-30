@@ -7,6 +7,7 @@ import AUTH_UI_JS from "./assets/auth-ui-js.txt";
 import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
 import REVIEWS_UI_JS from "./assets/reviews-ui-js.txt";
 import TIERS_UI_JS from "./assets/tiers-ui.txt";
+import BOOST_UI_JS from "./assets/boost-ui.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
 import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage } from "./lib/moderation.js";
 import * as reviews from "./lib/reviews.js";
@@ -14,7 +15,11 @@ import { handleCreateProduct, handleUpdateProduct, handleDeleteProduct, handleLi
 import * as productsEngagement from "./lib/products-engagement.js";
 import { handleProductsListingPage, handleProductDetailPage } from "./lib/product-pages.js";
 import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
-import { handleBoostStatus, handleActivateBoost, handleBoostConfig } from "./lib/boost.js";
+import {
+  handleBoostStatus, handleActivateBoost, handleBoostConfig,
+  handleGetBoostPricing, handleBoostCheckout, handleBoostPaystackCallback,
+  handleBoostPaystackWebhook, handleActivateBoostPurchase
+} from "./lib/boost.js";
 import { handleGetPricing, handleCheckout, handlePaystackCallback, handlePaystackWebhook, handleActivateTier, handleTierStatus } from "./lib/tiers.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
@@ -116,6 +121,9 @@ if (url.pathname === "/reviews-ui.js") {
     }
     if (url.pathname === "/tiers-ui.js") {
       return new Response(TIERS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+    }
+    if (url.pathname === "/boost-ui.js") {
+      return new Response(BOOST_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
     if (url.pathname === "/brands-template.html") {
       return new Response(PROFILE_TEMPLATE_HTML, { headers: { "content-type": "text/html; charset=utf-8", ...NO_CACHE_HEADERS } });
@@ -963,6 +971,46 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
     }
 
     // -----------------------------------------------------------------
+    // Boost — pricing, checkout (Paystack redirect + manual),
+    // verification, admin manual-confirm. Same pattern as the tier
+    // routes below: thin wiring only, all real logic in lib/boost.js.
+    // -----------------------------------------------------------------
+
+    // ---- Boost: public pricing, country-detected + feature-flag
+    // filtered (only unlocked tier_groups are returned) ----
+    if (url.pathname === "/api/boost/pricing" && request.method === "GET") {
+      return handleGetBoostPricing(request, env);
+    }
+
+    // ---- Boost: start checkout (Paystack or manual) — owner-only ----
+    if (url.pathname === "/api/boost/checkout" && request.method === "POST") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      return handleBoostCheckout(request, env, userId);
+    }
+
+    // ---- Boost: Paystack redirects the browser back here after
+    // checkout — verifies server-side, then redirects on to the
+    // Blogger profile page with a result flag ----
+    if (url.pathname === "/api/boost/paystack-callback" && request.method === "GET") {
+      return handleBoostPaystackCallback(request, env);
+    }
+
+    // ---- Boost: Paystack's server-to-server webhook — the reliable
+    // confirmation path, independent of whether the user's browser
+    // made it back to the callback above ----
+    if (url.pathname === "/api/boost/paystack-webhook" && request.method === "POST") {
+      return handleBoostPaystackWebhook(request, env);
+    }
+
+    // ---- Boost: manual activation for a tracked boost_purchases row
+    // (admin-only, same guard pattern as /api/boost/activate above) ----
+    if (url.pathname === "/api/boost/manual-activate" && request.method === "POST") {
+      return handleActivateBoostPurchase(request, env);
+    }
+
+    // -----------------------------------------------------------------
     // Product tier upgrades — pricing, checkout (Paystack redirect +
     // manual), verification, admin manual-confirm. See lib/tiers.js
     // for the full logic; this stays thin route wiring only, same
@@ -1364,3 +1412,4 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
+
