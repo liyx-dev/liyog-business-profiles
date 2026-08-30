@@ -25,6 +25,92 @@ const PAYSTACK_COUNTRIES = {
 
 const TIER_IDS = ["tier1", "tier2", "tier3", "tier4"];
 
+/**
+ * Your Paystack account currently only settles in NGN — this is a
+ * per-account setting on Paystack's side (tied to business
+ * verification tier), not something this code can change. So every
+ * Paystack charge, regardless of the visitor's country, is always
+ * initialized in NGN. What the visitor SEES (local currency, from
+ * tier_pricing) and what gets ACTUALLY CHARGED (NGN, from this
+ * function) are deliberately decoupled — card networks handle the
+ * customer-side conversion automatically at checkout, the same way
+ * many international sites charge a single settlement currency while
+ * displaying local-feeling prices.
+ *
+ * Priority order for determining the NGN amount to charge:
+ *   1. tier_pricing.ngn_amount, if explicitly set — a manual override
+ *      for exact psychological pricing control (e.g. "always exactly
+ *      ₦4,800 for this tier/country, regardless of live rates").
+ *   2. A live exchange rate lookup, converting the local amount to
+ *      NGN, then rounded to a clean denomination.
+ *   3. If the live rate lookup fails for any reason (network issue,
+ *      provider down, rate-limited) — a fixed fallback rate stored in
+ *      D1 (fx_fallback_rates), so checkout NEVER hard-fails just
+ *      because a third-party forex API had a bad moment. This table
+ *      should be updated periodically (weekly/monthly is plenty) —
+ *      it's a safety net, not meant to track live markets.
+ *
+ * Rounding: always ROUNDS UP to the nearest ₦50. Never round down —
+ * a small buffer protects your margin against rate drift between
+ * when a price was set and when someone actually pays, and clean
+ * multiples of 50 read as an intentional price, not a conversion
+ * artifact.
+ */
+async function getNgnChargeAmount(env, price) {
+  // Local currency IS Naira already — no conversion needed, use the
+  // display amount directly as the charge amount.
+  if (price.currency === "NGN") return price.amount;
+
+  // Priority 1: explicit manual override.
+  if (price.ngn_amount != null) return price.ngn_amount;
+
+  // Priority 2: live rate.
+  try {
+    const liveRate = await fetchLiveNgnRate(price.currency);
+    if (liveRate) {
+      const converted = (price.amount / 100) * liveRate; // price.amount is in minor units (kobo/cents)
+      return roundUpToNearest50(converted * 100); // back to kobo
+    }
+  } catch (err) {
+    console.error(`Live FX lookup failed for ${price.currency}:`, err);
+  }
+
+  // Priority 3: fixed fallback rate stored in D1.
+  const { results } = await env.DB.prepare(
+    "SELECT ngn_per_unit FROM fx_fallback_rates WHERE currency = ?"
+  ).bind(price.currency).all();
+  if (results.length) {
+    const converted = (price.amount / 100) * results[0].ngn_per_unit;
+    return roundUpToNearest50(converted * 100);
+  }
+
+  // Nothing worked — this only happens if a currency has neither a
+  // manual override, a live rate, nor a fallback row. Fail loudly
+  // rather than silently charging something wrong.
+  throw new Error(`No NGN conversion available for currency ${price.currency}`);
+}
+
+function roundUpToNearest50(amountInKobo) {
+  const nairaAmount = amountInKobo / 100;
+  const roundedNaira = Math.ceil(nairaAmount / 50) * 50;
+  return roundedNaira * 100; // back to kobo for Paystack
+}
+
+/**
+ * Live exchange rate lookup. Uses exchangerate-api.com's free
+ * endpoint (no API key required for the base 'latest' tier) —
+ * swap this out for a paid/keyed provider if you need higher
+ * reliability or rate limits later; the rest of the system doesn't
+ * care which provider this function uses internally.
+ */
+async function fetchLiveNgnRate(fromCurrency) {
+  const res = await fetch(`https://open.er-api.com/v6/latest/${fromCurrency}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data.rates || !data.rates.NGN) return null;
+  return data.rates.NGN;
+}
+
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -139,6 +225,26 @@ export async function handleCheckout(request, env, userId) {
     return jsonResponse({ error: "Card payment isn't available right now — please use the manual option." }, 503);
   }
 
+  // Your Paystack account only settles in NGN today, regardless of
+  // what currency was DISPLAYED to the visitor above — see
+  // getNgnChargeAmount's doc comment for the full reasoning. The
+  // purchase row's `currency`/`amount` columns stay as the display
+  // values (what the person saw and agreed to); `ngn_charge_amount`
+  // records what was ACTUALLY sent to Paystack, so verification later
+  // checks the right number regardless of which one a bug might
+  // otherwise confuse.
+  let ngnChargeAmount;
+  try {
+    ngnChargeAmount = await getNgnChargeAmount(env, price);
+  } catch (err) {
+    console.error("NGN conversion failed:", err);
+    return jsonResponse({ error: "Couldn't calculate pricing right now — please use the manual option or try again shortly." }, 502);
+  }
+
+  await env.DB.prepare(
+    "UPDATE tier_purchases SET ngn_charge_amount = ? WHERE id = ?"
+  ).bind(ngnChargeAmount, purchaseId).run();
+
   const { results: userRows } = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(userId).all();
   const email = userRows.length ? userRows[0].email : "no-reply@liyogworld.com";
 
@@ -153,8 +259,8 @@ export async function handleCheckout(request, env, userId) {
       },
       body: JSON.stringify({
         email,
-        amount: price.amount,
-        currency: price.currency,
+        amount: ngnChargeAmount,
+        currency: "NGN",
         callback_url: callbackUrl,
         reference: purchaseId, // reuse our purchase id as Paystack's reference — makes verify-lookup trivial
         metadata: {
@@ -272,13 +378,19 @@ async function verifyAndConfirmPurchase(env, reference) {
     });
     const verifyData = await verifyRes.json();
 
+    // Every Paystack charge is initialized in NGN regardless of the
+    // display currency shown to the visitor (see getNgnChargeAmount),
+    // so verification must check against ngn_charge_amount + "NGN" —
+    // NOT purchase.amount/purchase.currency, which hold the display
+    // values the person saw (e.g. GHS) and would never match what
+    // Paystack actually processed.
     const paidOk =
       verifyRes.ok &&
       verifyData.status &&
       verifyData.data &&
       verifyData.data.status === "success" &&
-      verifyData.data.amount === purchase.amount &&
-      verifyData.data.currency === purchase.currency;
+      verifyData.data.amount === purchase.ngn_charge_amount &&
+      verifyData.data.currency === "NGN";
 
     if (!paidOk) {
       await env.DB.prepare(
@@ -315,7 +427,12 @@ async function getTierMaxProducts(env, tierId, countryCode) {
   const { results } = await env.DB.prepare(
     "SELECT max_products FROM tier_pricing WHERE tier_id = ? AND country_code = ?"
   ).bind(tierId, countryCode).all();
-  return results.length ? results[0].max_products : 10;
+  // This fallback should realistically never fire — it only matters if
+  // a tier_pricing row is missing for a tier/country that a purchase
+  // was somehow confirmed against. 1 (not 10) matches the system's
+  // free-tier baseline everywhere else, so a confirmed-but-misconfigured
+  // purchase never accidentally grants more than the safest default.
+  return results.length ? results[0].max_products : 1;
 }
 
 /**
