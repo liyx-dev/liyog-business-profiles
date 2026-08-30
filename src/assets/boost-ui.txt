@@ -125,7 +125,7 @@
           return;
         }
 
-        listEl.innerHTML = data.durations.map(durationCardHtml).join("") + customDurationHtml();
+        listEl.innerHTML = data.durations.map(durationCardHtml).join("") + customDurationHtml(data.customDuration);
 
         listEl.querySelectorAll("[data-duration-id]").forEach((card) => {
           card.addEventListener("click", () => {
@@ -138,7 +138,7 @@
           });
         });
 
-        wireCustomDurationInput(listEl, data.durations);
+        wireCustomDurationInput(listEl, data.durations, data.customDuration);
       })
       .catch(() => {
         const listEl = document.getElementById("lp-boost-durations");
@@ -158,19 +158,21 @@
       <button type="button" class="lp-tier-card" data-duration-id="${esc(d.duration_id)}" data-amount="${esc(d.amount)}" data-currency="${esc(d.currency)}">
         <div class="lp-tier-card-name">${esc(label)}</div>
         <div class="lp-tier-card-price">${esc(formatPrice(d.amount, d.currency))}</div>
-        <div class="lp-tier-card-note">one-time</div>
       </button>
     `;
   }
 
-  function customDurationHtml() {
+  function customDurationHtml(customDuration) {
+    if (!customDuration) return "";
+    const { minDays, maxDays } = customDuration;
     return `
       <div class="lp-boost-custom-duration">
-        <label for="lp-boost-custom-hours" class="lp-boost-custom-label">Or choose your own duration</label>
+        <label for="lp-boost-custom-days" class="lp-boost-custom-label">Need longer? Enter a custom duration (${Math.ceil(minDays)}–${maxDays} days)</label>
         <div class="lp-boost-custom-row">
-          <input type="number" id="lp-boost-custom-hours" min="1" max="720" placeholder="e.g. 48" class="lp-field-input lp-boost-custom-input">
-          <span class="lp-boost-custom-unit">hours</span>
+          <input type="number" id="lp-boost-custom-days" min="${Math.ceil(minDays)}" max="${maxDays}" placeholder="e.g. 60" class="lp-field-input lp-boost-custom-input">
+          <span class="lp-boost-custom-unit">days</span>
         </div>
+        <p class="lp-boost-custom-hint">For serious sellers — bulk pricing kicks in the longer you go.</p>
         <p id="lp-boost-custom-preview" class="lp-boost-custom-preview"></p>
         <button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-boost-custom-continue" style="width:100%;margin-top:10px;" disabled>
           <span>Continue with Custom Duration</span>
@@ -179,57 +181,60 @@
     `;
   }
 
-  function wireCustomDurationInput(listEl, durations) {
-    const input = document.getElementById("lp-boost-custom-hours");
+  function wireCustomDurationInput(listEl, durations, customDuration) {
+    const input = document.getElementById("lp-boost-custom-days");
     const preview = document.getElementById("lp-boost-custom-preview");
     const continueBtn = document.getElementById("lp-boost-custom-continue");
-    if (!input) return;
+    if (!input || !customDuration) return;
 
     let debounceTimer = null;
+    const { minDays, maxDays } = customDuration;
 
     input.addEventListener("input", () => {
       clearTimeout(debounceTimer);
-      const hours = Number(input.value);
-      if (!hours || hours < 1) {
-        preview.textContent = "";
+      const days = Number(input.value);
+      if (!days || days < minDays) {
+        preview.textContent = days ? `Minimum is ${Math.ceil(minDays)} days — pick a listed duration for anything shorter.` : "";
+        preview.className = days ? "lp-boost-custom-preview lp-boost-custom-preview-error" : "lp-boost-custom-preview";
         continueBtn.disabled = true;
         return;
       }
-      debounceTimer = setTimeout(async () => {
+      if (days > maxDays) {
+        preview.textContent = `Maximum is ${maxDays} days.`;
+        preview.className = "lp-boost-custom-preview lp-boost-custom-preview-error";
+        continueBtn.disabled = true;
+        return;
+      }
+      debounceTimer = setTimeout(() => {
         preview.textContent = "Calculating…";
+        preview.className = "lp-boost-custom-preview";
         try {
-          // Price preview reuses the same interpolation the backend
-          // will apply at checkout — computed client-side here from
-          // the already-fetched durations list so it's instant, no
-          // extra request per keystroke. The backend recalculates
-          // authoritatively at checkout time regardless, so this is
-          // purely a preview, never trusted for the actual charge.
-          const amount = estimateCustomPrice(durations, hours);
+          // Preview mirrors the backend's computeCustomBoostPrice
+          // formula exactly (extrapolated from the longest tier's
+          // per-day rate, with a configurable discount that scales
+          // toward the admin-set max). Purely a preview — the backend
+          // recalculates authoritatively at checkout, never trusting
+          // this client-side number for the actual charge.
+          const amount = estimateCustomPrice(durations, days, minDays - 1, maxDays);
           const currency = durations[0].currency;
           preview.textContent = `Estimated: ${formatPrice(amount, currency)}`;
           continueBtn.disabled = false;
-          continueBtn.dataset.hours = hours;
+          continueBtn.dataset.days = days;
           continueBtn.dataset.amount = amount;
           continueBtn.dataset.currency = currency;
         } catch (e) {
           preview.textContent = "Couldn't calculate — try a listed duration instead.";
+          preview.className = "lp-boost-custom-preview lp-boost-custom-preview-error";
           continueBtn.disabled = true;
         }
       }, 350);
     });
 
     continueBtn.addEventListener("click", () => {
-      const overlay = document.getElementById("lp-boost-overlay");
-      const scope = overlay.dataset.scope;
-      const productId = overlay.dataset.productId;
-      // p/product are re-derived from what's already on the overlay/DOM
-      // at this point via the closure in openMethodChoice's caller —
-      // simplest path is to re-invoke via a custom event the outer
-      // scope listens for. See openBoostSheet's product/p capture below.
       continueBtn.dispatchEvent(new CustomEvent("lp-boost-custom-chosen", {
         bubbles: true,
         detail: {
-          customHours: Number(continueBtn.dataset.hours),
+          customDays: Number(continueBtn.dataset.days),
           amount: Number(continueBtn.dataset.amount),
           currency: continueBtn.dataset.currency
         }
@@ -237,21 +242,22 @@
     });
   }
 
-  function estimateCustomPrice(durations, customHours) {
+  // NOTE: maxDiscountPct here is a client-side default (35) purely for
+  // the instant preview to look right before the real settings load —
+  // it is NOT authoritative. The backend reads the true value from
+  // app_settings.boost_custom_max_discount_pct at checkout time, so if
+  // you change that setting, only the PREVIEW briefly lags until the
+  // sheet is reopened; the actual charge is always correct regardless.
+  function estimateCustomPrice(durations, customDays, longestDays, maxDays, maxDiscountPct = 35) {
     const sorted = [...durations].sort((a, b) => a.hours - b.hours);
-    const withRate = sorted.map((d) => ({ ...d, perHourRate: d.amount / d.hours }));
-    if (customHours <= withRate[0].hours) return Math.ceil(withRate[0].perHourRate * customHours);
-    const last = withRate[withRate.length - 1];
-    if (customHours >= last.hours) return Math.ceil(last.perHourRate * customHours);
-    for (let i = 0; i < withRate.length - 1; i++) {
-      const lower = withRate[i], upper = withRate[i + 1];
-      if (customHours >= lower.hours && customHours <= upper.hours) {
-        const fraction = (customHours - lower.hours) / (upper.hours - lower.hours);
-        const rate = lower.perHourRate + (upper.perHourRate - lower.perHourRate) * fraction;
-        return Math.ceil(rate * customHours);
-      }
-    }
-    return Math.ceil(last.perHourRate * customHours);
+    const longest = sorted[sorted.length - 1];
+    const longestTierDays = longest.hours / 24;
+    const baseRate = longest.amount / longestTierDays;
+    const denominator = Math.max(1, maxDays - longestTierDays);
+    const progress = Math.min(1, (customDays - longestTierDays) / denominator);
+    const discount = (maxDiscountPct / 100) * progress;
+    const effectiveRate = baseRate * (1 - discount);
+    return Math.ceil(effectiveRate * customDays);
   }
 
   function openMethodChoice(overlay, p, scope, product, duration) {
@@ -284,7 +290,7 @@
             scope,
             product_id: product ? product.id : null,
             duration_id: duration.durationId || null,
-            custom_hours: duration.customHours || null,
+            custom_days: duration.customDays || null,
             method: "paystack"
           })
         });
@@ -316,7 +322,7 @@
             scope,
             product_id: product ? product.id : null,
             duration_id: duration.durationId || null,
-            custom_hours: duration.customHours || null,
+            custom_days: duration.customDays || null,
             method: "manual"
           })
         });
@@ -377,10 +383,10 @@
     if (!overlay || !overlay.__lpBoostContext) return;
     const { p, scope, product } = overlay.__lpBoostContext;
     openMethodChoice(overlay, p, scope, product, {
-      customHours: e.detail.customHours,
+      customDays: e.detail.customDays,
       amount: e.detail.amount,
       currency: e.detail.currency,
-      label: `${e.detail.customHours} Hours (Custom)`
+      label: `${e.detail.customDays} Days (Custom)`
     });
   });
 
