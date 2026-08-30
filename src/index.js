@@ -18,7 +18,7 @@ import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
 import {
   handleBoostStatus, handleActivateBoost, handleBoostConfig,
   handleGetBoostPricing, handleBoostCheckout, handleBoostPaystackCallback,
-  handleBoostPaystackWebhook, handleActivateBoostPurchase
+  handleBoostPaystackWebhook, handleActivateBoostPurchase, handleActiveBoosts
 } from "./lib/boost.js";
 import { handleGetPricing, handleCheckout, handlePaystackCallback, handlePaystackWebhook, handleActivateTier, handleTierStatus } from "./lib/tiers.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
@@ -1008,6 +1008,16 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
     // (admin-only, same guard pattern as /api/boost/activate above) ----
     if (url.pathname === "/api/boost/manual-activate" && request.method === "POST") {
       return handleActivateBoostPurchase(request, env);
+    }
+
+    // ---- Boost: full list of every currently-active boost for a
+    // profile (profile + catalogue + every boosted product), used by
+    // the "Your Active Boosts" summary panel in the manage-products
+    // modal — public read, no auth needed since boost status is not
+    // sensitive information. ----
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/active-boosts$/) && request.method === "GET") {
+      const profileId = url.pathname.split("/")[3];
+      return handleActiveBoosts(env, profileId);
     }
 
     // -----------------------------------------------------------------
