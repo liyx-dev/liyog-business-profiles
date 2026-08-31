@@ -140,6 +140,31 @@ export async function getActiveBoost(env, profileId, scope = "profile", productI
 }
 
 /**
+ * Same idea as getActiveBoost, but returns EVERY currently-active row
+ * for a scope rather than collapsing to just the soonest-expiring one.
+ * A product/profile/catalogue CAN legitimately have more than one live
+ * boost stacked at once — nothing in the purchase flow prevents buying
+ * a second boost while the first is still running (a boost purchase
+ * always INSERTs a new boost_log row, never extends an existing one).
+ * This surfaces that reality to the owner instead of silently hiding
+ * it, and gives them each row's own expiry so they can see exactly
+ * what they've bought.
+ */
+export async function getAllActiveBoosts(env, profileId, scope = "profile", productId = null) {
+  const query = scope === "product"
+    ? `SELECT id, boosted_at, expires_at FROM boost_log
+       WHERE profile_id = ? AND scope = 'product' AND product_id = ? AND expires_at > datetime('now')
+       ORDER BY expires_at ASC`
+    : `SELECT id, boosted_at, expires_at FROM boost_log
+       WHERE profile_id = ? AND scope = ? AND product_id IS NULL AND expires_at > datetime('now')
+       ORDER BY expires_at ASC`;
+
+  const binds = scope === "product" ? [profileId, productId] : [profileId, scope];
+  const { results } = await env.DB.prepare(query).bind(...binds).all();
+  return results;
+}
+
+/**
  * GET /api/profiles/:id/boost-status — used by the edit panel to show
  * current boost state (active + expiry) for the profile itself, the
  * catalogue (all-products page), and, optionally, a batch of product
@@ -155,7 +180,10 @@ export async function handleBoostStatus(env, profileId, productIdsParam) {
   if (productIdsParam) {
     const ids = productIdsParam.split(",").map((s) => s.trim()).filter(Boolean);
     for (const pid of ids) {
-      productStatuses[pid] = await getActiveBoost(env, profileId, "product", pid);
+      const allBoosts = await getAllActiveBoosts(env, profileId, "product", pid);
+      productStatuses[pid] = allBoosts.length
+        ? { ...allBoosts[allBoosts.length - 1], count: allBoosts.length, all: allBoosts }
+        : null;
     }
   }
 
