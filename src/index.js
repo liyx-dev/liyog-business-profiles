@@ -151,10 +151,11 @@ if (url.pathname === "/reviews-ui.js") {
       const user = await findOrCreateUser(env, payload, body.marketingOptIn === true);
       const sessionToken = await createSessionToken(env, user.id);
 
+      // UPDATED: Added business_name and moderation_status to fix UNDEFINED in auth-ui.js
       const { results: existingProfiles } = await env.DB.prepare(
-        "SELECT id, slug FROM profiles WHERE owner_id = ?"
+        "SELECT id, slug, business_name, moderation_status FROM profiles WHERE owner_id = ?"
       ).bind(user.id).all();
-
+      
       const response = jsonResponse({
         user: { id: user.id, email: user.email, name: user.display_name, avatar: user.avatar_url },
         profiles: existingProfiles
@@ -407,10 +408,23 @@ if (url.pathname === "/reviews-ui.js") {
     // -----------------------------------------------------------------
     // Create a new brand profile
     // -----------------------------------------------------------------
+  
     if (url.pathname === "/api/profiles" && request.method === "POST") {
       const sessionToken = getCookie(request, "liyog_session");
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
       if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+
+      // ADDED: Maximum profiles allowed per Google account
+      const MAX_PROFILES_PER_USER = 5; 
+      const { results: profileCount } = await env.DB.prepare(
+        "SELECT COUNT(*) as count FROM profiles WHERE owner_id = ?"
+      ).bind(userId).all();
+
+      if (profileCount[0].count >= MAX_PROFILES_PER_USER) {
+        return jsonResponse({
+          error: `You have reached the maximum limit of ${MAX_PROFILES_PER_USER} brand profiles allowed per account.`
+        }, 400);
+      }
 
       const body = await request.json();
       const slug = (body.slug || "").toLowerCase().trim();
