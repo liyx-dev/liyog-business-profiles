@@ -80,7 +80,8 @@
 
       mount.innerHTML = templateHtml;
       const isOwner = currentUserId && currentUserId === data.profile.owner_id;
-      bindProfile(data.profile, isOwner);
+      bindProfile(data.profile, isOwner, currentUserId);
+
       injectSeoTags(data.profile);
       cleanAddressBar(slug);
     } catch (e) {
@@ -91,11 +92,12 @@
 
   // -------------------------------------------------------------------
   // Data binding
-  // -------------------------------------------------------------------
-
-  function bindProfile(p, isOwner) {
+  // ------------------------------------------------------------------- 
+function bindProfile(p, isOwner, currentUserId) {
+    bindGrowthCta(p, isOwner, currentUserId);
     const DEFAULT_COVER = "https://placehold.co/1200x560/3F3D9E/FFFFFF?text=Add+Your+Cover+Photo";
-    const DEFAULT_LOGO = "https://placehold.co/300x300/1877F2/FFFFFF?text=Logo";
+
+const DEFAULT_LOGO = "https://placehold.co/300x300/1877F2/FFFFFF?text=Logo";
 
     setImg("[data-bind='cover_url']", p.cover_url || DEFAULT_COVER, p.cover_url ? `${p.business_name} cover` : "Cover photo not yet added");
     setImg(".lp-logo", p.logo_url || DEFAULT_LOGO, p.logo_url ? `${p.business_name} logo` : "Logo not yet added");
@@ -133,6 +135,42 @@
     wireLightbox();
     wireSheets();
   }
+
+// -------------------------------------------------------------------
+  // Growth CTA — converts a brand-profile visitor into a new signup.
+  // Signed-out visitors (the vast majority) get "Create Your Free Brand
+  // Profile", linking to the same claim/signup screen with no slug
+  // prefilled (they're not claiming *this* brand's link). Signed-in
+  // visitors looking at someone else's profile already have an account,
+  // so sending them through Google Sign-In again would be pointless —
+  // they get "Go to My Dashboard" straight to their own profile instead.
+  // The owner viewing their own profile sees nothing here at all.
+  // -------------------------------------------------------------------
+  function bindGrowthCta(p, isOwner, currentUserId) {
+    const cta = document.getElementById("lp-growth-cta");
+    if (!cta) return;
+    if (isOwner) return; // stays hidden — owners don't need this on their own page
+
+    const textEl = document.getElementById("lp-growth-cta-text");
+    if (currentUserId) {
+      // Signed-in visitor looking at someone else's profile. We don't
+      // know their own slug client-side without another fetch, so send
+      // them to the bare signup page (no params at all — NOT ?claim=,
+      // since claimSlug is falsy-checked in init() and an empty string
+      // would silently fall through anyway; plain pagePath is the
+      // unambiguous way to land on showClaimScreen(null)). auth-ui.js
+      // already detects their existing session on load and shows
+      // renderDashboardRedirect() instead of the signup form, listing
+      // their own profile(s) to click into.
+      textEl.textContent = "Go to My Dashboard";
+      cta.href = pagePath;
+    } else {
+      textEl.textContent = "Create Your Free Brand Profile";
+      cta.href = pagePath;
+    }
+    cta.hidden = false;
+  }
+
 
   const CATEGORY_LABELS = {
     retail: "Retail & Shops", fashion: "Fashion & Apparel", food: "Food & Restaurants",
