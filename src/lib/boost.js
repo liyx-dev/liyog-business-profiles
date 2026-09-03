@@ -610,6 +610,82 @@ export async function handleActivateBoostPurchase(request, env) {
   return jsonResponse({ success: true });
 }
 
+// =====================================================================
+// Boost DISPLAY — the fair-rotation selection primitive. This is the
+// ONE function every display surface calls (profile-page sponsored
+// strip, catalogue-page sponsored strip, and the Discover page) so
+// fairness logic lives in exactly one place, never duplicated.
+//
+// Fairness model: at any real scale (thousands+ of simultaneous
+// active boosts), pure random selection risks some paying customers
+// never getting shown at all during their whole boost window — bad
+// luck, not a fair outcome for someone who paid. Instead: always bias
+// toward boosts with the LOWEST impression_count so far. A wider pool
+// (POOL_MULTIPLIER x the requested limit) is pulled from the
+// least-shown group, then shuffled, so it's fair over time without
+// being mechanically predictable (nobody can reliably game "always
+// show first" by any trick on their end).
+//
+// impression_count is only incremented for the items ACTUALLY
+// returned by a given call, not merely queried — so a boost that gets
+// selected genuinely accumulates fewer future selections relative to
+// others, self-correcting the rotation over the life of the boost.
+// =====================================================================
+
+const POOL_MULTIPLIER = 3;
+
+/**
+ * Returns up to `limit` currently-active boosted items for a scope,
+ * fairly rotated, with impressions recorded for what's returned.
+ * excludeProfileId prevents a profile from ever seeing its OWN boosted
+ * item shown back to itself as "sponsored" on its own page.
+ *
+ * Returns raw boost_log rows (id, profile_id, product_id, scope,
+ * expires_at) — the CALLER is responsible for joining in the actual
+ * profile/product display data (name, logo, images, etc.), since that
+ * varies by scope and this function stays domain-agnostic on purpose.
+ */
+export async function selectBoostedItems(env, { scope, excludeProfileId = null, limit = 4 }) {
+  const poolSize = limit * POOL_MULTIPLIER;
+
+  const excludeClause = excludeProfileId ? "AND profile_id != ?" : "";
+  const binds = [scope];
+  if (excludeProfileId) binds.push(excludeProfileId);
+  binds.push(poolSize);
+
+  const { results: pool } = await env.DB.prepare(
+    `SELECT id, profile_id, product_id, scope, boosted_at, expires_at, impression_count
+     FROM boost_log
+     WHERE scope = ? AND expires_at > datetime('now') ${excludeClause}
+     ORDER BY impression_count ASC, RANDOM()
+     LIMIT ?`
+  ).bind(...binds).all();
+
+  if (!pool.length) return [];
+
+  // Shuffle the pool (Fisher-Yates) so even within the least-shown
+  // group, order isn't purely a function of impression_count — two
+  // boosts tied at 0 impressions shouldn't always return in the same
+  // order relative to each other.
+  const shuffled = [...pool];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  const selected = shuffled.slice(0, limit);
+
+  if (selected.length) {
+    const ids = selected.map((s) => s.id);
+    const placeholders = ids.map(() => "?").join(",");
+    await env.DB.prepare(
+      `UPDATE boost_log SET impression_count = impression_count + 1, last_shown_at = datetime('now') WHERE id IN (${placeholders})`
+    ).bind(...ids).run();
+  }
+
+  return selected;
+}
+
 async function getSettingLocal(env, key, fallback) {
   try {
     const { results } = await env.DB.prepare("SELECT value FROM app_settings WHERE key = ?").bind(key).all();
@@ -628,3 +704,4 @@ async function hmacSha512Hex(secret, message) {
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+                      
