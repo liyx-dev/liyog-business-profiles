@@ -20,6 +20,7 @@ import {
   handleGetBoostPricing, handleBoostCheckout, handleBoostPaystackCallback,
   handleBoostPaystackWebhook, handleActivateBoostPurchase, handleActiveBoosts
 } from "./lib/boost.js";
+import { handleSponsoredProfiles, handleSponsoredProducts, handleSponsoredCatalogues } from "./lib/discovery.js";
 import { handleGetPricing, handleCheckout, handlePaystackCallback, handlePaystackWebhook, handleActivateTier, handleTierStatus } from "./lib/tiers.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
@@ -151,11 +152,10 @@ if (url.pathname === "/reviews-ui.js") {
       const user = await findOrCreateUser(env, payload, body.marketingOptIn === true);
       const sessionToken = await createSessionToken(env, user.id);
 
-      // UPDATED: Added business_name and moderation_status to fix UNDEFINED in auth-ui.js
       const { results: existingProfiles } = await env.DB.prepare(
-        "SELECT id, slug, business_name, moderation_status FROM profiles WHERE owner_id = ?"
+        "SELECT id, slug FROM profiles WHERE owner_id = ?"
       ).bind(user.id).all();
-      
+
       const response = jsonResponse({
         user: { id: user.id, email: user.email, name: user.display_name, avatar: user.avatar_url },
         profiles: existingProfiles
@@ -408,23 +408,10 @@ if (url.pathname === "/reviews-ui.js") {
     // -----------------------------------------------------------------
     // Create a new brand profile
     // -----------------------------------------------------------------
-  
     if (url.pathname === "/api/profiles" && request.method === "POST") {
       const sessionToken = getCookie(request, "liyog_session");
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
       if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
-
-      // ADDED: Maximum profiles allowed per Google account
-      const MAX_PROFILES_PER_USER = 5; 
-      const { results: profileCount } = await env.DB.prepare(
-        "SELECT COUNT(*) as count FROM profiles WHERE owner_id = ?"
-      ).bind(userId).all();
-
-      if (profileCount[0].count >= MAX_PROFILES_PER_USER) {
-        return jsonResponse({
-          error: `You have reached the maximum limit of ${MAX_PROFILES_PER_USER} brand profiles allowed per account.`
-        }, 400);
-      }
 
       const body = await request.json();
       const slug = (body.slug || "").toLowerCase().trim();
@@ -1035,6 +1022,24 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
     }
 
     // -----------------------------------------------------------------
+    // Discovery — sponsored (boosted) items, fairly rotated, with
+    // graceful fallback fill from regular items when there aren't
+    // enough active boosts yet. Public reads, no auth needed. See
+    // lib/discovery.js for the fairness/hydration logic; this stays
+    // thin route wiring only.
+    // -----------------------------------------------------------------
+
+    if (url.pathname === "/api/discover/profiles" && request.method === "GET") {
+      return handleSponsoredProfiles(request, env);
+    }
+    if (url.pathname === "/api/discover/products" && request.method === "GET") {
+      return handleSponsoredProducts(request, env);
+    }
+    if (url.pathname === "/api/discover/catalogues" && request.method === "GET") {
+      return handleSponsoredCatalogues(request, env);
+    }
+
+    // -----------------------------------------------------------------
     // Product tier upgrades — pricing, checkout (Paystack redirect +
     // manual), verification, admin manual-confirm. See lib/tiers.js
     // for the full logic; this stays thin route wiring only, same
@@ -1436,4 +1441,3 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
