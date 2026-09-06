@@ -131,9 +131,12 @@ async function hydrateProducts(env, productIds) {
   if (!productIds.length) return [];
   const placeholders = productIds.map(() => "?").join(",");
   const { results } = await env.DB.prepare(
-    `SELECT id, profile_id, name, price_display, image_url, slug
-     FROM products
-     WHERE id IN (${placeholders}) AND is_active = 1 AND is_draft = 0`
+    `SELECT pr.id, pr.profile_id, pr.name, pr.price_display, pr.image_url, pr.slug,
+            p.slug AS profile_slug, p.business_name AS profile_business_name, p.logo_url AS profile_logo_url
+     FROM products pr
+     JOIN profiles p ON p.id = pr.profile_id
+     WHERE pr.id IN (${placeholders}) AND pr.is_active = 1 AND pr.is_draft = 0
+       AND p.moderation_status = 'approved' AND p.is_active = 1`
   ).bind(...productIds).all();
 
   const byId = {};
@@ -170,17 +173,20 @@ async function fillWithRegularProfiles(env, { excludeIds, limit, requireProducts
 
 async function fillWithRegularProducts(env, { excludeIds, excludeProfileId, limit }) {
   if (limit <= 0) return [];
-  const excludeClause = excludeIds.length ? `AND id NOT IN (${excludeIds.map(() => "?").join(",")})` : "";
-  const excludeProfileClause = excludeProfileId ? "AND profile_id != ?" : "";
+  const excludeClause = excludeIds.length ? `AND pr.id NOT IN (${excludeIds.map(() => "?").join(",")})` : "";
+  const excludeProfileClause = excludeProfileId ? "AND pr.profile_id != ?" : "";
 
   const binds = [...excludeIds];
   if (excludeProfileId) binds.push(excludeProfileId);
   binds.push(limit);
 
   const { results } = await env.DB.prepare(
-    `SELECT id, profile_id, name, price_display, image_url, slug
-     FROM products
-     WHERE is_active = 1 AND is_draft = 0 ${excludeClause} ${excludeProfileClause}
+    `SELECT pr.id, pr.profile_id, pr.name, pr.price_display, pr.image_url, pr.slug,
+            p.slug AS profile_slug, p.business_name AS profile_business_name, p.logo_url AS profile_logo_url
+     FROM products pr
+     JOIN profiles p ON p.id = pr.profile_id
+     WHERE pr.is_active = 1 AND pr.is_draft = 0 ${excludeClause} ${excludeProfileClause}
+       AND p.moderation_status = 'approved' AND p.is_active = 1
      ORDER BY RANDOM()
      LIMIT ?`
   ).bind(...binds).all();
