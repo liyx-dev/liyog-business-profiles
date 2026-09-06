@@ -1052,6 +1052,22 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       return handleSponsoredCatalogues(request, env);
     }
 
+    // ---- Ads: report a sponsored item — logs to D1 for manual review.
+    // Fire-and-forget from the frontend, so this stays deliberately
+    // simple: no auth required (a report shouldn't be gated behind
+    // sign-in), no rate limiting yet (add if this is ever abused). ----
+    if (url.pathname === "/api/ads/report" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      try {
+        await env.DB.prepare(
+          "INSERT INTO ad_reports (advertiser, url, reported_at) VALUES (?, ?, datetime('now'))"
+        ).bind(body.advertiser || null, body.url || null).run();
+      } catch (err) {
+        console.error("Ad report insert failed:", err);
+      }
+      return jsonResponse({ success: true });
+    }
+
     // -----------------------------------------------------------------
     // Product tier upgrades — pricing, checkout (Paystack redirect +
     // manual), verification, admin manual-confirm. See lib/tiers.js
@@ -1454,3 +1470,4 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
+
