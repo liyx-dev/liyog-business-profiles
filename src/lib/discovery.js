@@ -54,10 +54,38 @@ export async function handleSponsoredProfiles(request, env) {
  * belonging to the profile currently being viewed (so a shop doesn't
  * see its own products labeled "sponsored" on its own catalogue page).
  */
+/**
+ * Premium ad-suppression check — a SINGLE point of control for a
+ * future feature: profiles on a paid "no ads on my catalogue/product
+ * pages" plan should never have sponsored strips shown to THEIR
+ * visitors, even though their own items can still be boosted and
+ * shown to OTHER people elsewhere. This only matters for the two
+ * handlers that render onto a specific profile's own pages
+ * (products/catalogues) — the main profile-page "You Might Also
+ * Like" strip is a platform-wide discovery feature, not scoped to
+ * one profile's page, so it's deliberately NOT gated here.
+ *
+ * Currently always returns false (no suppression active) — nothing
+ * downstream changes until this actually checks a real column/table.
+ * When that feature is built, this is the ONLY function that needs
+ * updating; both call sites already defer to it.
+ */
+async function isAdSuppressed(env, profileId) {
+  if (!profileId) return false;
+  // Placeholder for future premium-tier check, e.g.:
+  //   const { results } = await env.DB.prepare(
+  //     "SELECT ad_free FROM profiles WHERE id = ?"
+  //   ).bind(profileId).all();
+  //   return results.length && results[0].ad_free === 1;
+  return false;
+}
+
 export async function handleSponsoredProducts(request, env) {
   const url = new URL(request.url);
   const excludeProfileId = url.searchParams.get("exclude");
   const limit = Math.min(20, Math.max(1, Number(url.searchParams.get("limit")) || 8));
+
+  if (await isAdSuppressed(env, excludeProfileId)) return jsonResponse({ products: [] });
 
   const boosted = await selectBoostedItems(env, { scope: "product", excludeProfileId, limit });
   const boostedProducts = await hydrateProducts(env, boosted.map((b) => b.product_id));
@@ -87,6 +115,8 @@ export async function handleSponsoredCatalogues(request, env) {
   const url = new URL(request.url);
   const excludeProfileId = url.searchParams.get("exclude");
   const limit = Math.min(20, Math.max(1, Number(url.searchParams.get("limit")) || 4));
+
+  if (await isAdSuppressed(env, excludeProfileId)) return jsonResponse({ catalogues: [] });
 
   const boosted = await selectBoostedItems(env, { scope: "catalogue", excludeProfileId, limit });
   const boostedProfiles = await hydrateProfiles(env, boosted.map((b) => b.profile_id));
@@ -235,4 +265,3 @@ export async function handleDiscoverPage(request, env) {
 
   return jsonResponse({ profiles, catalogues, products });
 }
-
