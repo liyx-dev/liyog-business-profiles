@@ -8,6 +8,7 @@ import AUTH_UI_CSS from "./assets/auth-ui-css.txt";
 import REVIEWS_UI_JS from "./assets/reviews-ui-js.txt";
 import TIERS_UI_JS from "./assets/tiers-ui.txt";
 import BOOST_UI_JS from "./assets/boost-ui.txt";
+import SPONSORED_UI_JS from "./assets/sponsored-ui.txt";
 import { verifyGoogleToken, findOrCreateUser, createSessionToken, verifySessionToken } from "./lib/auth.js";
 import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage } from "./lib/moderation.js";
 import * as reviews from "./lib/reviews.js";
@@ -125,6 +126,9 @@ if (url.pathname === "/reviews-ui.js") {
     }
     if (url.pathname === "/boost-ui.js") {
       return new Response(BOOST_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+    }
+    if (url.pathname === "/sponsored-ui.js") {
+      return new Response(SPONSORED_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
     if (url.pathname === "/brands-template.html") {
       return new Response(PROFILE_TEMPLATE_HTML, { headers: { "content-type": "text/html; charset=utf-8", ...NO_CACHE_HEADERS } });
@@ -1470,4 +1474,3 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
