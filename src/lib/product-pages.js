@@ -310,6 +310,7 @@ ${showFloatingInquiry ? `
 </button>` : ""}
 </div>
 <script src="${origin}/brands.js"></script>
+<script src="${origin}/sponsored-ui.js"></script>
 <script src="${origin}/product-pages-client.js"></script>
 ${inquiryContextJs || ""}
 </body>
