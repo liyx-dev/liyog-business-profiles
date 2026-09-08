@@ -1,0 +1,433 @@
+/* =====================================================================
+   LIYOG WORLD BRAND PROFILES — sponsored-ui.js
+   The SINGLE reusable module for rendering sponsored/boosted content
+   anywhere on the platform — brand profile pages, catalogue/product
+   pages today; homepage, blog, and community feed later. Every
+   surface calls the same functions, gets the same premium look, and
+   any future visual change happens in exactly one file.
+
+   Self-contained on purpose (same reasoning as tiers-ui.js and
+   boost-ui.js): profile.js wraps its own code in a private IIFE and
+   never exposes internals, so this file cannot reach into it. Where
+   this module needs the REAL, rich product card (so a sponsored
+   product looks and behaves exactly like a normal catalogue product,
+   per instruction), it calls window.LiyogProductUI's already-exposed
+   functions — that bridge already exists and is safe to depend on.
+
+   Exposes window.LiyogSponsoredUI with one method per surface:
+     .mountProfilesStrip(containerEl, { excludeProfileId, title })
+     .mountCataloguesStrip(containerEl, { excludeProfileId, title })
+     .mountProductsStrip(containerEl, { excludeProfileId, title })
+   Each mounts a fully self-sufficient horizontal-scroll section (with
+   arrows, "See More", and correct card wiring) into the given empty
+   container element — callers only need to create/position an empty
+   <div> and hand it to this module; nothing else.
+   ===================================================================== */
+
+(function () {
+  "use strict";
+
+  const WORKER_BASE = "https://www.liyogworld.com.ng";
+
+  function esc(str) {
+    return String(str == null ? "" : str).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+  function escAttr(str) { return esc(str).replace(/"/g, "&quot;"); }
+
+  function getOverlayHost() {
+    return document.querySelector(".lp-root") || document.getElementById("liyog-profile-root") || document.body;
+  }
+  function lockBodyScroll() { document.body.style.overflow = "hidden"; }
+  function unlockBodyScroll() {
+    const somethingStillOpen =
+      document.querySelector(".lp-sheet-overlay.lp-open") ||
+      document.querySelector(".lp-sponsored-modal.lp-open") ||
+      document.querySelector(".lp-product-lightbox.lp-open");
+    if (!somethingStillOpen) document.body.style.overflow = "";
+  }
+
+  function showToast(message, type = "success") {
+    let host = document.getElementById("lp-sponsored-toast-host");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "lp-sponsored-toast-host";
+      host.className = "lp-toast-host";
+      getOverlayHost().appendChild(host);
+    }
+    const toast = document.createElement("div");
+    toast.className = `lp-toast lp-toast-${type}`;
+    toast.textContent = message;
+    host.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+  }
+
+  const AD_FALLBACK_GRADIENTS = [
+    ["#FF9A56", "#FF6B6B"], ["#4FACFE", "#00F2FE"], ["#43E97B", "#38F9D7"],
+    ["#FA709A", "#FEE140"], ["#667EEA", "#764BA2"], ["#F093FB", "#F5576C"],
+    ["#30CFD0", "#330867"], ["#A8EDEA", "#FED6E3"]
+  ];
+  function fallbackGradientFor(name) {
+    let hash = 0;
+    const str = name || "?";
+    for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+    return AD_FALLBACK_GRADIENTS[hash % AD_FALLBACK_GRADIENTS.length];
+  }
+
+  const CATEGORY_LABELS_FALLBACK = {}; // filled lazily from /api/categories if ever needed; card degrades to raw slug otherwise
+
+  // ---------------------------------------------------------------------
+  // The "i" badge + info trigger. The popup itself is now a CENTERED
+  // MODAL (not an inline dropdown, which was clipping off-screen inside
+  // narrow strip containers and horizontally-scrolling rows) — same
+  // treatment as every other sheet/modal already used across the site,
+  // so it behaves consistently and is never cut off regardless of
+  // where the triggering card sits on screen.
+  // ---------------------------------------------------------------------
+  function adBadgeHtml() {
+    return `<span class="lp-ad-badge">Sponsored</span>`;
+  }
+  function adInfoTriggerHtml(advertiserName, targetUrl) {
+    return `<button type="button" class="lp-ad-info-btn" data-ad-info-advertiser="${escAttr(advertiserName)}" data-ad-info-url="${escAttr(targetUrl)}" aria-label="About this ad">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+    </button>`;
+  }
+
+  document.addEventListener("click", (e) => {
+    const trigger = e.target.closest("[data-ad-info-advertiser]");
+    if (!trigger) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openAdInfoModal(trigger.dataset.adInfoAdvertiser, trigger.dataset.adInfoUrl);
+  });
+
+  function openAdInfoModal(advertiser, url) {
+    let overlay = document.getElementById("lp-sponsored-info-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "lp-sponsored-modal";
+      overlay.id = "lp-sponsored-info-overlay";
+      getOverlayHost().appendChild(overlay);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) closeAdInfoModal(overlay); });
+    }
+
+    overlay.innerHTML = `
+      <div class="lp-sponsored-modal-card">
+        <button type="button" class="lp-sponsored-modal-close" id="lp-sponsored-info-close" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <div class="lp-ad-info-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        </div>
+        <p class="lp-ad-info-title">Sponsored by ${esc(advertiser)}</p>
+        <p class="lp-ad-info-desc">This is a paid placement on Liyog World Global. The advertiser paid to have this shown to more people.</p>
+        <button type="button" class="lp-ad-info-action" data-ad-modal-action="share">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
+          Share this ad
+        </button>
+        <button type="button" class="lp-ad-info-action" data-ad-modal-action="report">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+          Report this ad
+        </button>
+      </div>
+    `;
+
+    document.getElementById("lp-sponsored-info-close").addEventListener("click", () => closeAdInfoModal(overlay));
+    overlay.querySelector('[data-ad-modal-action="share"]').addEventListener("click", () => {
+      const shareData = { title: advertiser, url };
+      if (navigator.share) { navigator.share(shareData).catch(() => {}); }
+      else { navigator.clipboard.writeText(url).then(() => showToast("Link copied!", "success")); }
+      closeAdInfoModal(overlay);
+    });
+    overlay.querySelector('[data-ad-modal-action="report"]').addEventListener("click", () => {
+      closeAdInfoModal(overlay);
+      showToast("Thanks — we'll review this ad.", "success");
+      fetch(`${WORKER_BASE}/api/ads/report`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ advertiser, url })
+      }).catch(() => {});
+    });
+
+    overlay.classList.add("lp-open");
+    lockBodyScroll();
+  }
+  function closeAdInfoModal(overlay) {
+    overlay.classList.remove("lp-open");
+    unlockBodyScroll();
+  }
+
+  // ---------------------------------------------------------------------
+  // Profile / Catalogue cards — native-ad format (cover-hero, avatar
+  // overlap, gradient fallback). Products deliberately do NOT use this
+  // — see mountProductsStrip below, which reuses the real product card.
+  // ---------------------------------------------------------------------
+  function profileCardHtml(profile, opts) {
+    const linkBase = opts.linkMode === "catalogue" ? `${WORKER_BASE}/products/${escAttr(profile.slug)}` : `${WORKER_BASE}/b/${escAttr(profile.slug)}`;
+    const [g1, g2] = fallbackGradientFor(profile.business_name);
+    const coverStyle = profile.cover_url ? `background-image:url('${escAttr(profile.cover_url)}');` : `background:linear-gradient(135deg, ${g1}, ${g2});`;
+    const initial = (profile.business_name || "?").charAt(0).toUpperCase();
+    const logo = profile.logo_url
+      ? `<img src="${escAttr(profile.logo_url)}" alt="" loading="lazy">`
+      : `<span style="background:linear-gradient(135deg, ${g1}, ${g2});">${esc(initial)}</span>`;
+    const categoryTag = profile.business_category
+      ? `<span class="lp-ad-card-category">${esc(profile.business_category_label || profile.business_category)}</span>`
+      : "";
+    const subtitle = opts.linkMode === "catalogue"
+      ? `<div class="lp-ad-card-tagline">View full catalogue →</div>`
+      : (profile.tagline ? `<div class="lp-ad-card-tagline">${esc(truncate(profile.tagline, 60))}</div>` : "");
+
+    return `
+      <div class="lp-ad-card">
+        <a class="lp-ad-card-media" href="${linkBase}" style="${coverStyle}">
+          ${!profile.cover_url ? `<div class="lp-ad-card-media-fallback-mark">${esc(initial)}</div>` : ""}
+          ${profile.isSponsored ? adBadgeHtml() : ""}
+        </a>
+        <a class="lp-ad-card-body" href="${linkBase}">
+          <div class="lp-ad-card-avatar">${logo}</div>
+          <div class="lp-ad-card-text">
+            <div class="lp-ad-card-name">${esc(profile.business_name)}</div>
+            ${categoryTag}
+            ${subtitle}
+          </div>
+        </a>
+        ${profile.isSponsored ? adInfoTriggerHtml(profile.business_name, linkBase) : ""}
+      </div>
+    `;
+  }
+  function truncate(str, n) { return str && str.length > n ? str.slice(0, n - 1) + "…" : str; }
+
+  // ---------------------------------------------------------------------
+  // Horizontal-scroll strip shell — used by ALL THREE surfaces. Mirrors
+  // the "You might also like" related-products pattern exactly: full
+  // card width in view (never cramped multi-up), left/right arrows for
+  // mouse/desktop users, natural touch scroll on mobile, disabled-state
+  // arrows at the ends. This is the ONE scroll mechanism the whole
+  // system uses now, instead of three slightly-different attempts.
+  // ---------------------------------------------------------------------
+  function stripShellHtml(sectionId, title, cardsHtml, seeMoreId) {
+    return `
+      <div class="lp-sponsored-strip-header">
+        <h3>${esc(title)}</h3>
+        <button type="button" class="lp-sponsored-see-more" id="${seeMoreId}">See More</button>
+      </div>
+      <div class="lp-sponsored-scroll-row">
+        <button type="button" class="lp-sponsored-arrow lp-sponsored-arrow-prev" id="${sectionId}-prev" aria-label="Scroll left" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div class="lp-sponsored-scroll" id="${sectionId}-scroll">${cardsHtml}</div>
+        <button type="button" class="lp-sponsored-arrow lp-sponsored-arrow-next" id="${sectionId}-next" aria-label="Scroll right">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+      </div>
+    `;
+  }
+  function wireStripArrows(sectionId) {
+    const scroll = document.getElementById(`${sectionId}-scroll`);
+    const prevBtn = document.getElementById(`${sectionId}-prev`);
+    const nextBtn = document.getElementById(`${sectionId}-next`);
+    if (!scroll || !prevBtn || !nextBtn) return;
+
+    function cardStep() {
+      const card = scroll.firstElementChild;
+      return card ? card.offsetWidth + 14 : 220;
+    }
+    function updateArrowState() {
+      const maxScroll = scroll.scrollWidth - scroll.clientWidth;
+      prevBtn.disabled = scroll.scrollLeft <= 4;
+      nextBtn.disabled = scroll.scrollLeft >= maxScroll - 4;
+    }
+    prevBtn.addEventListener("click", () => { scroll.scrollBy({ left: -cardStep() * 2, behavior: "smooth" }); });
+    nextBtn.addEventListener("click", () => { scroll.scrollBy({ left: cardStep() * 2, behavior: "smooth" }); });
+    scroll.addEventListener("scroll", updateArrowState, { passive: true });
+    window.addEventListener("resize", updateArrowState);
+    updateArrowState();
+  }
+
+  let stripCounter = 0;
+  function nextSectionId() { return `lp-sponsored-strip-${++stripCounter}`; }
+
+  // ---------------------------------------------------------------------
+  // PROFILES strip
+  // ---------------------------------------------------------------------
+  async function mountProfilesStrip(containerEl, opts) {
+    if (!containerEl) return;
+    const { excludeProfileId = null, title = "You Might Also Like", limit = 8 } = opts || {};
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/discover/profiles?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}`);
+      const data = await res.json();
+      const profiles = data.profiles || [];
+      if (!profiles.length) { containerEl.hidden = true; return; }
+
+      const sectionId = nextSectionId();
+      const seeMoreId = `${sectionId}-see-more`;
+      containerEl.hidden = false;
+      containerEl.className = "lp-section lp-sponsored-strip-section";
+      containerEl.innerHTML = stripShellHtml(sectionId, title, profiles.map((p) => profileCardHtml(p, { linkMode: "profile" })).join(""), seeMoreId);
+      wireStripArrows(sectionId);
+
+      document.getElementById(seeMoreId).addEventListener("click", () => {
+        openMoreModal("profiles", { excludeProfileId, title: "More Brands" });
+      });
+    } catch (e) { containerEl.hidden = true; }
+  }
+
+  // ---------------------------------------------------------------------
+  // CATALOGUES strip
+  // ---------------------------------------------------------------------
+  async function mountCataloguesStrip(containerEl, opts) {
+    if (!containerEl) return;
+    const { excludeProfileId = null, title = "Discover More Shops", limit = 8 } = opts || {};
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/discover/catalogues?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}`);
+      const data = await res.json();
+      const catalogues = data.catalogues || [];
+      if (!catalogues.length) { containerEl.hidden = true; return; }
+
+      const sectionId = nextSectionId();
+      const seeMoreId = `${sectionId}-see-more`;
+      containerEl.hidden = false;
+      containerEl.className = "lp-section lp-sponsored-strip-section";
+      containerEl.innerHTML = stripShellHtml(sectionId, title, catalogues.map((p) => profileCardHtml(p, { linkMode: "catalogue" })).join(""), seeMoreId);
+      wireStripArrows(sectionId);
+
+      document.getElementById(seeMoreId).addEventListener("click", () => {
+        openMoreModal("catalogues", { excludeProfileId, title: "More Shops" });
+      });
+    } catch (e) { containerEl.hidden = true; }
+  }
+
+  // ---------------------------------------------------------------------
+  // PRODUCTS strip — the one surface that reuses the REAL product card
+  // (window.LiyogProductUI.compactCardHtml) rather than a lightweight
+  // ad tile, per instruction: a sponsored product should look and
+  // behave exactly like any other catalogue product — same price,
+  // description, engagement bar, like/rate/zoom/report — with ONLY
+  // the sponsored badge + info trigger added, and contact buttons
+  // (WhatsApp/call) intentionally omitted since tapping through to the
+  // product's own page is where real contact happens.
+  // ---------------------------------------------------------------------
+  async function mountProductsStrip(containerEl, opts) {
+    if (!containerEl) return;
+    const { excludeProfileId = null, title = "Sponsored Products", limit = 8 } = opts || {};
+    const ui = window.LiyogProductUI;
+    if (!ui || !ui.compactCardHtml) { containerEl.hidden = true; return; }
+
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/discover/products?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}`);
+      const data = await res.json();
+      const products = data.products || [];
+      if (!products.length) { containerEl.hidden = true; return; }
+
+      const sectionId = nextSectionId();
+      const seeMoreId = `${sectionId}-see-more`;
+      containerEl.hidden = false;
+      containerEl.className = "lp-section lp-sponsored-strip-section";
+      containerEl.innerHTML = stripShellHtml(sectionId, title, products.map((p) => productCardHtml(p)).join(""), seeMoreId);
+      wireStripArrows(sectionId);
+      wireProductCards(document.getElementById(`${sectionId}-scroll`), products);
+
+      document.getElementById(seeMoreId).addEventListener("click", () => {
+        openMoreModal("products", { excludeProfileId, title: "More Products" });
+      });
+    } catch (e) { containerEl.hidden = true; }
+  }
+
+  function productCardHtml(product) {
+    const ui = window.LiyogProductUI;
+    const fakeProfile = { slug: product.profile_slug, business_name: product.profile_business_name, logo_url: product.profile_logo_url };
+    const cardHtml = ui.compactCardHtml(product, fakeProfile, false);
+    if (!product.isSponsored) return cardHtml;
+
+    const href = ui.buildProductPageUrl(product, fakeProfile);
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = cardHtml.trim();
+    const cardEl = wrapper.firstElementChild;
+    if (cardEl) {
+      cardEl.classList.add("lp-sponsored-product-card");
+      cardEl.insertAdjacentHTML("afterbegin", adBadgeHtml());
+      cardEl.insertAdjacentHTML("beforeend", adInfoTriggerHtml(product.profile_business_name || "This brand", href));
+    }
+    return wrapper.innerHTML;
+  }
+
+  function wireProductCards(scopeEl, products) {
+    if (!scopeEl) return;
+    const ui = window.LiyogProductUI;
+    scopeEl.querySelectorAll("[data-product-id]").forEach((cardEl) => {
+      const product = products.find((prd) => prd.id === cardEl.dataset.productId);
+      if (!product) return;
+      const fakeProfile = { slug: product.profile_slug, business_name: product.profile_business_name, logo_url: product.profile_logo_url };
+      cardEl.dataset.allProducts = JSON.stringify([product]);
+      ui.wireProductCardActions(cardEl, fakeProfile);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // "See More" — now a proper centered modal sheet (same family as the
+  // ad-info modal), with a responsive grid, not the previous bottom
+  // sheet whose edge card was clipping/overlapping. Products here still
+  // use the real card + full wiring.
+  // ---------------------------------------------------------------------
+  async function openMoreModal(kind, opts) {
+    const { excludeProfileId, title } = opts;
+    let overlay = document.getElementById("lp-sponsored-more-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "lp-sponsored-modal";
+      overlay.id = "lp-sponsored-more-overlay";
+      getOverlayHost().appendChild(overlay);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) closeMoreModal(overlay); });
+    }
+
+    overlay.innerHTML = `
+      <div class="lp-sponsored-modal-card lp-sponsored-more-card">
+        <button type="button" class="lp-sponsored-modal-close" id="lp-sponsored-more-close" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <h3 class="lp-sponsored-more-title">${esc(title)}</h3>
+        <div id="lp-sponsored-more-grid" class="lp-sponsored-more-grid">
+          <p class="lp-sponsored-more-loading">Loading…</p>
+        </div>
+      </div>
+    `;
+    document.getElementById("lp-sponsored-more-close").addEventListener("click", () => closeMoreModal(overlay));
+    overlay.classList.add("lp-open");
+    lockBodyScroll();
+
+    const endpoint = kind === "profiles" ? "profiles" : kind === "catalogues" ? "catalogues" : "products";
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/discover/${endpoint}?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=20`);
+      const data = await res.json();
+      const items = kind === "profiles" ? (data.profiles || []) : kind === "catalogues" ? (data.catalogues || []) : (data.products || []);
+      const gridEl = document.getElementById("lp-sponsored-more-grid");
+      if (!gridEl) return;
+      if (!items.length) {
+        gridEl.innerHTML = `<p class="lp-sponsored-more-loading">Nothing to show right now — check back soon.</p>`;
+        return;
+      }
+      if (kind === "products") {
+        gridEl.innerHTML = items.map((p) => productCardHtml(p)).join("");
+        wireProductCards(gridEl, items);
+      } else {
+        const linkMode = kind === "catalogues" ? "catalogue" : "profile";
+        gridEl.innerHTML = items.map((p) => profileCardHtml(p, { linkMode })).join("");
+      }
+    } catch (e) {
+      const gridEl = document.getElementById("lp-sponsored-more-grid");
+      if (gridEl) gridEl.innerHTML = `<p class="lp-sponsored-more-loading">Couldn't load — check your connection and try again.</p>`;
+    }
+  }
+  function closeMoreModal(overlay) {
+    overlay.classList.remove("lp-open");
+    unlockBodyScroll();
+  }
+
+  window.LiyogSponsoredUI = {
+    mountProfilesStrip,
+    mountCataloguesStrip,
+    mountProductsStrip
+  };
+})();
+
