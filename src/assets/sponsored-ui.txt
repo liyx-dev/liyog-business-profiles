@@ -242,7 +242,25 @@
     nextBtn.addEventListener("click", () => { scroll.scrollBy({ left: cardStep() * 2, behavior: "smooth" }); });
     scroll.addEventListener("scroll", updateArrowState, { passive: true });
     window.addEventListener("resize", updateArrowState);
-    updateArrowState();
+
+    // Deferred via double rAF rather than called synchronously: right
+    // after innerHTML is set, the browser hasn't necessarily completed
+    // layout yet, so scroll.scrollWidth/clientWidth can read as 0 or
+    // stale — that made the "next" arrow incorrectly compute as
+    // already-at-the-end and disable itself immediately, with nothing
+    // to ever correct it afterward except a scroll/resize event the
+    // user might never trigger. Waiting two animation frames
+    // guarantees layout has actually happened first.
+    requestAnimationFrame(() => requestAnimationFrame(updateArrowState));
+
+    // Extra safety: cover-photo cards can shift layout width once
+    // their (lazy-loaded) images actually finish loading, well after
+    // the rAF check above already ran. Re-checking on each image load
+    // keeps arrow state accurate without needing a full re-render.
+    scroll.querySelectorAll("img").forEach((img) => {
+      if (img.complete) return;
+      img.addEventListener("load", updateArrowState, { once: true });
+    });
   }
 
   let stripCounter = 0;
@@ -382,7 +400,8 @@
     }
 
     overlay.innerHTML = `
-      <div class="lp-sponsored-modal-card lp-sponsored-more-card">
+      <div class="lp-sponsored-modal-card lp-sponsored-more-card" id="lp-sponsored-more-card">
+        <div class="lp-sponsored-more-handle"></div>
         <button type="button" class="lp-sponsored-modal-close" id="lp-sponsored-more-close" aria-label="Close">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -393,6 +412,7 @@
       </div>
     `;
     document.getElementById("lp-sponsored-more-close").addEventListener("click", () => closeMoreModal(overlay));
+    wireSwipeToDismiss(document.getElementById("lp-sponsored-more-card"), overlay);
     overlay.classList.add("lp-open");
     lockBodyScroll();
 
@@ -422,6 +442,51 @@
   function closeMoreModal(overlay) {
     overlay.classList.remove("lp-open");
     unlockBodyScroll();
+  }
+
+  /**
+   * Swipe-down-to-dismiss for the mobile bottom-sheet variant of the
+   * See More modal — desktop's centered modal doesn't need this (mouse
+   * users just click outside or the close button), but a bottom sheet
+   * on mobile is expected to be swipeable, matching every other sheet
+   * already used across the site.
+   */
+  function wireSwipeToDismiss(cardEl, overlay) {
+    if (!cardEl) return;
+    let startY = 0;
+    let currentY = 0;
+    let dragging = false;
+
+    const handle = cardEl.querySelector(".lp-sponsored-more-handle");
+    const dragTarget = handle || cardEl;
+
+    dragTarget.addEventListener("touchstart", (e) => {
+      // Only initiate the drag from the handle itself, or from the
+      // very top of the card — never from inside the scrollable grid
+      // content, so normal vertical scrolling of the grid is never
+      // hijacked into a dismiss gesture.
+      if (e.target !== handle && cardEl.scrollTop > 0) return;
+      startY = e.touches[0].clientY;
+      dragging = true;
+      cardEl.style.transition = "none";
+    }, { passive: true });
+
+    dragTarget.addEventListener("touchmove", (e) => {
+      if (!dragging) return;
+      currentY = e.touches[0].clientY - startY;
+      if (currentY > 0) cardEl.style.transform = `translateY(${currentY}px)`;
+    }, { passive: true });
+
+    dragTarget.addEventListener("touchend", () => {
+      if (!dragging) return;
+      dragging = false;
+      cardEl.style.transition = "";
+      if (currentY > 80) {
+        closeMoreModal(overlay);
+      }
+      cardEl.style.transform = "";
+      currentY = 0;
+    });
   }
 
   window.LiyogSponsoredUI = {
