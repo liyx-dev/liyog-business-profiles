@@ -409,7 +409,15 @@
   function wireProductCards(scopeEl, products) {
     if (!scopeEl) return;
     const ui = window.LiyogProductUI;
-    scopeEl.querySelectorAll("[data-product-id]").forEach((cardEl) => {
+    // Scoped specifically to .lp-prodcard (the actual card root) —
+    // NOT the more general [data-product-id] selector, which also
+    // matches the inner .lp-engbar element (it carries the same
+    // attribute for its own lookup purposes). Matching both meant
+    // wireProductCardActions ran twice per visual card, attaching
+    // duplicate click listeners that fired together and canceled each
+    // other's optimistic UI toggle — the exact cause of "like appears
+    // to do nothing" reported here.
+    scopeEl.querySelectorAll(".lp-prodcard[data-product-id]").forEach((cardEl) => {
       const product = products.find((prd) => prd.id === cardEl.dataset.productId);
       if (!product) return;
       const fakeProfile = { slug: product.profile_slug, business_name: product.profile_business_name, logo_url: product.profile_logo_url };
@@ -548,4 +556,3 @@
     mountProductsStrip
   };
 })();
-
