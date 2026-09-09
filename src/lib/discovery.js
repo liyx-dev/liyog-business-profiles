@@ -161,7 +161,7 @@ async function hydrateProducts(env, productIds) {
   if (!productIds.length) return [];
   const placeholders = productIds.map(() => "?").join(",");
   const { results } = await env.DB.prepare(
-    `SELECT pr.id, pr.profile_id, pr.name, pr.price_display, pr.image_url, pr.slug,
+    `SELECT pr.id, pr.profile_id, pr.name, pr.price_display, pr.image_url, pr.slug, pr.description, pr.view_count,
             p.slug AS profile_slug, p.business_name AS profile_business_name, p.logo_url AS profile_logo_url
      FROM products pr
      JOIN profiles p ON p.id = pr.profile_id
@@ -211,7 +211,7 @@ async function fillWithRegularProducts(env, { excludeIds, excludeProfileId, limi
   binds.push(limit);
 
   const { results } = await env.DB.prepare(
-    `SELECT pr.id, pr.profile_id, pr.name, pr.price_display, pr.image_url, pr.slug,
+    `SELECT pr.id, pr.profile_id, pr.name, pr.price_display, pr.image_url, pr.slug, pr.description, pr.view_count,
             p.slug AS profile_slug, p.business_name AS profile_business_name, p.logo_url AS profile_logo_url
      FROM products pr
      JOIN profiles p ON p.id = pr.profile_id
