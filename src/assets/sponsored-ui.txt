@@ -39,13 +39,29 @@
   function getOverlayHost() {
     return document.querySelector(".lp-root") || document.getElementById("liyog-profile-root") || document.body;
   }
-  function lockBodyScroll() { document.body.style.overflow = "hidden"; }
+  // Body-scroll lock is shared with profile.js's own reference-counted
+  // implementation (exposed via window.LiyogProductUI) rather than
+  // maintained separately here. This was the actual root cause of the
+  // intermittent "scroll frozen after closing the sponsored products
+  // modal" report: two INDEPENDENT counters (this module's own, and
+  // profile.js's pre-existing one) both wrote to the same
+  // document.body.style.overflow with no shared source of truth —
+  // whichever one's count happened to hit zero would clear the
+  // property even if the other system still had something open,
+  // or vice versa. Falls back to a local no-op-safe implementation
+  // only if profile.js's version is somehow unavailable (e.g. this
+  // module loaded before brands.js, which shouldn't happen given the
+  // documented script load order, but this keeps the module from
+  // hard-erroring if it ever does).
+  function lockBodyScroll() {
+    const ui = window.LiyogProductUI;
+    if (ui && ui.lockBodyScroll) { ui.lockBodyScroll(); return; }
+    document.body.style.overflow = "hidden";
+  }
   function unlockBodyScroll() {
-    const somethingStillOpen =
-      document.querySelector(".lp-sheet-overlay.lp-open") ||
-      document.querySelector(".lp-sponsored-modal.lp-open") ||
-      document.querySelector(".lp-product-lightbox.lp-open");
-    if (!somethingStillOpen) document.body.style.overflow = "";
+    const ui = window.LiyogProductUI;
+    if (ui && ui.unlockBodyScroll) { ui.unlockBodyScroll(); return; }
+    document.body.style.overflow = "";
   }
 
   function showToast(message, type = "success") {
@@ -338,6 +354,15 @@
       const products = data.products || [];
       if (!products.length) { containerEl.hidden = true; return; }
 
+      // Real view/like/rating numbers, and working like/rate buttons,
+      // require the same per-product _engagement data a normal
+      // catalogue card fetches — without this, sponsored cards showed
+      // zeros and taps didn't register real state. Fetched in
+      // parallel, same pattern as the real catalogue grid; a failed
+      // fetch for any one product is non-fatal (that card just shows
+      // zero engagement rather than blocking the whole strip).
+      await fetchEngagementFor(products);
+
       const sectionId = nextSectionId();
       const seeMoreId = `${sectionId}-see-more`;
       containerEl.hidden = false;
@@ -350,6 +375,17 @@
         openMoreModal("products", { excludeProfileId, title: "More Products" });
       });
     } catch (e) { containerEl.hidden = true; }
+  }
+
+  async function fetchEngagementFor(products) {
+    const ui = window.LiyogProductUI;
+    const ds = ui && ui.getDeviceSignal ? ui.getDeviceSignal() : "";
+    await Promise.all(products.map(async (prod) => {
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/products/${prod.id}/engagement?ds=${encodeURIComponent(ds)}`, { credentials: "include" });
+        prod._engagement = await res.json();
+      } catch (e) { prod._engagement = null; }
+    }));
   }
 
   function productCardHtml(product) {
@@ -388,8 +424,12 @@
   // sheet whose edge card was clipping/overlapping. Products here still
   // use the real card + full wiring.
   // ---------------------------------------------------------------------
+  let moreModalRequestToken = 0;
+
   async function openMoreModal(kind, opts) {
     const { excludeProfileId, title } = opts;
+    const myToken = ++moreModalRequestToken; // any earlier in-flight call becomes stale the instant this runs
+
     let overlay = document.getElementById("lp-sponsored-more-overlay");
     if (!overlay) {
       overlay = document.createElement("div");
@@ -421,6 +461,18 @@
       const res = await fetch(`${WORKER_BASE}/api/discover/${endpoint}?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=20`);
       const data = await res.json();
       const items = kind === "profiles" ? (data.profiles || []) : kind === "catalogues" ? (data.catalogues || []) : (data.products || []);
+
+      if (kind === "products") await fetchEngagementFor(items);
+
+      // If the user closed this modal (or opened a different one)
+      // while the fetches above were still in flight, this response
+      // is stale — do nothing further. Critically, this check happens
+      // BEFORE touching the DOM or calling any lock/unlock function,
+      // so a slow network response can never act on a modal state that
+      // has already moved on, which was the root cause of the
+      // intermittent scroll-lock-stuck reports on poor connections.
+      if (myToken !== moreModalRequestToken) return;
+
       const gridEl = document.getElementById("lp-sponsored-more-grid");
       if (!gridEl) return;
       if (!items.length) {
@@ -435,6 +487,7 @@
         gridEl.innerHTML = items.map((p) => profileCardHtml(p, { linkMode })).join("");
       }
     } catch (e) {
+      if (myToken !== moreModalRequestToken) return;
       const gridEl = document.getElementById("lp-sponsored-more-grid");
       if (gridEl) gridEl.innerHTML = `<p class="lp-sponsored-more-loading">Couldn't load — check your connection and try again.</p>`;
     }
