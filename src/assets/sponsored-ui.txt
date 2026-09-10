@@ -64,12 +64,26 @@
     document.body.style.overflow = "";
   }
 
+  // Uses the REAL toast system already built and correctly positioned
+  // in profile.js (#lp-toast-container, fixed bottom-center, proper
+  // z-index) via window.LiyogProductUI.showToast — NOT a separate
+  // implementation. A separate implementation was tried earlier
+  // (creating its own host div with an invented class name,
+  // .lp-toast-host) but that class was never actually given any
+  // positioning CSS anywhere, so the toast rendered in the DOM with
+  // zero visibility — exactly the "clicking Report does nothing
+  // visible" bug reported here. Falls back to a minimal correctly-
+  // positioned host only if profile.js's version is somehow
+  // unavailable, so this module never hard-fails even if load order
+  // is ever disrupted.
   function showToast(message, type = "success") {
-    let host = document.getElementById("lp-sponsored-toast-host");
+    const ui = window.LiyogProductUI;
+    if (ui && ui.showToast) { ui.showToast(message, type); return; }
+
+    let host = document.getElementById("lp-toast-container");
     if (!host) {
       host = document.createElement("div");
-      host.id = "lp-sponsored-toast-host";
-      host.className = "lp-toast-host";
+      host.id = "lp-toast-container";
       getOverlayHost().appendChild(host);
     }
     const toast = document.createElement("div");
@@ -156,14 +170,29 @@
       else { navigator.clipboard.writeText(url).then(() => showToast("Link copied!", "success")); }
       closeAdInfoModal(overlay);
     });
-    overlay.querySelector('[data-ad-modal-action="report"]').addEventListener("click", () => {
-      closeAdInfoModal(overlay);
-      showToast("Thanks — we'll review this ad.", "success");
+    overlay.querySelector('[data-ad-modal-action="report"]').addEventListener("click", (e) => {
+      // Immediate inline feedback on the button itself — a checkmark
+      // and text change the instant it's tapped — so the click feels
+      // unmistakably registered even before the modal closes or a
+      // toast is noticed. The modal then closes after a brief pause
+      // so the person actually sees this confirmation happen, rather
+      // than the modal vanishing instantly with only a toast (easy to
+      // miss) as the sole feedback.
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Reported — thank you`;
+      btn.classList.add("lp-ad-info-action-confirmed");
+
       fetch(`${WORKER_BASE}/api/ads/report`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ advertiser, url })
       }).catch(() => {});
+
+      setTimeout(() => {
+        closeAdInfoModal(overlay);
+        showToast("Thanks — we'll review this ad.", "success");
+      }, 700);
     });
 
     overlay.classList.add("lp-open");
@@ -564,3 +593,4 @@
     mountProductsStrip
   };
 })();
+
