@@ -400,6 +400,14 @@
     const cardEl = wrapper.firstElementChild;
     if (cardEl) {
       cardEl.classList.add("lp-sponsored-product-card");
+      // The normal card's own report-flag button is removed for
+      // sponsored items specifically — the info popup already has a
+      // "Report this ad" action, so keeping both was two overlapping
+      // ways to report the same thing, and the two icons visually
+      // collided in the same top-right corner. One clear affordance
+      // (the info icon) is cleaner and avoids the collision entirely.
+      const reportBtn = cardEl.querySelector(".lp-card-report-btn");
+      if (reportBtn) reportBtn.remove();
       cardEl.insertAdjacentHTML("afterbegin", adBadgeHtml());
       cardEl.insertAdjacentHTML("beforeend", adInfoTriggerHtml(product.profile_business_name || "This brand", href));
     }
