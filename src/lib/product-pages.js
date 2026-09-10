@@ -166,9 +166,19 @@ function truncateLinesSSR(text, approxLines) {
 // markup, same nesting order (image → name → price → description →
 // engagement bar → contact buttons). This is the "Facebook ad" style
 // edge-to-edge card used for the very first product in the grid.
-function serverFeedCardHtml(prod, profile, stats) {
+// Mirrors boostBadgeHtml() in profile.js exactly (same markup/classes)
+// so a featured product looks identical whether rendered client-side
+// on the brand profile page or server-side here — one visual design,
+// two render paths, zero CSS duplication needed.
+function serverBoostBadgeHtml(isBoosted, feed) {
+  if (!isBoosted) return "";
+  return `<span class="${feed ? "lp-prodfeed-featured" : "lp-prodcard-featured"}" title="Featured"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.26L21 9.27l-4.5 4.38L17.8 20 12 16.9 6.2 20l1.3-6.35L3 9.27l6.1-1.01z"/></svg>Featured</span>`;
+}
+
+function serverFeedCardHtml(prod, profile, stats, isFeatured) {
   return `
     <div class="lp-prodfeed" data-product-id="${escapeHtmlAttr(prod.id)}">
+      ${serverBoostBadgeHtml(isFeatured, true)}
       ${serverCardReportButtonHtml(prod)}
       <a class="lp-prodfeed-imgwrap" href="/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(profile.slug)}">
         ${serverProductImageBlock(prod)}
@@ -185,9 +195,10 @@ function serverFeedCardHtml(prod, profile, stats) {
 
 // Full parity with compactCardHtml() in profile.js — same .lp-prodcard
 // markup used for every card after the first (the 2/3/4-column grid).
-function serverCompactCardHtml(prod, profile, stats) {
+function serverCompactCardHtml(prod, profile, stats, isFeatured) {
   return `
     <div class="lp-prodcard" data-product-id="${escapeHtmlAttr(prod.id)}">
+      ${serverBoostBadgeHtml(isFeatured, false)}
       ${serverCardReportButtonHtml(prod)}
       <a class="lp-prodcard-imgwrap" href="/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(profile.slug)}">
         ${serverProductImageBlock(prod)}
@@ -383,8 +394,28 @@ async function handleProductsListingPage(request, env, ctx, url) {
     statsByProduct[prod.id] = await productsEngagement.getProductStats(env, prod.id);
   }
 
+  // Featured (boosted) status — one batch query for every product on
+  // this page, rather than N individual lookups. A product counts as
+  // featured if it has an active PRODUCT-scope boost right now (same
+  // "Featured" language/badge already used on the brand profile page
+  // — "Sponsored" is reserved specifically for CROSS-brand paid
+  // placements shown on OTHER people's pages via sponsored-ui.js;
+  // "Featured" is what a brand's own boosted item is called on ITS
+  // OWN pages, matching the existing convention exactly).
+  const productIds = products.map((p) => p.id);
+  const featuredSet = new Set();
+  if (productIds.length) {
+    const placeholders = productIds.map(() => "?").join(",");
+    const { results: boostRows } = await env.DB.prepare(
+      `SELECT DISTINCT product_id FROM boost_log
+       WHERE scope = 'product' AND product_id IN (${placeholders}) AND expires_at > datetime('now')`
+    ).bind(...productIds).all();
+    boostRows.forEach((r) => featuredSet.add(r.product_id));
+  }
+
   const sortParam = url.searchParams.get("sort") || "newest";
   const queryParam = (url.searchParams.get("q") || "").toLowerCase();
+  const featuredOnly = url.searchParams.get("featured") === "1";
 
   let filtered = products;
   if (queryParam) {
@@ -392,6 +423,9 @@ async function handleProductsListingPage(request, env, ctx, url) {
       (p.name || "").toLowerCase().includes(queryParam) ||
       (p.description || "").toLowerCase().includes(queryParam)
     );
+  }
+  if (featuredOnly) {
+    filtered = filtered.filter((p) => featuredSet.has(p.id));
   }
   const sorters = {
     newest: (a, b) => new Date(b.created_at) - new Date(a.created_at),
@@ -442,12 +476,12 @@ async function handleProductsListingPage(request, env, ctx, url) {
   // 10 as the visitor scrolls.
   const INITIAL_VISIBLE = 10;
   const [firstProd, ...restProds] = filtered;
-  const firstCardHtml = firstProd ? serverFeedCardHtml(firstProd, profile, statsByProduct[firstProd.id] || {}) : "";
+  const firstCardHtml = firstProd ? serverFeedCardHtml(firstProd, profile, statsByProduct[firstProd.id] || {}, featuredSet.has(firstProd.id)) : "";
   const insightHtml = insight && insight.summary_text ? serverCatalogueInsightCardHtml(insight) : "";
   const restCardsHtml = restProds.map((prod, i) => {
     const hiddenCls = i >= INITIAL_VISIBLE ? " lp-shop-card-hidden" : "";
     const stats = statsByProduct[prod.id] || {};
-    const card = serverCompactCardHtml(prod, profile, stats);
+    const card = serverCompactCardHtml(prod, profile, stats, featuredSet.has(prod.id));
     // Inject the hidden class onto the outer .lp-prodcard wrapper
     // without needing a second render pass.
     return hiddenCls ? card.replace('class="lp-prodcard"', `class="lp-prodcard${hiddenCls}"`) : card;
@@ -500,6 +534,7 @@ async function handleProductsListingPage(request, env, ctx, url) {
           <button type="button" class="lp-shop-filter-btn ${sortParam === "rating" ? "lp-shop-filter-btn-active" : ""}" data-sort="rating">Top Rated</button>
           <button type="button" class="lp-shop-filter-btn ${sortParam === "views" ? "lp-shop-filter-btn-active" : ""}" data-sort="views">Most Viewed</button>
           <button type="button" class="lp-shop-filter-btn ${sortParam === "likes" ? "lp-shop-filter-btn-active" : ""}" data-sort="likes">Most Liked</button>
+          ${featuredSet.size > 0 ? `<button type="button" class="lp-shop-filter-btn lp-shop-filter-btn-featured ${featuredOnly ? "lp-shop-filter-btn-active" : ""}" id="lp-shop-featured-toggle" data-featured-toggle="${featuredOnly ? "0" : "1"}" aria-pressed="${featuredOnly}">⭐ Featured</button>` : ""}
         </div>
       </div>
 
@@ -572,6 +607,15 @@ async function handleProductDetailPage(request, env, ctx, url) {
   ).bind(profile.id, productSlug, productSlug).all();
   if (!productRows.length) return new Response("Not found", { status: 404 });
   const product = productRows[0];
+
+  // Featured (boosted) status for THIS product specifically — same
+  // "Featured" language as the catalogue listing page and the brand
+  // profile page, distinct from "Sponsored" (which is reserved for
+  // cross-brand paid placements on OTHER people's pages).
+  const { results: boostRows } = await env.DB.prepare(
+    `SELECT 1 FROM boost_log WHERE scope = 'product' AND product_id = ? AND expires_at > datetime('now') LIMIT 1`
+  ).bind(product.id).all();
+  const isFeatured = boostRows.length > 0;
 
   // The canonical view-count moment: a product's OWN page is what
   // counts as "the product was opened", per your instruction that
@@ -710,7 +754,10 @@ async function handleProductDetailPage(request, env, ctx, url) {
           : `<div class="lp-product-hero-placeholder"></div>`}
       </div>
 
-      <h1 class="lp-product-page-name">${escapeHtmlAttr(product.name)}</h1>
+      <h1 class="lp-product-page-name">
+        ${escapeHtmlAttr(product.name)}
+        ${isFeatured ? `<span class="lp-product-page-featured-badge" title="Featured"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.26L21 9.27l-4.5 4.38L17.8 20 12 16.9 6.2 20l1.3-6.35L3 9.27l6.1-1.01z"/></svg>Featured</span>` : ""}
+      </h1>
       ${product.price_display ? `<div class="lp-product-page-price">${escapeHtmlAttr(product.price_display)}</div>` : ""}
 
       <div class="lp-product-page-engbar" id="lp-detail-engbar">${serverEngagementBarHtml(product, stats, false)}</div>
