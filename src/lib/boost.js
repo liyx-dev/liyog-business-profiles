@@ -271,6 +271,85 @@ export async function handleActivateBoost(request, env) {
  * redirect URL or (for manual) the purchase details for the WhatsApp
  * handoff — mirroring tiers.js's handleCheckout exactly.
  */
+// Targeting allowlist — the ONLY countries a boost can be scoped to.
+// Deliberately the same set your payment processing already operates
+// in (see PAYSTACK_COUNTRIES above) — expanding this later, once
+// payment coverage grows, is a one-line change here, and nowhere else
+// needs to know about it. "ALL" is the sentinel meaning "every
+// country" rather than a real code, used when the advertiser opts to
+// broaden beyond their own country.
+const TARGETABLE_COUNTRIES = new Set(["NG", "GH", "ZA", "KE"]);
+
+/**
+ * Validates and normalizes the advertiser's targeting choices
+ * server-side. NEVER trusts the client's list as-is — every entry is
+ * checked against a real allowlist (countries against
+ * TARGETABLE_COUNTRIES, categories against the live /api/categories
+ * data) before anything is stored. This is the actual security
+ * boundary: the frontend only ever SUGGESTS what to send, this
+ * function is what actually decides what's allowed to be written.
+ *
+ * Returns { targetCountries, targetCategories, showCta } — all three
+ * always well-formed, or throws a descriptive error the caller turns
+ * into a 400 response.
+ */
+async function validateTargeting(env, body, profileCountryCode, profileCategory) {
+  let targetCountries = "ALL";
+  if (body.target_countries != null) {
+    if (body.target_countries === "ALL") {
+      targetCountries = "ALL";
+    } else if (Array.isArray(body.target_countries)) {
+      const cleaned = body.target_countries
+        .map((c) => String(c).toUpperCase().trim())
+        .filter((c) => TARGETABLE_COUNTRIES.has(c));
+      if (!cleaned.length) throw new Error("At least one valid target country is required, or choose All Countries.");
+      // De-duplicate and store as compact JSON.
+      targetCountries = JSON.stringify([...new Set(cleaned)]);
+    } else {
+      throw new Error("Invalid country targeting selection.");
+    }
+  } else {
+    // No selection sent at all — default to the advertiser's own
+    // detected country, exactly as instructed ("by default it should
+    // be his own country"). Falls back to ALL only if we genuinely
+    // couldn't detect one, so a boost is never silently untargeted.
+    targetCountries = profileCountryCode && TARGETABLE_COUNTRIES.has(profileCountryCode)
+      ? JSON.stringify([profileCountryCode])
+      : "ALL";
+  }
+
+  let targetCategories = "ALL";
+  if (body.target_categories != null) {
+    if (body.target_categories === "ALL") {
+      targetCategories = "ALL";
+    } else if (Array.isArray(body.target_categories)) {
+      const { results: validCategories } = await env.DB.prepare(
+        "SELECT slug FROM business_categories WHERE is_allowed = 1"
+      ).all().catch(() => ({ results: [] }));
+      const validSlugs = new Set(validCategories.map((c) => c.slug));
+      // Fallback: if a categories table lookup isn't available for
+      // any reason, at minimum trust the advertiser's OWN category
+      // (which we already know is real, since it's on their live
+      // profile) rather than rejecting everything.
+      if (!validSlugs.size && profileCategory) validSlugs.add(profileCategory);
+      const cleaned = body.target_categories
+        .map((c) => String(c).toLowerCase().trim())
+        .filter((c) => validSlugs.has(c));
+      if (!cleaned.length) throw new Error("At least one valid target category is required, or choose All Categories.");
+      targetCategories = JSON.stringify([...new Set(cleaned)]);
+    } else {
+      throw new Error("Invalid category targeting selection.");
+    }
+  } else {
+    // Default to the advertiser's own category, per instruction.
+    targetCategories = profileCategory ? JSON.stringify([profileCategory]) : "ALL";
+  }
+
+  const showCta = body.show_cta === true || body.show_cta === 1 ? 1 : 0;
+
+  return { targetCountries, targetCategories, showCta };
+}
+
 export async function handleBoostCheckout(request, env, userId) {
   const body = await request.json().catch(() => ({}));
   const { profile_id, scope, product_id, duration_id, custom_hours, custom_days, method } = body;
@@ -293,16 +372,37 @@ export async function handleBoostCheckout(request, env, userId) {
   }
 
   const { results: profileRows } = await env.DB.prepare(
-    "SELECT id, owner_id, business_name, slug FROM profiles WHERE id = ?"
+    "SELECT id, owner_id, business_name, slug, business_category, store_country FROM profiles WHERE id = ?"
   ).bind(profile_id).all();
   if (!profileRows.length) return jsonResponse({ error: "Profile not found." }, 404);
   if (profileRows[0].owner_id !== userId) return jsonResponse({ error: "Not your profile." }, 403);
+  const profileRow = profileRows[0];
 
   if (scope === "product") {
     const { results: productRows } = await env.DB.prepare(
       "SELECT id FROM products WHERE id = ? AND profile_id = ?"
     ).bind(product_id, profile_id).all();
     if (!productRows.length) return jsonResponse({ error: "Product not found on this profile." }, 404);
+  }
+
+  // store_country on the profile is free-text entered at signup (e.g.
+  // "Nigeria"), not necessarily a 2-letter code — map the common cases
+  // to a real targetable code; anything unrecognized falls through to
+  // request.cf.country (Cloudflare's own edge geolocation) as a second
+  // guess, and ultimately to "ALL" if neither resolves. This is the
+  // "without consuming queries" default you asked for — no extra
+  // lookup, just reusing data already on the profile row plus the
+  // free Cloudflare geo signal already used elsewhere in this file.
+  const COUNTRY_NAME_TO_CODE = { nigeria: "NG", ghana: "GH", "south africa": "ZA", kenya: "KE" };
+  const profileCountryCode =
+    COUNTRY_NAME_TO_CODE[(profileRow.store_country || "").toLowerCase().trim()] ||
+    resolveCountry(request);
+
+  let targeting;
+  try {
+    targeting = await validateTargeting(env, body, profileCountryCode, profileRow.business_category);
+  } catch (err) {
+    return jsonResponse({ error: err.message }, 400);
   }
 
   const countryCode = resolveCountry(request);
@@ -357,9 +457,9 @@ export async function handleBoostCheckout(request, env, userId) {
   const purchaseId = crypto.randomUUID();
 
   await env.DB.prepare(
-    `INSERT INTO boost_purchases (id, profile_id, scope, product_id, duration_id, custom_hours, country_code, currency, amount, method, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
-  ).bind(purchaseId, profile_id, scope, product_id || null, resolvedDurationId, resolvedCustomHours, countryCode, currency, amount, method).run();
+    `INSERT INTO boost_purchases (id, profile_id, scope, product_id, duration_id, custom_hours, country_code, currency, amount, method, status, target_countries, target_categories, show_cta)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
+  ).bind(purchaseId, profile_id, scope, product_id || null, resolvedDurationId, resolvedCustomHours, countryCode, currency, amount, method, targeting.targetCountries, targeting.targetCategories, targeting.showCta).run();
 
   if (method === "manual") {
     return jsonResponse({
@@ -573,9 +673,9 @@ async function applyConfirmedBoost(env, purchase) {
       "UPDATE boost_purchases SET status = 'confirmed', confirmed_at = datetime('now') WHERE id = ?"
     ).bind(purchase.id),
     env.DB.prepare(
-      `INSERT INTO boost_log (profile_id, product_id, scope, expires_at)
-       VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'))`
-    ).bind(purchase.profile_id, purchase.product_id || null, purchase.scope, hours)
+      `INSERT INTO boost_log (profile_id, product_id, scope, expires_at, target_countries, target_categories, show_cta)
+       VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'), ?, ?, ?)`
+    ).bind(purchase.profile_id, purchase.product_id || null, purchase.scope, hours, purchase.target_countries, purchase.target_categories, purchase.show_cta)
   ]);
 }
 
@@ -703,5 +803,3 @@ async function hmacSha512Hex(secret, message) {
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-
-                      
