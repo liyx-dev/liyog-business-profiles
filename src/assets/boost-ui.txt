@@ -105,7 +105,8 @@
         </div>
         <div class="lp-boost-sheet-content">
           <h3 style="font-family:var(--font-display, inherit);text-align:center;margin:0 0 4px;">Boost ${scopeLabel}</h3>
-          <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 18px;">Get featured placement and stand out to visitors. Choose how long you'd like to boost.</p>
+          <p style="font-size:13.5px;color:var(--ink-soft, #666);text-align:center;line-height:1.55;margin:0 0 16px;">Get featured placement and stand out to visitors. Choose how long you'd like to boost.</p>
+          ${targetingControlsHtml(p)}
           <div id="lp-boost-durations" class="lp-tiers-list">
             <p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;">Loading pricing…</p>
           </div>
@@ -114,6 +115,7 @@
     `;
     document.getElementById("lp-boost-close").addEventListener("click", () => closeSheet(overlay));
     openSheet(overlay);
+    wireTargetingControls(p);
 
     fetchBoostPricing()
       .then((data) => {
@@ -133,7 +135,8 @@
               durationId: card.dataset.durationId,
               amount: Number(card.dataset.amount),
               currency: card.dataset.currency,
-              label: DURATION_LABELS[card.dataset.durationId] || card.dataset.durationId
+              label: DURATION_LABELS[card.dataset.durationId] || card.dataset.durationId,
+              targeting: readTargetingSelection(p)
             });
           });
         });
@@ -160,6 +163,117 @@
         <div class="lp-tier-card-price">${esc(formatPrice(d.amount, d.currency))}</div>
       </button>
     `;
+  }
+
+  const TARGETABLE_COUNTRY_LABELS = { NG: "Nigeria", GH: "Ghana", ZA: "South Africa", KE: "Kenya" };
+  const COUNTRY_NAME_TO_CODE = { nigeria: "NG", ghana: "GH", "south africa": "ZA", kenya: "KE" };
+
+  /**
+   * Best-guess of the advertiser's own country from data already on
+   * the profile object — no extra network call ("without consuming
+   * queries", per instruction). Purely a DISPLAY default; the server
+   * re-derives and validates its own default independently at
+   * checkout time (see validateTargeting in boost.js), so a mismatch
+   * here is never a security concern — worst case the pre-checked box
+   * is wrong and the advertiser corrects it before continuing.
+   */
+  function guessOwnCountryCode(p) {
+    const raw = (p.store_country || "").toLowerCase().trim();
+    return COUNTRY_NAME_TO_CODE[raw] || null;
+  }
+
+  /**
+   * Targeting controls — country, category, and a CTA-visibility
+   * checkbox — shown above the pricing list, exactly as instructed.
+   * Defaults: own country checked, own category checked, CTA off.
+   * The advertiser can broaden either to "all" with one tap. Nothing
+   * rendered here is trusted as-is server-side — this is purely the
+   * UI for capturing intent; boost.js's validateTargeting() is the
+   * real authority on what's actually allowed to be stored.
+   */
+  function targetingControlsHtml(p) {
+    const ownCountry = guessOwnCountryCode(p);
+    const ownCategory = p.business_category || null;
+    const ownCategoryLabel = p.business_category_label || (ownCategory ? ownCategory.charAt(0).toUpperCase() + ownCategory.slice(1) : "your category");
+
+    return `
+      <div class="lp-boost-targeting">
+        <div class="lp-boost-targeting-row">
+          <div class="lp-boost-targeting-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20z"/></svg>
+            <span>Where should this show?</span>
+          </div>
+          <div class="lp-boost-targeting-toggle" role="radiogroup" aria-label="Country targeting">
+            <button type="button" class="lp-boost-targeting-opt lp-boost-targeting-opt-active" data-country-mode="own" ${!ownCountry ? "disabled" : ""}>
+              ${ownCountry ? `Just ${esc(TARGETABLE_COUNTRY_LABELS[ownCountry])}` : "My country"}
+            </button>
+            <button type="button" class="lp-boost-targeting-opt" data-country-mode="all">All Countries</button>
+          </div>
+        </div>
+
+        <div class="lp-boost-targeting-row">
+          <div class="lp-boost-targeting-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            <span>Which category of visitors?</span>
+          </div>
+          <div class="lp-boost-targeting-toggle" role="radiogroup" aria-label="Category targeting">
+            <button type="button" class="lp-boost-targeting-opt lp-boost-targeting-opt-active" data-category-mode="own" ${!ownCategory ? "disabled" : ""}>
+              ${ownCategory ? esc(ownCategoryLabel) : "My category"}
+            </button>
+            <button type="button" class="lp-boost-targeting-opt" data-category-mode="all">All Categories</button>
+          </div>
+        </div>
+
+        <label class="lp-boost-targeting-cta-row">
+          <input type="checkbox" id="lp-boost-show-cta">
+          <span>Show WhatsApp / Call buttons directly on my sponsored cards</span>
+        </label>
+      </div>
+    `;
+  }
+
+  function wireTargetingControls(p) {
+    const ownCountry = guessOwnCountryCode(p);
+    const ownCategory = p.business_category || null;
+
+    document.querySelectorAll("[data-country-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        document.querySelectorAll("[data-country-mode]").forEach((b) => b.classList.remove("lp-boost-targeting-opt-active"));
+        btn.classList.add("lp-boost-targeting-opt-active");
+      });
+    });
+    document.querySelectorAll("[data-category-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        document.querySelectorAll("[data-category-mode]").forEach((b) => b.classList.remove("lp-boost-targeting-opt-active"));
+        btn.classList.add("lp-boost-targeting-opt-active");
+      });
+    });
+  }
+
+  /**
+   * Reads the current state of the targeting controls into the exact
+   * shape handleBoostCheckout expects. Called at the moment checkout
+   * actually fires (Pay Now / manual), not before — so it always
+   * reflects the advertiser's final choice.
+   */
+  function readTargetingSelection(p) {
+    const ownCountry = guessOwnCountryCode(p);
+    const ownCategory = p.business_category || null;
+
+    const countryBtn = document.querySelector('[data-country-mode].lp-boost-targeting-opt-active');
+    const countryMode = countryBtn ? countryBtn.dataset.countryMode : "own";
+    const target_countries = countryMode === "all" ? "ALL" : (ownCountry ? [ownCountry] : "ALL");
+
+    const categoryBtn = document.querySelector('[data-category-mode].lp-boost-targeting-opt-active');
+    const categoryMode = categoryBtn ? categoryBtn.dataset.categoryMode : "own";
+    const target_categories = categoryMode === "all" ? "ALL" : (ownCategory ? [ownCategory] : "ALL");
+
+    const ctaCheckbox = document.getElementById("lp-boost-show-cta");
+    const show_cta = !!(ctaCheckbox && ctaCheckbox.checked);
+
+    return { target_countries, target_categories, show_cta };
   }
 
   function customDurationHtml(customDuration) {
@@ -291,7 +405,8 @@
             product_id: product ? product.id : null,
             duration_id: duration.durationId || null,
             custom_days: duration.customDays || null,
-            method: "paystack"
+            method: "paystack",
+            ...(duration.targeting || {})
           })
         });
         const data = await res.json();
@@ -323,7 +438,8 @@
             product_id: product ? product.id : null,
             duration_id: duration.durationId || null,
             custom_days: duration.customDays || null,
-            method: "manual"
+            method: "manual",
+            ...(duration.targeting || {})
           })
         });
         const data = await res.json();
@@ -386,7 +502,8 @@
       customDays: e.detail.customDays,
       amount: e.detail.amount,
       currency: e.detail.currency,
-      label: `${e.detail.customDays} Days (Custom)`
+      label: `${e.detail.customDays} Days (Custom)`,
+      targeting: readTargetingSelection(p)
     });
   });
 
@@ -409,4 +526,3 @@
     openBoostSheet: openBoostSheetWithContext
   };
 })();
-
