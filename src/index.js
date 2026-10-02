@@ -19,7 +19,7 @@ import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
 import {
   handleBoostStatus, handleActivateBoost, handleBoostConfig,
   handleGetBoostPricing, handleBoostCheckout, handleBoostPaystackCallback,
-  handleBoostPaystackWebhook, handleActivateBoostPurchase, handleActiveBoosts
+  handleBoostPaystackWebhook, handleActivateBoostPurchase, handleActiveBoosts, handleBoostRecap
 } from "./lib/boost.js";
 import { handleSponsoredProfiles, handleSponsoredProducts, handleSponsoredCatalogues } from "./lib/discovery.js";
 import { handleGetPricing, handleCheckout, handlePaystackCallback, handlePaystackWebhook, handleActivateTier, handleTierStatus } from "./lib/tiers.js";
@@ -1028,6 +1028,13 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       return handleActivateBoostPurchase(request, env);
     }
 
+    // import: add handleBoostRecap to your existing boost.js import list
+if (url.pathname === "/api/boost/recap" && request.method === "GET") {
+  const sessionToken = getCookie(request, "liyog_session");
+  const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+  if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+  return handleBoostRecap(request, env, userId);
+                                         }
     // ---- Boost: full list of every currently-active boost for a
     // profile (profile + catalogue + every boosted product), used by
     // the "Your Active Boosts" summary panel in the manage-products
