@@ -1,9 +1,30 @@
 // =====================================================================
-// LIYOG WORLD — src/lib/boost.js
-// Boost status checks + manual activation logging. New, additive file
-// — does not modify any existing module. Matches the "manual payment
-// first" plan: no payment gateway, just a WhatsApp handoff and a
-// manually-inserted boost_log row once payment is confirmed off-platform.
+// LIYOG WORLD — src/lib/boost.js   (3a fix release)
+// Boost status checks + checkout + activation + fair-rotation selection.
+//
+// WHAT CHANGED IN THIS RELEASE (everything else is untouched):
+//  1. Targeting now works for EVERY country (full ISO list), not only
+//     the 4 Paystack pricing countries. Pricing is still resolved with
+//     the Paystack list (resolveCountry) — targeting is a separate thing.
+//  2. The advertiser's "own" country / category are derived on the
+//     SERVER from the profile row (store_country, then the country at
+//     the end of map_address / store_address). The browser now only
+//     sends intent ("own" | "all" + show_cta) — never lists of values.
+//     Legacy clients that still send target_countries / target_categories
+//     keep working (validated against the real allowlists).
+//  3. No country on the profile  -> defaults to ALL + a note.
+//     No category on the profile -> defaults to ALL + a note.
+//     Nothing here can throw because of missing profile data.
+//  4. show_cta is only stored as 1 if the profile really has a WhatsApp
+//     or phone number.
+//  5. Every checkout returns a RECAP built from exactly what was stored
+//     (manual purchases show it + put it in the WhatsApp message).
+//  6. New: GET /api/boost/recap?ref=... (owner-only) for the
+//     post-payment recap; callback redirect now carries boost_ref.
+//  7. GET /api/boost/pricing?profile_id=... additionally returns the
+//     targeting defaults in the SAME request (no extra round trip).
+//  8. handleActiveBoosts additionally returns the stored targeting.
+//  selectBoostedItems (rotation engine) is NOT touched — that is 3b.
 // =====================================================================
 
 function jsonResponse(data, status = 200) {
@@ -13,10 +34,8 @@ function jsonResponse(data, status = 200) {
   });
 }
 
-// Same Paystack-native-currency list as tiers.js — kept as a separate
-// local constant rather than importing across files, matching this
-// codebase's existing convention (see tiers.js's own comment on this)
-// of each lib file staying self-contained and copy-safe.
+// Pricing currencies — UNCHANGED. Only used to decide which price row
+// a visitor sees / is charged. Targeting no longer depends on this.
 const PAYSTACK_COUNTRIES = { NG: "NGN", GH: "GHS", ZA: "ZAR", KE: "KES" };
 
 function resolveCountry(request) {
@@ -25,14 +44,193 @@ function resolveCountry(request) {
   return "USD";
 }
 
+// ---------------------------------------------------------------------
+// Country registry (ISO 3166-1 alpha-2) — used ONLY for targeting.
+// Any country a user types on their profile can be recognised, so a
+// brand from Europe / America / Canada etc. can target its own country.
+// ---------------------------------------------------------------------
+const COUNTRY_DATA =
+  "AF:Afghanistan|AL:Albania|DZ:Algeria|AS:American Samoa|AD:Andorra|AO:Angola|AI:Anguilla|AG:Antigua and Barbuda|AR:Argentina|AM:Armenia|AW:Aruba|AU:Australia|AT:Austria|AZ:Azerbaijan|" +
+  "BS:Bahamas|BH:Bahrain|BD:Bangladesh|BB:Barbados|BY:Belarus|BE:Belgium|BZ:Belize|BJ:Benin|BM:Bermuda|BT:Bhutan|BO:Bolivia|BA:Bosnia and Herzegovina|BW:Botswana|BR:Brazil|BN:Brunei|BG:Bulgaria|BF:Burkina Faso|BI:Burundi|" +
+  "CV:Cabo Verde|KH:Cambodia|CM:Cameroon|CA:Canada|KY:Cayman Islands|CF:Central African Republic|TD:Chad|CL:Chile|CN:China|CO:Colombia|KM:Comoros|CG:Congo|CD:DR Congo|CK:Cook Islands|CR:Costa Rica|CI:Côte d'Ivoire|HR:Croatia|CU:Cuba|CW:Curaçao|CY:Cyprus|CZ:Czechia|" +
+  "DK:Denmark|DJ:Djibouti|DM:Dominica|DO:Dominican Republic|EC:Ecuador|EG:Egypt|SV:El Salvador|GQ:Equatorial Guinea|ER:Eritrea|EE:Estonia|SZ:Eswatini|ET:Ethiopia|FK:Falkland Islands|FO:Faroe Islands|FJ:Fiji|FI:Finland|FR:France|GF:French Guiana|PF:French Polynesia|" +
+  "GA:Gabon|GM:Gambia|GE:Georgia|DE:Germany|GH:Ghana|GI:Gibraltar|GR:Greece|GL:Greenland|GD:Grenada|GP:Guadeloupe|GU:Guam|GT:Guatemala|GG:Guernsey|GN:Guinea|GW:Guinea-Bissau|GY:Guyana|HT:Haiti|HN:Honduras|HK:Hong Kong|HU:Hungary|" +
+  "IS:Iceland|IN:India|ID:Indonesia|IR:Iran|IQ:Iraq|IE:Ireland|IM:Isle of Man|IL:Israel|IT:Italy|JM:Jamaica|JP:Japan|JE:Jersey|JO:Jordan|KZ:Kazakhstan|KE:Kenya|KI:Kiribati|XK:Kosovo|KW:Kuwait|KG:Kyrgyzstan|" +
+  "LA:Laos|LV:Latvia|LB:Lebanon|LS:Lesotho|LR:Liberia|LY:Libya|LI:Liechtenstein|LT:Lithuania|LU:Luxembourg|MO:Macao|MG:Madagascar|MW:Malawi|MY:Malaysia|MV:Maldives|ML:Mali|MT:Malta|MH:Marshall Islands|MQ:Martinique|MR:Mauritania|MU:Mauritius|YT:Mayotte|MX:Mexico|FM:Micronesia|MD:Moldova|MC:Monaco|MN:Mongolia|ME:Montenegro|MS:Montserrat|MA:Morocco|MZ:Mozambique|MM:Myanmar|" +
+  "NA:Namibia|NR:Nauru|NP:Nepal|NL:Netherlands|NC:New Caledonia|NZ:New Zealand|NI:Nicaragua|NE:Niger|NG:Nigeria|NU:Niue|KP:North Korea|MK:North Macedonia|MP:Northern Mariana Islands|NO:Norway|OM:Oman|" +
+  "PK:Pakistan|PW:Palau|PS:Palestine|PA:Panama|PG:Papua New Guinea|PY:Paraguay|PE:Peru|PH:Philippines|PL:Poland|PT:Portugal|PR:Puerto Rico|QA:Qatar|RE:Réunion|RO:Romania|RU:Russia|RW:Rwanda|" +
+  "BL:Saint Barthélemy|SH:Saint Helena|KN:Saint Kitts and Nevis|LC:Saint Lucia|MF:Saint Martin|PM:Saint Pierre and Miquelon|VC:Saint Vincent and the Grenadines|WS:Samoa|SM:San Marino|ST:São Tomé and Príncipe|SA:Saudi Arabia|SN:Senegal|RS:Serbia|SC:Seychelles|SL:Sierra Leone|SG:Singapore|SX:Sint Maarten|SK:Slovakia|SI:Slovenia|SB:Solomon Islands|SO:Somalia|ZA:South Africa|KR:South Korea|SS:South Sudan|ES:Spain|LK:Sri Lanka|SD:Sudan|SR:Suriname|SE:Sweden|CH:Switzerland|SY:Syria|" +
+  "TW:Taiwan|TJ:Tajikistan|TZ:Tanzania|TH:Thailand|TL:Timor-Leste|TG:Togo|TK:Tokelau|TO:Tonga|TT:Trinidad and Tobago|TN:Tunisia|TR:Türkiye|TM:Turkmenistan|TC:Turks and Caicos Islands|TV:Tuvalu|" +
+  "UG:Uganda|UA:Ukraine|AE:United Arab Emirates|GB:United Kingdom|US:United States|UY:Uruguay|UZ:Uzbekistan|VU:Vanuatu|VA:Vatican City|VE:Venezuela|VN:Vietnam|VG:British Virgin Islands|VI:U.S. Virgin Islands|WF:Wallis and Futuna|EH:Western Sahara|YE:Yemen|ZM:Zambia|ZW:Zimbabwe";
+
+// Common alternative spellings people type into a "Country" field.
+const COUNTRY_ALIASES = {
+  "usa": "US", "us": "US", "united states of america": "US", "america": "US", "the united states": "US",
+  "uk": "GB", "great britain": "GB", "britain": "GB", "england": "GB", "scotland": "GB", "wales": "GB", "northern ireland": "GB", "the united kingdom": "GB",
+  "uae": "AE", "emirates": "AE", "the uae": "AE",
+  "ivory coast": "CI", "cote d ivoire": "CI",
+  "drc": "CD", "democratic republic of the congo": "CD", "democratic republic of congo": "CD", "congo kinshasa": "CD", "congo dr": "CD",
+  "republic of the congo": "CG", "congo brazzaville": "CG",
+  "korea": "KR", "republic of korea": "KR",
+  "russian federation": "RU",
+  "turkey": "TR",
+  "czech republic": "CZ",
+  "swaziland": "SZ",
+  "cape verde": "CV",
+  "burma": "MM",
+  "viet nam": "VN",
+  "macedonia": "MK",
+  "the gambia": "GM",
+  "the bahamas": "BS",
+  "holland": "NL", "the netherlands": "NL",
+  "east timor": "TL",
+  "lao pdr": "LA",
+  "macau": "MO",
+  "st lucia": "LC", "st kitts and nevis": "KN",
+  "south korea republic": "KR",
+  "vatican": "VA", "holy see": "VA",
+  "palestinian territories": "PS",
+  "republic of ireland": "IE",
+  "federated states of micronesia": "FM"
+};
+
+function normalizeCountryText(s) {
+  return String(s == null ? "" : s)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[.'’`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const COUNTRY_NAMES = {};          // "NG" -> "Nigeria"
+const COUNTRY_NAME_TO_CODE = {};   // "nigeria" -> "NG"
+(function initCountryRegistry() {
+  COUNTRY_DATA.split("|").forEach((pair) => {
+    const idx = pair.indexOf(":");
+    const code = pair.slice(0, idx);
+    const name = pair.slice(idx + 1);
+    COUNTRY_NAMES[code] = name;
+    COUNTRY_NAME_TO_CODE[normalizeCountryText(name)] = code;
+  });
+  Object.keys(COUNTRY_ALIASES).forEach((alias) => {
+    COUNTRY_NAME_TO_CODE[normalizeCountryText(alias)] = COUNTRY_ALIASES[alias];
+  });
+})();
+
+/** Text -> ISO code, or null. allowCode lets "NG"/"CA" style codes through. */
+function lookupCountryCode(text, allowCode) {
+  const n = normalizeCountryText(text);
+  if (!n) return null;
+  if (allowCode && /^[a-z]{2}$/.test(n)) {
+    const up = n.toUpperCase();
+    if (COUNTRY_NAMES[up]) return up;
+  }
+  if (COUNTRY_NAME_TO_CODE[n]) return COUNTRY_NAME_TO_CODE[n];
+  // "Lagos Nigeria" style (no comma): try the last 1-3 words.
+  const words = n.split(" ");
+  for (let take = Math.min(3, words.length); take >= 1; take--) {
+    const candidate = words.slice(-take).join(" ");
+    if (COUNTRY_NAME_TO_CODE[candidate]) return COUNTRY_NAME_TO_CODE[candidate];
+  }
+  return null;
+}
+
+/**
+ * Works out the advertiser's own country from data ALREADY on the
+ * profile row (no extra lookups, no geo-IP guess):
+ *   1. store_country (free text or a 2-letter code)
+ *   2. the last comma-segment of map_address (e.g. "Onitsha, Anambra, Nigeria")
+ *   3. the last comma-segment of store_address
+ * Returns { code, name, source } or null. Never throws.
+ */
+export function resolveProfileCountry(row) {
+  try {
+    if (!row) return null;
+    if (row.store_country) {
+      const code = lookupCountryCode(row.store_country, true);
+      if (code) return { code, name: COUNTRY_NAMES[code], source: "store_country" };
+    }
+    const fallbacks = [["map_address", row.map_address], ["store_address", row.store_address]];
+    for (const [source, value] of fallbacks) {
+      if (!value) continue;
+      const parts = String(value).split(",");
+      const last = parts[parts.length - 1];
+      const code = lookupCountryCode(last, false);
+      if (code) return { code, name: COUNTRY_NAMES[code], source };
+    }
+  } catch (e) { /* never let a weird profile value break boosting */ }
+  return null;
+}
+
+function prettifySlug(slug) {
+  return String(slug || "").replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function ctaChannelsFor(row) {
+  const channels = [];
+  if (row && row.whatsapp_number) channels.push("whatsapp");
+  if (row && row.phone_number) channels.push("call");
+  return channels;
+}
+
+const NOTE_NO_COUNTRY = "We couldn't find a country on your profile, so this boost will show to all countries. To show it only in your own country, update the Country field on your profile.";
+const NOTE_NO_CATEGORY = "We couldn't find a category on your profile, so this boost will show in all categories.";
+const NOTE_NO_CTA = "Your profile has no WhatsApp or phone number yet, so contact buttons can't be shown on your sponsored cards.";
+
+/** Own-country / own-category / contact info derived from the profile row. */
+async function getOwnTargetingDefaults(env, row) {
+  const country = resolveProfileCountry(row);
+
+  let category = null;
+  if (row && row.business_category) {
+    try {
+      const { results } = await env.DB.prepare(
+        "SELECT slug, label FROM business_categories WHERE slug = ? AND is_allowed = 1"
+      ).bind(row.business_category).all();
+      if (results.length) category = { slug: results[0].slug, label: results[0].label };
+    } catch (e) {
+      // Categories table unavailable: trust the slug already on the live profile.
+      category = { slug: row.business_category, label: prettifySlug(row.business_category) };
+    }
+  }
+
+  const channels = ctaChannelsFor(row);
+  return {
+    country,
+    category,
+    ctaChannels: channels,
+    ctaAvailable: channels.length > 0,
+    countryNote: country ? null : NOTE_NO_COUNTRY,
+    categoryNote: category ? null : NOTE_NO_CATEGORY,
+    ctaNote: channels.length ? null : NOTE_NO_CTA
+  };
+}
+
+async function getTargetingInfoForProfile(env, profileId) {
+  const { results } = await env.DB.prepare(
+    "SELECT id, business_category, store_country, store_address, map_address, whatsapp_number, phone_number FROM profiles WHERE id = ?"
+  ).bind(profileId).all();
+  if (!results.length) return null;
+  const own = await getOwnTargetingDefaults(env, results[0]);
+  return {
+    ownCountry: own.country ? { code: own.country.code, name: own.country.name } : null,
+    countryNote: own.countryNote,
+    ownCategory: own.category,
+    categoryNote: own.categoryNote,
+    ctaAvailable: own.ctaAvailable,
+    ctaChannels: own.ctaChannels,
+    ctaNote: own.ctaNote
+  };
+}
+
 /**
  * GET /api/boost/pricing — public. Returns durations priced for the
  * visitor's detected country, filtered to only the tier_group(s)
- * currently unlocked for public use (app_settings.boost_tiers_unlocked
- * — 'extended' at launch, 'all' once every distribution channel is
- * live). Rows are already seeded for micro/standard even while
- * hidden, so unlocking later is a single settings row change with
- * zero schema or code changes needed.
+ * currently unlocked for public use (app_settings.boost_tiers_unlocked).
+ * NEW: optional ?profile_id= also returns `targeting` (the advertiser's
+ * own country/category defaults) so the sheet needs only ONE request.
  */
 export async function handleGetBoostPricing(request, env) {
   const countryCode = resolveCountry(request);
@@ -51,41 +249,25 @@ export async function handleGetBoostPricing(request, env) {
     customDuration = { minDays: longestDays + 1, maxDays };
   }
 
-  return jsonResponse({ countryCode, durations, customDuration });
+  let targeting = null;
+  const profileId = new URL(request.url).searchParams.get("profile_id");
+  if (profileId) {
+    try { targeting = await getTargetingInfoForProfile(env, profileId); }
+    catch (err) { console.error("Targeting info lookup failed:", err); }
+  }
+
+  return jsonResponse({ countryCode, durations, customDuration, targeting });
 }
 
 async function getUnlockedTierGroups(env) {
   const raw = await getSettingLocal(env, "boost_tiers_unlocked", "extended");
   if (raw === "all") return ["micro", "standard", "extended"];
-  // Comma-separated list support (e.g. "standard,extended") for a
-  // gradual rollout later, not just an all-or-nothing flip.
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 /**
- * Custom duration is now DAYS-based (not hours) and only allowed
- * ABOVE the longest currently-unlocked official tier — e.g. today
- * that's 30 days, so custom starts at 31+. This is deliberate: letting
- * custom start from 1 hour let people route small/cheap boosts through
- * the custom path instead of buying an official tier, undercutting the
- * whole pricing ladder. Restricting custom to "bulk, above the top
- * tier" makes it a genuine enterprise option, not a workaround.
- *
- * The minimum for custom is DERIVED from the longest unlocked tier's
- * day count — never hardcoded — so it self-adjusts the moment a new,
- * longer official tier is added or unlocked. The maximum and the
- * maximum discount percentage are both stored in app_settings, fully
- * admin-controlled without any code change:
- *   boost_custom_max_days          (e.g. "90" for 3 months)
- *   boost_custom_max_discount_pct  (e.g. "35" for up to 35% off)
- *
- * Pricing formula — extrapolated from the longest tier's per-day rate,
- * with a discount that scales from 0% (right at the longest tier's day
- * count) up to the configured max (right at the configured max days):
- *   baseRate = longestTier.amount / longestTier.days
- *   progress = min(1, (customDays - longestTier.days) / (maxDays - longestTier.days))
- *   discount = (maxDiscountPct / 100) * progress
- *   price = ceil(baseRate * (1 - discount) * customDays)
+ * Custom duration (days-based, only above the longest unlocked tier).
+ * UNCHANGED from the previous release.
  */
 async function computeCustomBoostPrice(env, durations, customDays) {
   const sorted = [...durations].sort((a, b) => a.hours - b.hours);
@@ -97,10 +279,10 @@ async function computeCustomBoostPrice(env, durations, customDays) {
   const maxDays = Number(await getSettingLocal(env, "boost_custom_max_days", "90"));
   const maxDiscountPct = Number(await getSettingLocal(env, "boost_custom_max_discount_pct", "35"));
 
-  if (customDays <= longestDays) return null; // caller must reject — custom is only valid above the top tier
+  if (customDays <= longestDays) return null;
 
   const baseRate = longest.amount / longestDays;
-  const denominator = Math.max(1, maxDays - longestDays); // avoid divide-by-zero if misconfigured
+  const denominator = Math.max(1, maxDays - longestDays);
   const progress = Math.min(1, (customDays - longestDays) / denominator);
   const discount = (maxDiscountPct / 100) * progress;
   const effectiveRate = baseRate * (1 - discount);
@@ -112,19 +294,6 @@ async function computeCustomBoostPrice(env, durations, customDays) {
   };
 }
 
-/**
- * Returns the currently-active boost row for a given scope, or null if
- * none is active. "Active" means expires_at is in the future — expiry
- * is handled by simply not matching here, no cron/cleanup needed for
- * correctness (the existing stale-row cleanup job just keeps the table
- * tidy, it isn't load-bearing for this check).
- *
- * scope: 'profile' (whole brand profile), 'catalogue' (the all-products
- * page), or 'product' (one specific product — productId required).
- * Profile and catalogue boosts can be active independently and at the
- * same time for the same profile — they're genuinely separate purchases
- * targeting separate surfaces, not mutually exclusive states.
- */
 export async function getActiveBoost(env, profileId, scope = "profile", productId = null) {
   const query = scope === "product"
     ? `SELECT id, expires_at FROM boost_log
@@ -139,17 +308,6 @@ export async function getActiveBoost(env, profileId, scope = "profile", productI
   return results.length ? results[0] : null;
 }
 
-/**
- * Same idea as getActiveBoost, but returns EVERY currently-active row
- * for a scope rather than collapsing to just the soonest-expiring one.
- * A product/profile/catalogue CAN legitimately have more than one live
- * boost stacked at once — nothing in the purchase flow prevents buying
- * a second boost while the first is still running (a boost purchase
- * always INSERTs a new boost_log row, never extends an existing one).
- * This surfaces that reality to the owner instead of silently hiding
- * it, and gives them each row's own expiry so they can see exactly
- * what they've bought.
- */
 export async function getAllActiveBoosts(env, profileId, scope = "profile", productId = null) {
   const query = scope === "product"
     ? `SELECT id, boosted_at, expires_at FROM boost_log
@@ -164,14 +322,6 @@ export async function getAllActiveBoosts(env, profileId, scope = "profile", prod
   return results;
 }
 
-/**
- * GET /api/profiles/:id/boost-status — used by the edit panel to show
- * current boost state (active + expiry) for the profile itself, the
- * catalogue (all-products page), and, optionally, a batch of product
- * ids in one round trip so the Products tab doesn't fire one request
- * per product card. Profile and catalogue are reported independently
- * since a profile can have either, both, or neither active at once.
- */
 export async function handleBoostStatus(env, profileId, productIdsParam) {
   const profileBoost = await getActiveBoost(env, profileId, "profile");
   const catalogueBoost = await getActiveBoost(env, profileId, "catalogue");
@@ -195,17 +345,14 @@ export async function handleBoostStatus(env, profileId, productIdsParam) {
 }
 
 /**
- * GET /api/profiles/:id/active-boosts — returns EVERY currently-active
- * boost for a profile in one list (profile + catalogue + every boosted
- * product, with product names joined in), rather than requiring the
- * caller to already know which product ids to check. This is what
- * powers the "Your Active Boosts" summary panel — a single call gets
- * the full picture instead of piecing it together from multiple
- * targeted lookups.
+ * GET /api/profiles/:id/active-boosts — NEW: also returns the stored
+ * targeting columns (additive; existing consumers simply ignore them).
  */
 export async function handleActiveBoosts(env, profileId) {
   const { results } = await env.DB.prepare(
-    `SELECT bl.id, bl.scope, bl.product_id, bl.boosted_at, bl.expires_at, p.name AS product_name
+    `SELECT bl.id, bl.scope, bl.product_id, bl.boosted_at, bl.expires_at,
+            bl.target_countries, bl.target_categories, bl.show_cta,
+            p.name AS product_name
      FROM boost_log bl
      LEFT JOIN products p ON p.id = bl.product_id
      WHERE bl.profile_id = ? AND bl.expires_at > datetime('now')
@@ -215,13 +362,6 @@ export async function handleActiveBoosts(env, profileId) {
   return jsonResponse({ boosts: results });
 }
 
-/**
- * GET /api/boost-config — public, read-only. Returns the WhatsApp
- * number the boost sheet should message, sourced from app_settings so
- * it's changeable without a redeploy. Falls back to null if not set,
- * in which case the frontend should just skip the wa.me prefill and
- * show a plain instruction instead of a broken link.
- */
 export async function handleBoostConfig(env) {
   const { results } = await env.DB.prepare(
     "SELECT value FROM app_settings WHERE key = 'admin_whatsapp_number'"
@@ -230,13 +370,6 @@ export async function handleBoostConfig(env) {
   return jsonResponse({ adminWhatsapp: (number && number !== "REPLACE_WITH_YOUR_NUMBER") ? number : null });
 }
 
-/**
- * POST /api/boost/activate — admin-only manual activation, called
- * yourself after confirming payment via WhatsApp for a 'manual'
- * boost_purchases row, OR directly with raw parameters for ad-hoc use.
- * Guarded by env.ADMIN_SECRET so it's never reachable by a normal user
- * even if they discover the route.
- */
 export async function handleActivateBoost(request, env) {
   const adminHeader = request.headers.get("x-admin-secret");
   if (!env.ADMIN_SECRET || adminHeader !== env.ADMIN_SECRET) {
@@ -258,80 +391,84 @@ export async function handleActivateBoost(request, env) {
 
   return jsonResponse({ success: true });
 }
+
 // =====================================================================
-// Boost checkout — Paystack (NGN-charging, same pattern as tiers.js)
-// + manual fallback. Handles all three scopes: profile, catalogue,
-// and a single product. Both an official duration_id and a custom
-// hour count are supported; exactly one of the two must be provided.
+// Targeting validation + recap
 // =====================================================================
 
-/**
- * POST /api/boost/checkout — authenticated, owner-only. Creates a
- * 'pending' boost_purchases row, then either returns a Paystack
- * redirect URL or (for manual) the purchase details for the WhatsApp
- * handoff — mirroring tiers.js's handleCheckout exactly.
- */
-// Targeting allowlist — the ONLY countries a boost can be scoped to.
-// Deliberately the same set your payment processing already operates
-// in (see PAYSTACK_COUNTRIES above) — expanding this later, once
-// payment coverage grows, is a one-line change here, and nowhere else
-// needs to know about it. "ALL" is the sentinel meaning "every
-// country" rather than a real code, used when the advertiser opts to
-// broaden beyond their own country.
-const TARGETABLE_COUNTRIES = new Set(["NG", "GH", "ZA", "KE"]);
+/** Stored column value -> "ALL" | ["NG", ...]. NULL / junk = ALL (legacy rows). */
+function parseTargetList(raw) {
+  if (raw == null || raw === "" || raw === "ALL") return "ALL";
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) && arr.length ? arr : "ALL";
+  } catch (e) { return "ALL"; }
+}
 
 /**
- * Validates and normalizes the advertiser's targeting choices
- * server-side. NEVER trusts the client's list as-is — every entry is
- * checked against a real allowlist (countries against
- * TARGETABLE_COUNTRIES, categories against the live /api/categories
- * data) before anything is stored. This is the actual security
- * boundary: the frontend only ever SUGGESTS what to send, this
- * function is what actually decides what's allowed to be written.
+ * Validates + normalises the advertiser's choices SERVER-SIDE.
  *
- * Returns { targetCountries, targetCategories, showCta } — all three
- * always well-formed, or throws a descriptive error the caller turns
- * into a 400 response.
+ * Preferred input (new client):  country_mode / category_mode = "own" | "all"
+ *   -> the actual values are DERIVED here from the profile row, so the
+ *      browser never supplies a country or category value at all.
+ * Legacy input (old client):     target_countries / target_categories
+ *   -> still accepted, every entry checked against a real allowlist.
+ * Nothing sent at all            -> defaults to the advertiser's own values.
+ *
+ * Returns { targetCountries, targetCategories, showCta, notes[] }.
+ * Throws Error(message) only for genuinely invalid legacy input.
  */
-async function validateTargeting(env, body, profileCountryCode, profileCategory) {
-  let targetCountries = "ALL";
-  if (body.target_countries != null) {
+async function validateTargeting(env, body, profileRow) {
+  const own = await getOwnTargetingDefaults(env, profileRow);
+  const notes = [];
+
+  // ---- countries ----
+  let targetCountries;
+  const countryMode = body.country_mode === "own" || body.country_mode === "all" ? body.country_mode : null;
+
+  if (countryMode === "all") {
+    targetCountries = "ALL";
+  } else if (countryMode === "own") {
+    if (own.country) targetCountries = JSON.stringify([own.country.code]);
+    else { targetCountries = "ALL"; notes.push(own.countryNote); }
+  } else if (body.target_countries != null) {
     if (body.target_countries === "ALL") {
       targetCountries = "ALL";
     } else if (Array.isArray(body.target_countries)) {
       const cleaned = body.target_countries
         .map((c) => String(c).toUpperCase().trim())
-        .filter((c) => TARGETABLE_COUNTRIES.has(c));
+        .filter((c) => COUNTRY_NAMES[c]);
       if (!cleaned.length) throw new Error("At least one valid target country is required, or choose All Countries.");
-      // De-duplicate and store as compact JSON.
       targetCountries = JSON.stringify([...new Set(cleaned)]);
     } else {
       throw new Error("Invalid country targeting selection.");
     }
+  } else if (own.country) {
+    targetCountries = JSON.stringify([own.country.code]);
   } else {
-    // No selection sent at all — default to the advertiser's own
-    // detected country, exactly as instructed ("by default it should
-    // be his own country"). Falls back to ALL only if we genuinely
-    // couldn't detect one, so a boost is never silently untargeted.
-    targetCountries = profileCountryCode && TARGETABLE_COUNTRIES.has(profileCountryCode)
-      ? JSON.stringify([profileCountryCode])
-      : "ALL";
+    targetCountries = "ALL";
+    notes.push(own.countryNote);
   }
 
-  let targetCategories = "ALL";
-  if (body.target_categories != null) {
+  // ---- categories ----
+  let targetCategories;
+  const categoryMode = body.category_mode === "own" || body.category_mode === "all" ? body.category_mode : null;
+
+  if (categoryMode === "all") {
+    targetCategories = "ALL";
+  } else if (categoryMode === "own") {
+    if (own.category) targetCategories = JSON.stringify([own.category.slug]);
+    else { targetCategories = "ALL"; notes.push(own.categoryNote); }
+  } else if (body.target_categories != null) {
     if (body.target_categories === "ALL") {
       targetCategories = "ALL";
     } else if (Array.isArray(body.target_categories)) {
-      const { results: validCategories } = await env.DB.prepare(
-        "SELECT slug FROM business_categories WHERE is_allowed = 1"
-      ).all().catch(() => ({ results: [] }));
-      const validSlugs = new Set(validCategories.map((c) => c.slug));
-      // Fallback: if a categories table lookup isn't available for
-      // any reason, at minimum trust the advertiser's OWN category
-      // (which we already know is real, since it's on their live
-      // profile) rather than rejecting everything.
-      if (!validSlugs.size && profileCategory) validSlugs.add(profileCategory);
+      let validSlugs = new Set();
+      try {
+        const { results } = await env.DB.prepare("SELECT slug FROM business_categories WHERE is_allowed = 1").all();
+        validSlugs = new Set(results.map((c) => c.slug));
+      } catch (e) { /* fall through to the profile's own category below */ }
+      if (!validSlugs.size && own.category) validSlugs.add(own.category.slug);
       const cleaned = body.target_categories
         .map((c) => String(c).toLowerCase().trim())
         .filter((c) => validSlugs.has(c));
@@ -340,15 +477,67 @@ async function validateTargeting(env, body, profileCountryCode, profileCategory)
     } else {
       throw new Error("Invalid category targeting selection.");
     }
+  } else if (own.category) {
+    targetCategories = JSON.stringify([own.category.slug]);
   } else {
-    // Default to the advertiser's own category, per instruction.
-    targetCategories = profileCategory ? JSON.stringify([profileCategory]) : "ALL";
+    targetCategories = "ALL";
+    notes.push(own.categoryNote);
   }
 
-  const showCta = body.show_cta === true || body.show_cta === 1 ? 1 : 0;
+  // ---- CTA buttons ----
+  const wantsCta = body.show_cta === true || body.show_cta === 1 || body.show_cta === "1";
+  let showCta = 0;
+  if (wantsCta) {
+    if (own.ctaAvailable) showCta = 1;
+    else notes.push(own.ctaNote);
+  }
 
-  return { targetCountries, targetCategories, showCta };
+  return { targetCountries, targetCategories, showCta, notes };
 }
+
+/** Turns STORED targeting columns into a human-readable structure. */
+async function describeStoredTargeting(env, countriesRaw, categoriesRaw, showCta) {
+  const countryList = parseTargetList(countriesRaw);
+  const countries = countryList === "ALL"
+    ? "ALL"
+    : countryList.map((code) => ({ code, name: COUNTRY_NAMES[code] || code }));
+
+  const categoryList = parseTargetList(categoriesRaw);
+  let categories = "ALL";
+  if (categoryList !== "ALL") {
+    const labelBySlug = {};
+    try {
+      const placeholders = categoryList.map(() => "?").join(",");
+      const { results } = await env.DB.prepare(
+        `SELECT slug, label FROM business_categories WHERE slug IN (${placeholders})`
+      ).bind(...categoryList).all();
+      results.forEach((r) => { labelBySlug[r.slug] = r.label; });
+    } catch (e) { /* fall back to prettified slugs */ }
+    categories = categoryList.map((slug) => ({ slug, label: labelBySlug[slug] || prettifySlug(slug) }));
+  }
+
+  return { countries, categories, showCta: Number(showCta) === 1 };
+}
+
+async function buildRecap(env, { scope, productName, hours, amount, currency, countriesRaw, categoriesRaw, showCta, profileRow, notes }) {
+  const t = await describeStoredTargeting(env, countriesRaw, categoriesRaw, showCta);
+  return {
+    scope,
+    productName: productName || null,
+    hours,
+    amount,
+    currency,
+    countries: t.countries,
+    categories: t.categories,
+    showCta: t.showCta,
+    ctaChannels: t.showCta ? ctaChannelsFor(profileRow) : [],
+    notes: (notes || []).filter(Boolean)
+  };
+}
+
+// =====================================================================
+// Boost checkout — Paystack (NGN-charging) + manual fallback.
+// =====================================================================
 
 export async function handleBoostCheckout(request, env, userId) {
   const body = await request.json().catch(() => ({}));
@@ -372,35 +561,27 @@ export async function handleBoostCheckout(request, env, userId) {
   }
 
   const { results: profileRows } = await env.DB.prepare(
-    "SELECT id, owner_id, business_name, slug, business_category, store_country FROM profiles WHERE id = ?"
+    `SELECT id, owner_id, business_name, slug, business_category, store_country, store_address,
+            map_address, whatsapp_number, phone_number
+     FROM profiles WHERE id = ?`
   ).bind(profile_id).all();
   if (!profileRows.length) return jsonResponse({ error: "Profile not found." }, 404);
   if (profileRows[0].owner_id !== userId) return jsonResponse({ error: "Not your profile." }, 403);
   const profileRow = profileRows[0];
 
+  let productName = null;
   if (scope === "product") {
     const { results: productRows } = await env.DB.prepare(
-      "SELECT id FROM products WHERE id = ? AND profile_id = ?"
+      "SELECT id, name FROM products WHERE id = ? AND profile_id = ?"
     ).bind(product_id, profile_id).all();
     if (!productRows.length) return jsonResponse({ error: "Product not found on this profile." }, 404);
+    productName = productRows[0].name;
   }
 
-  // store_country on the profile is free-text entered at signup (e.g.
-  // "Nigeria"), not necessarily a 2-letter code — map the common cases
-  // to a real targetable code; anything unrecognized falls through to
-  // request.cf.country (Cloudflare's own edge geolocation) as a second
-  // guess, and ultimately to "ALL" if neither resolves. This is the
-  // "without consuming queries" default you asked for — no extra
-  // lookup, just reusing data already on the profile row plus the
-  // free Cloudflare geo signal already used elsewhere in this file.
-  const COUNTRY_NAME_TO_CODE = { nigeria: "NG", ghana: "GH", "south africa": "ZA", kenya: "KE" };
-  const profileCountryCode =
-    COUNTRY_NAME_TO_CODE[(profileRow.store_country || "").toLowerCase().trim()] ||
-    resolveCountry(request);
-
+  // Targeting is derived from the profile row on the server.
   let targeting;
   try {
-    targeting = await validateTargeting(env, body, profileCountryCode, profileRow.business_category);
+    targeting = await validateTargeting(env, body, profileRow);
   } catch (err) {
     return jsonResponse({ error: err.message }, 400);
   }
@@ -427,9 +608,6 @@ export async function handleBoostCheckout(request, env, userId) {
     resolvedDurationId = duration_id;
     resolvedCustomHours = null;
   } else {
-    // custom_days is the new field name (days, not hours) — custom_hours
-    // is still accepted for backward compatibility with any in-flight
-    // client that hasn't refreshed yet, but is interpreted as hours/24.
     const customDaysNum = body.custom_days != null
       ? Number(body.custom_days)
       : (custom_hours != null ? Number(custom_hours) / 24 : NaN);
@@ -461,11 +639,21 @@ export async function handleBoostCheckout(request, env, userId) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
   ).bind(purchaseId, profile_id, scope, product_id || null, resolvedDurationId, resolvedCustomHours, countryCode, currency, amount, method, targeting.targetCountries, targeting.targetCategories, targeting.showCta).run();
 
+  // Recap is built from the EXACT values just stored.
+  const recap = await buildRecap(env, {
+    scope, productName, hours, amount, currency,
+    countriesRaw: targeting.targetCountries,
+    categoriesRaw: targeting.targetCategories,
+    showCta: targeting.showCta,
+    profileRow,
+    notes: targeting.notes
+  });
+
   if (method === "manual") {
     return jsonResponse({
       success: true,
       method: "manual",
-      purchase: { id: purchaseId, scope, hours, currency, amount }
+      purchase: { id: purchaseId, scope, hours, currency, amount, recap }
     });
   }
 
@@ -502,7 +690,12 @@ export async function handleBoostCheckout(request, env, userId) {
         currency: "NGN",
         callback_url: callbackUrl,
         reference: purchaseId,
-        metadata: { profile_id, scope, product_id: product_id || null, purchase_id: purchaseId }
+        metadata: {
+          profile_id, scope, product_id: product_id || null, purchase_id: purchaseId,
+          target_countries: targeting.targetCountries,
+          target_categories: targeting.targetCategories,
+          show_cta: targeting.showCta
+        }
       })
     });
 
@@ -512,20 +705,13 @@ export async function handleBoostCheckout(request, env, userId) {
       return jsonResponse({ error: "Couldn't start payment — please try again or use the manual option." }, 502);
     }
 
-    return jsonResponse({ success: true, method: "paystack", authorizationUrl: initData.data.authorization_url });
+    return jsonResponse({ success: true, method: "paystack", authorizationUrl: initData.data.authorization_url, recap });
   } catch (err) {
     console.error("Paystack boost checkout error:", err);
     return jsonResponse({ error: "Couldn't start payment — please try again or use the manual option." }, 502);
   }
 }
 
-/**
- * Same three-priority NGN conversion as tiers.js's getNgnChargeAmount
- * (manual override -> live rate -> fixed fallback), reusing the same
- * fx_fallback_rates table tiers.js already populates — one shared
- * exchange-rate source of truth for the whole system, not duplicated
- * per feature.
- */
 async function getBoostNgnChargeAmount(env, price) {
   if (price.currency === "NGN") return price.amount;
 
@@ -560,9 +746,8 @@ function roundUpToNearest50(amountInKobo) {
 }
 
 /**
- * GET /api/boost/paystack-callback — Paystack redirects the browser
- * here after checkout. Always re-verifies server-side before touching
- * the database, exactly like tiers.js's callback handler.
+ * GET /api/boost/paystack-callback — now also passes boost_ref so the
+ * brand page can show a post-payment recap (see handleBoostRecap).
  */
 export async function handleBoostPaystackCallback(request, env) {
   const url = new URL(request.url);
@@ -586,16 +771,13 @@ export async function handleBoostPaystackCallback(request, env) {
       "SELECT slug FROM profiles WHERE id = ?"
     ).bind(purchaseRows[0].profile_id).all();
     if (profileRows.length) redirectBase.searchParams.set("biz", profileRows[0].slug);
+    redirectBase.searchParams.set("boost_ref", reference);
   }
 
   redirectBase.searchParams.set("boost_result", result.success ? "success" : "error");
   return Response.redirect(redirectBase.toString(), 302);
 }
 
-/**
- * POST /api/boost/paystack-webhook — the reliable server-to-server
- * confirmation path, identical pattern to tiers.js's webhook handler.
- */
 export async function handleBoostPaystackWebhook(request, env) {
   if (!env.PAYSTACK_SECRET_KEY) return new Response("Not configured", { status: 503 });
 
@@ -652,13 +834,8 @@ async function verifyAndConfirmBoostPurchase(env, reference) {
   }
 }
 
-/**
- * Grants the boost: marks the purchase confirmed and inserts the
- * actual boost_log row that makes badges/sorting go live. Hours come
- * from either the matched official duration or the stored custom
- * value — whichever this purchase used.
- */
-async function applyConfirmedBoost(env, purchase) {
+/** Hours for a purchase row (custom value, or the matched official duration). */
+async function getPurchaseHours(env, purchase) {
   let hours = purchase.custom_hours;
   if (!hours && purchase.duration_id) {
     const { results } = await env.DB.prepare(
@@ -666,7 +843,16 @@ async function applyConfirmedBoost(env, purchase) {
     ).bind(purchase.duration_id, purchase.country_code).all();
     hours = results.length ? results[0].hours : 24;
   }
-  hours = hours || 24;
+  return hours || 24;
+}
+
+/**
+ * Grants the boost: marks the purchase confirmed and inserts the
+ * boost_log row. Targeting columns are copied straight from the
+ * purchase row (that is what the checkout stored). UNCHANGED logic.
+ */
+async function applyConfirmedBoost(env, purchase) {
+  const hours = await getPurchaseHours(env, purchase);
 
   await env.DB.batch([
     env.DB.prepare(
@@ -679,13 +865,37 @@ async function applyConfirmedBoost(env, purchase) {
   ]);
 }
 
+/** Recap rebuilt from a STORED purchase row (admin response + owner recap). */
+async function recapFromPurchaseRow(env, purchase) {
+  const hours = await getPurchaseHours(env, purchase);
+  let productName = null;
+  if (purchase.product_id) {
+    const { results } = await env.DB.prepare("SELECT name FROM products WHERE id = ?").bind(purchase.product_id).all();
+    productName = results.length ? results[0].name : null;
+  }
+  const { results: profileRows } = await env.DB.prepare(
+    "SELECT whatsapp_number, phone_number FROM profiles WHERE id = ?"
+  ).bind(purchase.profile_id).all();
+
+  const recap = await buildRecap(env, {
+    scope: purchase.scope,
+    productName,
+    hours,
+    amount: purchase.amount,
+    currency: purchase.currency,
+    countriesRaw: purchase.target_countries,
+    categoriesRaw: purchase.target_categories,
+    showCta: purchase.show_cta,
+    profileRow: profileRows[0] || null,
+    notes: []
+  });
+  return recap;
+}
+
 /**
- * POST /api/boost/manual-activate — admin-only, confirms a MANUAL
- * boost_purchases row (distinct from the raw /api/boost/activate
- * above, which inserts directly without a purchase record — kept for
- * backward compatibility). This is the one to use going forward for
- * anything that came through the WhatsApp handoff, since it carries
- * the full audit trail.
+ * POST /api/boost/manual-activate — admin-only. Same as before, but the
+ * response now includes the recap of what was activated so you can
+ * confirm country / category / CTA at a glance.
  */
 export async function handleActivateBoostPurchase(request, env) {
   const adminHeader = request.headers.get("x-admin-secret");
@@ -707,44 +917,46 @@ export async function handleActivateBoostPurchase(request, env) {
   if (purchase.method !== "manual") return jsonResponse({ error: "This purchase isn't manual — use Paystack verification instead." }, 400);
 
   await applyConfirmedBoost(env, purchase);
-  return jsonResponse({ success: true });
+
+  let recap = null;
+  try { recap = await recapFromPurchaseRow(env, purchase); } catch (e) { console.error("Recap build failed:", e); }
+  return jsonResponse({ success: true, recap });
+}
+
+/**
+ * GET /api/boost/recap?ref=<purchaseId> — OWNER ONLY. Returns what a
+ * purchase was for (scope, duration, price, country, category, CTA)
+ * and its status. Used by the brand page after returning from Paystack.
+ * Requires the logged-in user to own the profile the purchase belongs to.
+ */
+export async function handleBoostRecap(request, env, userId) {
+  const ref = new URL(request.url).searchParams.get("ref");
+  if (!ref) return jsonResponse({ error: "Missing reference." }, 400);
+
+  const { results } = await env.DB.prepare("SELECT * FROM boost_purchases WHERE id = ?").bind(ref).all();
+  if (!results.length) return jsonResponse({ error: "Not found." }, 404);
+  const purchase = results[0];
+
+  const { results: ownerRows } = await env.DB.prepare("SELECT owner_id FROM profiles WHERE id = ?").bind(purchase.profile_id).all();
+  if (!ownerRows.length || ownerRows[0].owner_id !== userId) return jsonResponse({ error: "Not authorized." }, 403);
+
+  const recap = await recapFromPurchaseRow(env, purchase);
+  return jsonResponse({
+    success: true,
+    status: purchase.status,
+    method: purchase.method,
+    chargedNgn: purchase.ngn_charge_amount && purchase.currency !== "NGN" ? purchase.ngn_charge_amount : null,
+    recap
+  });
 }
 
 // =====================================================================
-// Boost DISPLAY — the fair-rotation selection primitive. This is the
-// ONE function every display surface calls (profile-page sponsored
-// strip, catalogue-page sponsored strip, and the Discover page) so
-// fairness logic lives in exactly one place, never duplicated.
-//
-// Fairness model: at any real scale (thousands+ of simultaneous
-// active boosts), pure random selection risks some paying customers
-// never getting shown at all during their whole boost window — bad
-// luck, not a fair outcome for someone who paid. Instead: always bias
-// toward boosts with the LOWEST impression_count so far. A wider pool
-// (POOL_MULTIPLIER x the requested limit) is pulled from the
-// least-shown group, then shuffled, so it's fair over time without
-// being mechanically predictable (nobody can reliably game "always
-// show first" by any trick on their end).
-//
-// impression_count is only incremented for the items ACTUALLY
-// returned by a given call, not merely queried — so a boost that gets
-// selected genuinely accumulates fewer future selections relative to
-// others, self-correcting the rotation over the life of the boost.
+// Boost DISPLAY — the fair-rotation selection primitive.
+// *** UNCHANGED in 3a. Targeting-aware serving is part 3b. ***
 // =====================================================================
 
 const POOL_MULTIPLIER = 3;
 
-/**
- * Returns up to `limit` currently-active boosted items for a scope,
- * fairly rotated, with impressions recorded for what's returned.
- * excludeProfileId prevents a profile from ever seeing its OWN boosted
- * item shown back to itself as "sponsored" on its own page.
- *
- * Returns raw boost_log rows (id, profile_id, product_id, scope,
- * expires_at) — the CALLER is responsible for joining in the actual
- * profile/product display data (name, logo, images, etc.), since that
- * varies by scope and this function stays domain-agnostic on purpose.
- */
 export async function selectBoostedItems(env, { scope, excludeProfileId = null, limit = 4 }) {
   const poolSize = limit * POOL_MULTIPLIER;
 
@@ -763,10 +975,6 @@ export async function selectBoostedItems(env, { scope, excludeProfileId = null, 
 
   if (!pool.length) return [];
 
-  // Shuffle the pool (Fisher-Yates) so even within the least-shown
-  // group, order isn't purely a function of impression_count — two
-  // boosts tied at 0 impressions shouldn't always return in the same
-  // order relative to each other.
   const shuffled = [...pool];
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -803,3 +1011,7 @@ async function hmacSha512Hex(secret, message) {
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+// Exposed for part 3b (viewer-side serving) and for debugging.
+export { COUNTRY_NAMES, parseTargetList };
+
