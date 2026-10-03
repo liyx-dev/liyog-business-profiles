@@ -266,8 +266,8 @@
   }
 
   function ctaChannelText(channels) {
-    const names = (channels || []).map((c) => (c === "whatsapp" ? "WhatsApp" : "Call"));
-    return names.length ? names.join(" + ") : "WhatsApp / Call";
+    const names = (channels || []).map((c) => (c === "whatsapp" ? "WApp" : "Call"));
+    return names.length ? names.join(" + ") : "WApp / Call";
   }
 
   // Only INTENT is sent — the server derives every real value.
