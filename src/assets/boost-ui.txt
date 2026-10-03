@@ -266,8 +266,8 @@
   }
 
   function ctaChannelText(channels) {
-    const names = (channels || []).map((c) => (c === "whatsapp" ? "WApp" : "Call"));
-    return names.length ? names.join(" + ") : "WApp / Call";
+    const names = (channels || []).map((c) => (c === "whatsapp" ? "WhatsApp" : "Call"));
+    return names.length ? names.join(" + ") : "WhatsApp / Call";
   }
 
   // Only INTENT is sent — the server derives every real value.
@@ -335,7 +335,7 @@
             <div class="lpb-cta-preview">
               <div class="lpb-cta-preview-label">What visitors will see</div>
               <div class="lpb-cta-preview-inner">
-                ${(info.ctaChannels || []).includes("whatsapp") ? `<div class="lpb-cta-pill wa">${ICON.wa}<span>WhatsApp</span></div>` : ""}
+                ${(info.ctaChannels || []).includes("whatsapp") ? `<div class="lpb-cta-pill wa">${ICON.wa}<span>WApp</span></div>` : ""}
                 ${(info.ctaChannels || []).includes("call") ? `<div class="lpb-cta-pill call">${ICON.tap}<span>Call</span></div>` : ""}
               </div>
             </div>` : ""}
