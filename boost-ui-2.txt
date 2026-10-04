@@ -1,0 +1,891 @@
+/* =====================================================================
+   LIYOG WORLD BRAND PROFILES — boost-ui.js   (3a fix release, v3a.3)
+   Boost purchase sheet. Scope (profile / catalogue / product) is decided
+   by the CALLER (profile.js). Exposes exactly one entry point,
+   window.LiyogBoostUI.openBoostSheet(p, options) — unchanged signature.
+
+   WHAT CHANGED IN THIS RELEASE:
+   - The browser now sends only INTENT to the server:
+       country_mode ("own"|"all"), category_mode ("own"|"all"), show_cta.
+     The real country / category values are derived on the server from
+     the profile row. No targeting values live in this file.
+   - Own country / category come from the pricing response (same single
+     request as before — no extra network call).
+   - No country on the profile -> "All countries" + a clear note telling
+     the user to update their profile country. Same safe handling for
+     category and for contact buttons (needs a WhatsApp/phone number).
+   - New premium UI: segmented controls with an obvious active state,
+     a real on/off switch for the contact buttons (with a live preview),
+     and a live "Your boost will show to" summary.
+   - New review/recap step before payment, an authoritative recap for
+     manual payments, and the targeting is now INCLUDED in the WhatsApp
+     message.
+   - After returning from Paystack: a visible result toast + a recap
+     sheet (needs GET /api/boost/recap — see boost.js notes; degrades
+     gracefully to just the toast if that route isn't added).
+   - Toasts are now actually visible (the old .lp-toast-host had no CSS
+     and the toast never received .lp-toast-visible, so it was invisible).
+   - Body scroll lock now uses profile.js's shared reference-counted lock
+     when available (fixes scroll freezing under stacked sheets).
+   ===================================================================== */
+
+(function () {
+  "use strict";
+
+  const WORKER_BASE = "https://www.liyogworld.com.ng";
+
+  const SCOPE_LABELS = {
+    profile: "Your Brand Profile",
+    catalogue: "All Your Products Page",
+    product: "This Product"
+  };
+
+  const DURATION_LABELS = {
+    micro_6h: "6 Hours", micro_12h: "12 Hours", micro_24h: "24 Hours",
+    std_3d: "3 Days", std_7d: "7 Days", std_14d: "14 Days",
+    ext_21d: "3 Weeks", ext_30d: "1 Month"
+  };
+
+  // Captured immediately — profile.js cleans the address bar once the
+  // profile renders, which would erase these flags if read later.
+  const RETURN_PARAMS = (function () {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      return { result: q.get("boost_result"), ref: q.get("boost_ref") };
+    } catch (e) { return { result: null, ref: null }; }
+  })();
+
+  // ------------------------------------------------------------------
+  // Styles (self-contained: nothing here depends on editing profile.css).
+  // Uses the site's theme variables with safe fallbacks, so dark mode
+  // follows the page automatically.
+  // ------------------------------------------------------------------
+  (function injectStyles() {
+    if (document.getElementById("lpb-styles")) return;
+    const css = `
+.lpb-card{background:var(--surface-soft,#faf8f2);border:1px solid var(--line,#e4dfd1);border-radius:var(--r-lg,22px);padding:16px;margin-bottom:16px;box-shadow:var(--shadow-sm,0 2px 10px rgba(17,17,17,.07))}
+.lpb-card-head{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-family:var(--font-display,inherit);font-weight:800;font-size:13px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink,#111)}
+.lpb-card-head svg{color:var(--liyog-green-dark,#228b22);flex-shrink:0}
+.lpb-card-sub{margin:0 0 6px;font-size:12.5px;line-height:1.5;color:var(--ink-soft,#625f53)}
+.lpb-row{padding:14px 0 2px}
+.lpb-row + .lpb-row{margin-top:12px;border-top:1px solid var(--line,#e4dfd1)}
+.lpb-label{display:flex;align-items:center;gap:7px;margin-bottom:10px;font-size:13px;font-weight:700;color:var(--ink,#111)}
+.lpb-label svg{color:var(--liyog-green-dark,#228b22);flex-shrink:0}
+.lpb-seg{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:4px;background:var(--surface,#fff);border:1px solid var(--line,#e4dfd1);border-radius:999px}
+.lpb-seg-btn{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;padding:11px 10px;border:none;border-radius:999px;background:transparent;color:var(--ink-soft,#625f53);font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer;transition:background .18s ease,color .18s ease,box-shadow .18s ease,transform .1s ease}
+.lpb-seg-btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lpb-seg-btn:active{transform:scale(.97)}
+.lpb-seg-btn[aria-checked="true"]{background:linear-gradient(135deg,#34bf49,#228b22);color:#fff;box-shadow:0 5px 14px rgba(34,139,34,.34)}
+.lpb-seg-btn:disabled{opacity:.45;cursor:not-allowed}
+.lpb-seg-btn svg{flex-shrink:0}
+.lpb-note{display:flex;align-items:flex-start;gap:8px;margin-top:10px;padding:10px 12px;border-radius:14px;background:rgba(255,167,38,.13);border:1px solid rgba(255,167,38,.4);color:var(--ink,#111);font-size:12px;line-height:1.5}
+.lpb-note svg{flex-shrink:0;margin-top:1px;color:#d98200}
+.lpb-switch-row{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.lpb-switch-text strong{display:block;font-size:13px;color:var(--ink,#111)}
+.lpb-switch-text span{display:block;margin-top:2px;font-size:12px;line-height:1.45;color:var(--ink-soft,#625f53)}
+.lpb-switch{position:relative;flex-shrink:0;width:56px;height:32px;padding:0;border:none;border-radius:999px;background:var(--line,#cfc9b8);cursor:pointer;transition:background .2s ease}
+.lpb-switch::after{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.28);transition:transform .2s ease}
+.lpb-switch[aria-checked="true"]{background:linear-gradient(135deg,#34bf49,#228b22)}
+.lpb-switch[aria-checked="true"]::after{transform:translateX(24px)}
+.lpb-switch:disabled{opacity:.45;cursor:not-allowed}
+.lpb-switch-state{display:block;margin-top:6px;text-align:center;font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint,#9b9686)}
+.lpb-switch-state.on{color:var(--liyog-green-dark,#228b22)}
+.lpb-switch-col{display:flex;flex-direction:column;align-items:center}
+.lpb-cta-preview{display:flex;gap:8px;margin-top:12px;padding:12px;border-radius:14px;background:var(--surface,#fff);border:1px dashed var(--line,#e4dfd1)}
+.lpb-cta-preview-label{width:100%;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint,#9b9686);margin-bottom:6px}
+.lpb-cta-preview-inner{display:flex;gap:8px;width:100%}
+.lpb-cta-pill{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;height:36px;border-radius:10px;color:#fff;font-size:12px;font-weight:700}
+.lpb-cta-pill.wa{background:linear-gradient(135deg,#2fe87a,#1da851)}
+.lpb-cta-pill.call{background:var(--liyog-blue,#1877f2)}
+.lpb-summary{margin-top:14px;padding:12px;border-radius:14px;background:var(--surface,#fff);border:1px solid var(--liyog-green,#28a428)}
+.lpb-summary-title{margin:0 0 8px;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--liyog-green-dark,#228b22)}
+.lpb-chips{display:flex;flex-wrap:wrap;gap:6px}
+.lpb-chip{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border-radius:999px;background:var(--surface-soft,#faf8f2);border:1px solid var(--line,#e4dfd1);font-size:12px;font-weight:700;color:var(--ink,#111)}
+.lpb-chip.off{color:var(--ink-faint,#9b9686);font-weight:600}
+.lpb-chip svg{flex-shrink:0;color:var(--liyog-green-dark,#228b22)}
+.lpb-skeleton{height:150px;border-radius:var(--r-lg,22px);background:linear-gradient(90deg,var(--line,#e4dfd1) 25%,var(--surface,#fff) 50%,var(--line,#e4dfd1) 75%);background-size:200% 100%;animation:lpb-shimmer 1.4s ease-in-out infinite;margin-bottom:16px}
+@keyframes lpb-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.lpb-title{font-family:var(--font-display,inherit);text-align:center;margin:0 0 4px}
+.lpb-sub{font-size:13.5px;color:var(--ink-soft,#625f53);text-align:center;line-height:1.55;margin:0 0 16px}
+.lpb-back{background:none;border:none;color:var(--ink-soft,#625f53);font-size:13px;cursor:pointer;padding:0 0 12px;font-family:inherit}
+.lpb-recap{background:var(--surface-soft,#faf8f2);border:1px solid var(--line,#e4dfd1);border-radius:var(--r-lg,22px);padding:6px 16px;margin:0 0 16px}
+.lpb-recap-row{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:11px 0;font-size:13px}
+.lpb-recap-row + .lpb-recap-row{border-top:1px solid var(--line,#e4dfd1)}
+.lpb-recap-key{color:var(--ink-soft,#625f53);flex-shrink:0}
+.lpb-recap-val{font-weight:700;color:var(--ink,#111);text-align:right;word-break:break-word}
+.lpb-recap-total .lpb-recap-val{color:var(--liyog-green-dark,#228b22);font-size:15px}
+.lpb-status{display:flex;align-items:center;gap:8px;justify-content:center;margin:0 0 14px;padding:10px 12px;border-radius:14px;font-size:13px;font-weight:700}
+.lpb-status.ok{background:rgba(40,164,40,.12);color:var(--liyog-green-dark,#228b22)}
+.lpb-status.wait{background:rgba(255,167,38,.14);color:#a96400}
+.lpb-btn-full{width:100%}
+#lpb-toast-host{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2400;display:flex;flex-direction:column;gap:8px;align-items:center;width:100%;padding:0 20px;pointer-events:none;box-sizing:border-box}
+.lpb-toast{max-width:400px;padding:13px 18px;border-radius:16px;font-size:14px;font-weight:600;color:#fff;box-shadow:0 12px 30px rgba(0,0,0,.28);background:#228b22;opacity:0;transform:translateY(12px);transition:opacity .3s ease,transform .3s ease}
+.lpb-toast.show{opacity:1;transform:translateY(0)}
+.lpb-toast.error{background:#c1271a}
+`;
+    const style = document.createElement("style");
+    style.id = "lpb-styles";
+    style.textContent = css;
+    document.head.appendChild(style);
+  })();
+
+  // ------------------------------------------------------------------
+  // Small helpers
+  // ------------------------------------------------------------------
+  function esc(str) {
+    return String(str == null ? "" : str).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function getOverlayHost() {
+    return document.querySelector(".lp-root") || document.getElementById("liyog-profile-root") || document.body;
+  }
+
+  // Prefer profile.js's shared reference-counted lock (exposed on
+  // window.LiyogProductUI) so stacked sheets never leave scroll frozen.
+  function lockBodyScroll() {
+    const ui = window.LiyogProductUI;
+    if (ui && ui.lockBodyScroll) { ui.lockBodyScroll(); return; }
+    document.body.style.overflow = "hidden";
+  }
+  function unlockBodyScroll() {
+    const ui = window.LiyogProductUI;
+    if (ui && ui.unlockBodyScroll) { ui.unlockBodyScroll(); return; }
+    const somethingStillOpen =
+      document.querySelector(".lp-sheet-overlay.lp-open") ||
+      document.querySelector(".lp-pm-overlay.lp-open") ||
+      document.querySelector(".lp-product-lightbox.lp-open");
+    if (!somethingStillOpen) document.body.style.overflow = "";
+  }
+  // Safety net: if a sheet is removed from the page while open (e.g. the
+  // brand page re-renders and wipes everything inside .lp-root), release
+  // the scroll lock it was holding. Without this, the page stays frozen.
+  function watchSheetLock(overlay) {
+    clearInterval(overlay.__lpbWatch);
+    overlay.__lpbWatch = setInterval(() => {
+      if (!overlay.classList.contains("lp-open")) { clearInterval(overlay.__lpbWatch); return; }
+      if (!overlay.isConnected) {
+        clearInterval(overlay.__lpbWatch);
+        overlay.classList.remove("lp-open");
+        unlockBodyScroll();
+      }
+    }, 400);
+  }
+  function openSheet(overlay) {
+    if (overlay.classList.contains("lp-open")) return; // never double-lock
+    overlay.classList.add("lp-open");
+    lockBodyScroll();
+    watchSheetLock(overlay);
+  }
+  function closeSheet(overlay) {
+    clearInterval(overlay.__lpbWatch);
+    if (!overlay.classList.contains("lp-open")) return;
+    overlay.classList.remove("lp-open");
+    unlockBodyScroll();
+  }
+
+  function showToast(message, type) {
+    type = type || "success";
+    const ui = window.LiyogProductUI;
+    if (ui && ui.showToast) { ui.showToast(message, type); return; }
+
+    let host = document.getElementById("lpb-toast-host");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "lpb-toast-host";
+      document.body.appendChild(host);
+    }
+    const toast = document.createElement("div");
+    toast.className = "lpb-toast" + (type === "error" ? " error" : "");
+    toast.textContent = message;
+    host.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("show"));
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => toast.remove(), 300);
+    }, 4200);
+  }
+
+  function formatPrice(amountMinorUnits, currency) {
+    const major = amountMinorUnits / 100;
+    const symbols = { NGN: "₦", GHS: "GH₵", ZAR: "R", KES: "KSh", USD: "$" };
+    const symbol = symbols[currency] || currency + " ";
+    return `${symbol}${major.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  }
+
+  function formatDuration(hours) {
+    const h = Number(hours) || 0;
+    if (h < 24) return `${h} hour${h === 1 ? "" : "s"}`;
+    const d = h / 24;
+    return Number.isInteger(d) ? `${d} day${d === 1 ? "" : "s"}` : `${h} hours`;
+  }
+
+  function prettify(slug) {
+    return String(slug || "").replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  async function fetchBoostPricing(profileId) {
+    const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
+    const res = await fetch(`${WORKER_BASE}/api/boost/pricing${qs}`);
+    if (!res.ok) throw new Error("Pricing fetch failed");
+    return res.json();
+  }
+
+  // ------------------------------------------------------------------
+  // Icons
+  // ------------------------------------------------------------------
+  const ICON = {
+    globe: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20z"/></svg>',
+    tag: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>',
+    target: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+    check: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>',
+    info: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+    tap: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
+    wa: '<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2z"/></svg>'
+  };
+
+  // ------------------------------------------------------------------
+  // Targeting state + info
+  // ------------------------------------------------------------------
+  function freshState() { return { countryMode: "own", categoryMode: "own", showCta: false }; }
+
+  // Used only if the server didn't return a `targeting` block (e.g. the
+  // worker isn't updated yet). The server stays the real authority.
+  function fallbackInfo(p) {
+    const channels = [];
+    if (p.whatsapp_number) channels.push("whatsapp");
+    if (p.phone_number) channels.push("call");
+    return {
+      ownCountry: null,
+      countryNote: "We couldn't find a country on your profile, so this boost will show to all countries. To show it only in your own country, update the Country field on your profile.",
+      ownCategory: p.business_category ? { slug: p.business_category, label: prettify(p.business_category) } : null,
+      categoryNote: "We couldn't find a category on your profile, so this boost will show in all categories.",
+      ctaAvailable: channels.length > 0,
+      ctaChannels: channels,
+      ctaNote: "Add a WhatsApp or phone number to your profile to show contact buttons on your sponsored cards."
+    };
+  }
+
+  function getInfo(overlay, p) { return overlay.__lpBoostInfo || fallbackInfo(p); }
+
+  function effectiveSelection(info, state) {
+    const countryOwn = state.countryMode === "own" && info.ownCountry;
+    const categoryOwn = state.categoryMode === "own" && info.ownCategory;
+    const cta = !!(state.showCta && info.ctaAvailable);
+    return {
+      countryLabel: countryOwn ? info.ownCountry.name : "All countries",
+      categoryLabel: categoryOwn ? info.ownCategory.label : "All categories",
+      cta,
+      ctaLabel: cta ? "Shown on your cards (" + ctaChannelText(info.ctaChannels) + ")" : "Not shown"
+    };
+  }
+
+  function ctaChannelText(channels) {
+    const names = (channels || []).map((c) => (c === "whatsapp" ? "WhatsApp" : "Call"));
+    return names.length ? names.join(" + ") : "WhatsApp / Call";
+  }
+
+  // Only INTENT is sent — the server derives every real value.
+  function payloadFromState(info, state) {
+    return {
+      country_mode: info.ownCountry ? state.countryMode : "all",
+      category_mode: info.ownCategory ? state.categoryMode : "all",
+      show_cta: !!(state.showCta && info.ctaAvailable)
+    };
+  }
+
+  function renderTargeting(overlay, p) {
+    const host = document.getElementById("lp-boost-targeting");
+    if (!host) return;
+    const info = getInfo(overlay, p);
+    const state = overlay.__lpBoostState;
+
+    if (!info.ownCountry) state.countryMode = "all";
+    if (!info.ownCategory) state.categoryMode = "all";
+    if (!info.ctaAvailable) state.showCta = false;
+
+    const sel = effectiveSelection(info, state);
+    const countryOwnLabel = info.ownCountry ? `Just ${esc(info.ownCountry.name)}` : "My country";
+    const categoryOwnLabel = info.ownCategory ? esc(info.ownCategory.label) : "My category";
+
+    const segBtn = (attr, value, active, disabled, label) =>
+      `<button type="button" role="radio" class="lpb-seg-btn" ${attr}="${value}" aria-checked="${active}" ${disabled ? "disabled" : ""}>${active ? ICON.check : ""}<span>${label}</span></button>`;
+
+    host.innerHTML = `
+      <div class="lpb-card">
+        <div class="lpb-card-head">${ICON.target}<span>Audience</span></div>
+        <p class="lpb-card-sub">Choose who sees your sponsored placement. Your own country and category are picked by default.</p>
+
+        <div class="lpb-row">
+          <div class="lpb-label">${ICON.globe}<span>Which countries?</span></div>
+          <div class="lpb-seg" role="radiogroup" aria-label="Country targeting">
+            ${segBtn("data-lpb-country", "own", state.countryMode === "own", !info.ownCountry, countryOwnLabel)}
+            ${segBtn("data-lpb-country", "all", state.countryMode === "all", false, "All countries")}
+          </div>
+          ${!info.ownCountry ? `<div class="lpb-note">${ICON.info}<span>${esc(info.countryNote || "No country found on your profile — this boost will show to all countries. Update your profile country to target only your own.")}</span></div>` : ""}
+        </div>
+
+        <div class="lpb-row">
+          <div class="lpb-label">${ICON.tag}<span>Which categories?</span></div>
+          <div class="lpb-seg" role="radiogroup" aria-label="Category targeting">
+            ${segBtn("data-lpb-category", "own", state.categoryMode === "own", !info.ownCategory, categoryOwnLabel)}
+            ${segBtn("data-lpb-category", "all", state.categoryMode === "all", false, "All categories")}
+          </div>
+          ${!info.ownCategory ? `<div class="lpb-note">${ICON.info}<span>${esc(info.categoryNote || "No category found on your profile — this boost will show in all categories.")}</span></div>` : ""}
+        </div>
+
+        <div class="lpb-row">
+          <div class="lpb-switch-row">
+            <div class="lpb-switch-text">
+              <strong>Contact buttons on sponsored cards</strong>
+              <span>Let visitors tap ${esc(ctaChannelText(info.ctaChannels))} straight from your sponsored card.</span>
+            </div>
+            <div class="lpb-switch-col">
+              <button type="button" id="lpb-cta-switch" class="lpb-switch" role="switch" aria-checked="${sel.cta}" aria-label="Show contact buttons" ${info.ctaAvailable ? "" : "disabled"}></button>
+              <span class="lpb-switch-state ${sel.cta ? "on" : ""}">${sel.cta ? "On" : "Off"}</span>
+            </div>
+          </div>
+          ${!info.ctaAvailable ? `<div class="lpb-note">${ICON.info}<span>${esc(info.ctaNote || "Add a WhatsApp or phone number to your profile to turn this on.")}</span></div>` : ""}
+          ${sel.cta ? `
+            <div class="lpb-cta-preview">
+              <div class="lpb-cta-preview-label">What visitors will see</div>
+              <div class="lpb-cta-preview-inner">
+                ${(info.ctaChannels || []).includes("whatsapp") ? `<div class="lpb-cta-pill wa">${ICON.wa}<span>WApp</span></div>` : ""}
+                ${(info.ctaChannels || []).includes("call") ? `<div class="lpb-cta-pill call">${ICON.tap}<span>Call</span></div>` : ""}
+              </div>
+            </div>` : ""}
+        </div>
+
+        <div class="lpb-summary">
+          <div class="lpb-summary-title">Your boost will show to</div>
+          <div class="lpb-chips">
+            <span class="lpb-chip">${ICON.globe}${esc(sel.countryLabel)}</span>
+            <span class="lpb-chip">${ICON.tag}${esc(sel.categoryLabel)}</span>
+            <span class="lpb-chip ${sel.cta ? "" : "off"}">${sel.cta ? ICON.check : ""}Buttons ${sel.cta ? "on" : "off"}</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    host.querySelectorAll("[data-lpb-country]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        state.countryMode = btn.dataset.lpbCountry;
+        renderTargeting(overlay, p);
+      });
+    });
+    host.querySelectorAll("[data-lpb-category]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        state.categoryMode = btn.dataset.lpbCategory;
+        renderTargeting(overlay, p);
+      });
+    });
+    const sw = host.querySelector("#lpb-cta-switch");
+    if (sw) sw.addEventListener("click", () => {
+      if (sw.disabled) return;
+      state.showCta = !state.showCta;
+      renderTargeting(overlay, p);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Main sheet
+  // ------------------------------------------------------------------
+  /**
+   * p = profile object (needs p.id, p.business_name, p.slug).
+   * options = { scope, product, keepState }.
+   */
+  function openBoostSheet(p, options) {
+    const scope = (options && options.scope) || "profile";
+    const product = (options && options.product) || null;
+    const keepState = !!(options && options.keepState);
+
+    const host = getOverlayHost();
+    let overlay = document.getElementById("lp-boost-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "lp-sheet-overlay";
+      overlay.id = "lp-boost-overlay";
+      host.appendChild(overlay);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
+    }
+
+    if (!keepState || !overlay.__lpBoostState) overlay.__lpBoostState = freshState();
+    if (!keepState) overlay.__lpBoostInfo = null;
+
+    const scopeLabel = scope === "product" && product ? `"${esc(product.name)}"` : SCOPE_LABELS[scope];
+
+    overlay.innerHTML = `
+      <div class="lp-sheet">
+        <div class="lp-sheet-top-bar">
+          <div class="lp-sheet-handle"></div>
+          <button class="lp-sheet-close" id="lp-boost-close" type="button" aria-label="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="lp-boost-sheet-content">
+          <h3 class="lpb-title">Boost ${scopeLabel}</h3>
+          <p class="lpb-sub">Get featured placement and stand out to visitors. Choose your audience, then how long to boost.</p>
+          <div id="lp-boost-targeting"><div class="lpb-skeleton"></div></div>
+          <div id="lp-boost-durations" class="lp-tiers-list">
+            <p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;grid-column:1/-1;">Loading pricing…</p>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById("lp-boost-close").addEventListener("click", () => closeSheet(overlay));
+    openSheet(overlay);
+
+    // Store scope/product so later steps can read them back.
+    overlay.dataset.scope = scope;
+    if (product) overlay.dataset.productId = product.id;
+
+    fetchBoostPricing(p.id)
+      .then((data) => {
+        overlay.__lpBoostInfo = data.targeting || null;
+        renderTargeting(overlay, p);
+
+        const listEl = document.getElementById("lp-boost-durations");
+        if (!listEl) return;
+
+        if (!data.durations || !data.durations.length) {
+          listEl.innerHTML = `<p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;grid-column:1/-1;">Boosting isn't available right now — please check back soon.</p>`;
+          return;
+        }
+
+        listEl.innerHTML = data.durations.map(durationCardHtml).join("") + customDurationHtml(data.customDuration);
+
+        listEl.querySelectorAll("[data-duration-id]").forEach((card) => {
+          card.addEventListener("click", () => {
+            openMethodChoice(overlay, p, scope, product, {
+              durationId: card.dataset.durationId,
+              amount: Number(card.dataset.amount),
+              currency: card.dataset.currency,
+              label: DURATION_LABELS[card.dataset.durationId] || card.dataset.durationId
+            });
+          });
+        });
+
+        wireCustomDurationInput(listEl, data.durations, data.customDuration);
+      })
+      .catch(() => {
+        renderTargeting(overlay, p);
+        const listEl = document.getElementById("lp-boost-durations");
+        if (listEl) listEl.innerHTML = `<p style="text-align:center;color:var(--ink-soft, #666);font-size:13px;grid-column:1/-1;">Couldn't load pricing — check your connection and try again.</p>`;
+      });
+  }
+
+  function durationCardHtml(d) {
+    const label = DURATION_LABELS[d.duration_id] || d.duration_id;
+    return `
+      <button type="button" class="lp-tier-card" data-duration-id="${esc(d.duration_id)}" data-amount="${esc(d.amount)}" data-currency="${esc(d.currency)}">
+        <div class="lp-tier-card-name">${esc(label)}</div>
+        <div class="lp-tier-card-price">${esc(formatPrice(d.amount, d.currency))}</div>
+      </button>
+    `;
+  }
+
+  function customDurationHtml(customDuration) {
+    if (!customDuration) return "";
+    const { minDays, maxDays } = customDuration;
+    return `
+      <div class="lp-boost-custom-duration">
+        <label for="lp-boost-custom-days" class="lp-boost-custom-label">Need longer? Enter a custom duration (${Math.ceil(minDays)}–${maxDays} days)</label>
+        <div class="lp-boost-custom-row">
+          <input type="number" id="lp-boost-custom-days" min="${Math.ceil(minDays)}" max="${maxDays}" placeholder="e.g. 60" class="lp-field-input lp-boost-custom-input">
+          <span class="lp-boost-custom-unit">days</span>
+        </div>
+        <p class="lp-boost-custom-hint">For serious sellers — bulk pricing kicks in the longer you go.</p>
+        <p id="lp-boost-custom-preview" class="lp-boost-custom-preview"></p>
+        <button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-boost-custom-continue" style="width:100%;margin-top:10px;" disabled>
+          <span>Continue with Custom Duration</span>
+        </button>
+      </div>
+    `;
+  }
+
+  function wireCustomDurationInput(listEl, durations, customDuration) {
+    const input = document.getElementById("lp-boost-custom-days");
+    const preview = document.getElementById("lp-boost-custom-preview");
+    const continueBtn = document.getElementById("lp-boost-custom-continue");
+    if (!input || !customDuration) return;
+
+    let debounceTimer = null;
+    const { minDays, maxDays } = customDuration;
+
+    input.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      const days = Number(input.value);
+      if (!days || days < minDays) {
+        preview.textContent = days ? `Minimum is ${Math.ceil(minDays)} days — pick a listed duration for anything shorter.` : "";
+        preview.className = days ? "lp-boost-custom-preview lp-boost-custom-preview-error" : "lp-boost-custom-preview";
+        continueBtn.disabled = true;
+        return;
+      }
+      if (days > maxDays) {
+        preview.textContent = `Maximum is ${maxDays} days.`;
+        preview.className = "lp-boost-custom-preview lp-boost-custom-preview-error";
+        continueBtn.disabled = true;
+        return;
+      }
+      debounceTimer = setTimeout(() => {
+        preview.textContent = "Calculating…";
+        preview.className = "lp-boost-custom-preview";
+        try {
+          // Preview only — the server recalculates the real price.
+          const amount = estimateCustomPrice(durations, days, minDays - 1, maxDays);
+          const currency = durations[0].currency;
+          preview.textContent = `Estimated: ${formatPrice(amount, currency)}`;
+          continueBtn.disabled = false;
+          continueBtn.dataset.days = days;
+          continueBtn.dataset.amount = amount;
+          continueBtn.dataset.currency = currency;
+        } catch (e) {
+          preview.textContent = "Couldn't calculate — try a listed duration instead.";
+          preview.className = "lp-boost-custom-preview lp-boost-custom-preview-error";
+          continueBtn.disabled = true;
+        }
+      }, 350);
+    });
+
+    continueBtn.addEventListener("click", () => {
+      continueBtn.dispatchEvent(new CustomEvent("lp-boost-custom-chosen", {
+        bubbles: true,
+        detail: {
+          customDays: Number(continueBtn.dataset.days),
+          amount: Number(continueBtn.dataset.amount),
+          currency: continueBtn.dataset.currency
+        }
+      }));
+    });
+  }
+
+  function estimateCustomPrice(durations, customDays, longestDays, maxDays, maxDiscountPct = 35) {
+    const sorted = [...durations].sort((a, b) => a.hours - b.hours);
+    const longest = sorted[sorted.length - 1];
+    const longestTierDays = longest.hours / 24;
+    const baseRate = longest.amount / longestTierDays;
+    const denominator = Math.max(1, maxDays - longestTierDays);
+    const progress = Math.min(1, (customDays - longestTierDays) / denominator);
+    const discount = (maxDiscountPct / 100) * progress;
+    const effectiveRate = baseRate * (1 - discount);
+    return Math.ceil(effectiveRate * customDays);
+  }
+
+  // ------------------------------------------------------------------
+  // Recap rendering (used before payment, for manual, and after Paystack)
+  // ------------------------------------------------------------------
+  function recapRowsHtml(rows) {
+    return `<div class="lpb-recap">${rows.map((r) =>
+      `<div class="lpb-recap-row ${r.total ? "lpb-recap-total" : ""}"><span class="lpb-recap-key">${esc(r.key)}</span><span class="lpb-recap-val">${esc(r.value)}</span></div>`
+    ).join("")}</div>`;
+  }
+
+  /** Server recap object -> display rows. */
+  function rowsFromServerRecap(recap, scopeText, durationText, priceText, extra) {
+    const countries = recap.countries === "ALL" ? "All countries" : (recap.countries || []).map((c) => c.name).join(", ");
+    const categories = recap.categories === "ALL" ? "All categories" : (recap.categories || []).map((c) => c.label).join(", ");
+    const cta = recap.showCta ? "Shown on your cards (" + ctaChannelText(recap.ctaChannels) + ")" : "Not shown";
+    const rows = [
+      { key: "Boosting", value: scopeText },
+      { key: "Duration", value: durationText },
+      { key: "Country", value: countries },
+      { key: "Category", value: categories },
+      { key: "Contact buttons", value: cta }
+    ];
+    if (extra && extra.length) rows.push(...extra);
+    rows.push({ key: "Price", value: priceText, total: true });
+    return rows;
+  }
+
+  function scopeTextFor(scope, productName) {
+    if (scope === "product" && productName) return `Product: ${productName}`;
+    return SCOPE_LABELS[scope] || scope;
+  }
+
+  function notesHtml(notes) {
+    return (notes || []).filter(Boolean).map((n) => `<div class="lpb-note">${ICON.info}<span>${esc(n)}</span></div>`).join("");
+  }
+
+  // ------------------------------------------------------------------
+  // Review + payment step
+  // ------------------------------------------------------------------
+  function openMethodChoice(overlay, p, scope, product, duration) {
+    const info = getInfo(overlay, p);
+    const state = overlay.__lpBoostState || freshState();
+    const sel = effectiveSelection(info, state);
+    const payload = payloadFromState(info, state);
+    const priceText = formatPrice(duration.amount, duration.currency);
+
+    const rows = [
+      { key: "Boosting", value: scopeTextFor(scope, product && product.name) },
+      { key: "Duration", value: duration.label },
+      { key: "Country", value: sel.countryLabel },
+      { key: "Category", value: sel.categoryLabel },
+      { key: "Contact buttons", value: sel.ctaLabel },
+      { key: "Price", value: priceText, total: true }
+    ];
+
+    const pendingNotes = [];
+    if (!info.ownCountry) pendingNotes.push(info.countryNote);
+    if (!info.ownCategory) pendingNotes.push(info.categoryNote);
+
+    overlay.querySelector(".lp-boost-sheet-content").innerHTML = `
+      <button type="button" id="lp-boost-back" class="lpb-back">&larr; Back</button>
+      <h3 class="lpb-title">Review your boost</h3>
+      <p class="lpb-sub">Check the details, then choose how to pay.</p>
+      ${recapRowsHtml(rows)}
+      ${notesHtml(pendingNotes)}
+      <div style="height:14px"></div>
+      <button type="button" class="lp-btn lp-btn-primary lpb-btn-full" id="lp-boost-pay-paystack" style="margin-bottom:10px;">
+        <span>Pay Now — Card / Bank</span>
+      </button>
+      <button type="button" class="lp-btn lp-btn-outline-subtle lpb-btn-full" id="lp-boost-pay-manual">
+        <span>Pay via WhatsApp (Manual)</span>
+      </button>
+    `;
+
+    document.getElementById("lp-boost-back").addEventListener("click", () => openBoostSheet(p, { scope, product, keepState: true }));
+
+    const baseBody = () => ({
+      profile_id: p.id,
+      scope,
+      product_id: product ? product.id : null,
+      duration_id: duration.durationId || null,
+      custom_days: duration.customDays || null,
+      ...payload
+    });
+
+    document.getElementById("lp-boost-pay-paystack").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.querySelector("span").textContent = "Starting checkout…";
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/boost/checkout`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...baseBody(), method: "paystack" })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(data.error || "Couldn't start payment. Please try again.", "error");
+          btn.disabled = false;
+          btn.querySelector("span").textContent = "Pay Now — Card / Bank";
+          return;
+        }
+        window.location.href = data.authorizationUrl;
+      } catch (err) {
+        showToast("Couldn't start payment. Please check your connection.", "error");
+        btn.disabled = false;
+        btn.querySelector("span").textContent = "Pay Now — Card / Bank";
+      }
+    });
+
+    document.getElementById("lp-boost-pay-manual").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/boost/checkout`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...baseBody(), method: "manual" })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(data.error || "Couldn't start this — please try again.", "error");
+          btn.disabled = false;
+          return;
+        }
+        openManualHandoff(overlay, p, scope, product, data.purchase, duration);
+      } catch (err) {
+        showToast("Couldn't start this — please check your connection.", "error");
+        btn.disabled = false;
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Manual handoff — shows the SERVER's recap (what was actually stored)
+  // and puts the same details in the WhatsApp message.
+  // ------------------------------------------------------------------
+  function openManualHandoff(overlay, p, scope, product, purchase, duration) {
+    const priceText = formatPrice(purchase.amount, purchase.currency);
+    const recap = purchase.recap || null;
+    const scopeText = scopeTextFor(scope, product && product.name);
+    const durationText = formatDuration(purchase.hours);
+
+    let rows;
+    let notes = [];
+    if (recap) {
+      rows = rowsFromServerRecap(recap, scopeText, durationText, priceText, [{ key: "Reference", value: purchase.id.slice(0, 8).toUpperCase() }]);
+      notes = recap.notes || [];
+    } else {
+      rows = [
+        { key: "Boosting", value: scopeText },
+        { key: "Duration", value: durationText },
+        { key: "Reference", value: purchase.id.slice(0, 8).toUpperCase() },
+        { key: "Price", value: priceText, total: true }
+      ];
+    }
+
+    overlay.querySelector(".lp-boost-sheet-content").innerHTML = `
+      <h3 class="lpb-title">Almost done</h3>
+      <p class="lpb-sub">Here's what we've saved for your boost. Message us on WhatsApp with your payment and we'll activate it shortly after.</p>
+      ${recapRowsHtml(rows)}
+      ${notesHtml(notes)}
+      <div style="height:14px"></div>
+      <button type="button" class="lp-btn lp-btn-primary lpb-btn-full" id="lp-boost-manual-whatsapp">
+        <span>Message Us on WhatsApp</span>
+      </button>
+    `;
+
+    document.getElementById("lp-boost-manual-whatsapp").addEventListener("click", async () => {
+      const countries = recap ? (recap.countries === "ALL" ? "All countries" : (recap.countries || []).map((c) => c.name).join(", ")) : "—";
+      const categories = recap ? (recap.categories === "ALL" ? "All categories" : (recap.categories || []).map((c) => c.label).join(", ")) : "—";
+      const cta = recap ? (recap.showCta ? "Yes (" + ctaChannelText(recap.ctaChannels) + ")" : "No") : "—";
+
+      const lines = [
+        `I'd like to boost ${scope === "product" && product ? `"${product.name}"` : SCOPE_LABELS[scope]}.`,
+        `Brand: ${p.business_name} (${WORKER_BASE}/b/${p.slug})`,
+        `Duration: ${durationText}`,
+        `Amount: ${priceText}`,
+        `Country targeting: ${countries}`,
+        `Category targeting: ${categories}`,
+        `Contact buttons on cards: ${cta}`,
+        `Purchase ID: ${purchase.id}`
+      ];
+      const waText = lines.join("\n");
+
+      let adminNumber = "";
+      try {
+        const cfgRes = await fetch(`${WORKER_BASE}/api/boost-config`);
+        const cfg = await cfgRes.json();
+        adminNumber = cfg.adminWhatsapp || "";
+      } catch (e) { /* wa.me still opens a compose screen without a number */ }
+
+      window.open(`https://wa.me/${adminNumber}?text=${encodeURIComponent(waText)}`, "_blank");
+      closeSheet(overlay);
+    });
+  }
+
+  // Custom-duration "Continue" event -> same review step as listed durations.
+  document.addEventListener("lp-boost-custom-chosen", (e) => {
+    const overlay = document.getElementById("lp-boost-overlay");
+    if (!overlay || !overlay.__lpBoostContext) return;
+    const { p, scope, product } = overlay.__lpBoostContext;
+    openMethodChoice(overlay, p, scope, product, {
+      customDays: e.detail.customDays,
+      amount: e.detail.amount,
+      currency: e.detail.currency,
+      label: `${e.detail.customDays} Days (Custom)`
+    });
+  });
+
+  // Public entry point wrapper (unchanged signature): resets the
+  // targeting state for every fresh open from outside, and stashes the
+  // context the custom-duration listener above needs.
+  function openBoostSheetWithContext(p, options) {
+    openBoostSheet(p, { scope: options && options.scope, product: options && options.product, keepState: false });
+    const overlay = document.getElementById("lp-boost-overlay");
+    if (overlay) {
+      overlay.__lpBoostContext = {
+        p,
+        scope: (options && options.scope) || "profile",
+        product: (options && options.product) || null
+      };
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Returning from Paystack: visible toast + recap of what was paid for.
+  // ------------------------------------------------------------------
+  // The loading skeleton ALSO has a .lp-root, so waiting for .lp-root was
+  // not enough: sheets/toasts added to the skeleton were wiped when the
+  // real profile rendered. The real profile always contains the brand
+  // name element, so wait for that instead (profile.js binds everything
+  // in the same tick it inserts the template).
+  function waitForProfileRendered(cb) {
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      const rendered = !!document.querySelector("[data-bind='business_name']");
+      if (rendered || tries > 80) {
+        clearInterval(timer);
+        cb(rendered);
+      }
+    }, 250);
+  }
+
+  function openRecapSheet(data) {
+    const host = getOverlayHost();
+    let overlay = document.getElementById("lp-boost-recap-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "lp-sheet-overlay";
+      overlay.id = "lp-boost-recap-overlay";
+      host.appendChild(overlay);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
+    }
+
+    const recap = data.recap;
+    const confirmed = data.status === "confirmed";
+    const scopeText = scopeTextFor(recap.scope, recap.productName);
+    const extra = [];
+    if (data.chargedNgn) extra.push({ key: "Charged (NGN)", value: formatPrice(data.chargedNgn, "NGN") });
+    const rows = rowsFromServerRecap(recap, scopeText, formatDuration(recap.hours), formatPrice(recap.amount, recap.currency), extra);
+
+    overlay.innerHTML = `
+      <div class="lp-sheet">
+        <div class="lp-sheet-top-bar">
+          <div class="lp-sheet-handle"></div>
+          <button class="lp-sheet-close" id="lp-boost-recap-close" type="button" aria-label="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <h3 class="lpb-title">${confirmed ? "Boost confirmed" : "Payment received"}</h3>
+        <div class="lpb-status ${confirmed ? "ok" : "wait"}">${confirmed ? ICON.check + "<span>Your boost is active</span>" : "<span>We're confirming your payment — this can take a minute</span>"}</div>
+        ${recapRowsHtml(rows)}
+        ${notesHtml(recap.notes)}
+        <button type="button" class="lp-btn lp-btn-primary lpb-btn-full" id="lp-boost-recap-done" style="margin-top:6px;"><span>Done</span></button>
+      </div>
+    `;
+    document.getElementById("lp-boost-recap-close").addEventListener("click", () => closeSheet(overlay));
+    document.getElementById("lp-boost-recap-done").addEventListener("click", () => closeSheet(overlay));
+    openSheet(overlay);
+  }
+
+  async function handleReturnFromCheckout() {
+    const { result, ref } = RETURN_PARAMS;
+    if (!result) return;
+
+    waitForProfileRendered(async (rendered) => {
+      if (result === "success") {
+        showToast("Payment confirmed — your boost is being activated!", "success");
+        if (ref && rendered) {
+          try {
+            const res = await fetch(`${WORKER_BASE}/api/boost/recap?ref=${encodeURIComponent(ref)}`, { credentials: "include" });
+            if (res.ok) {
+              const data = await res.json();
+              // Re-check: only open the sheet if the real page is still there.
+              if (data && data.success && data.recap && document.querySelector("[data-bind='business_name']")) openRecapSheet(data);
+            }
+          } catch (e) { /* recap is a bonus — the toast above already told them */ }
+        }
+      } else {
+        showToast("Payment couldn't be confirmed. If you were charged, message us on WhatsApp.", "error");
+      }
+    });
+  }
+
+  handleReturnFromCheckout();
+
+  window.LiyogBoostUI = {
+    version: "3a.3",
+    openBoostSheet: openBoostSheetWithContext
+  };
+  try { console.info("[LiyogBoostUI] 3a.3 loaded"); } catch (e) {}
+})();
