@@ -952,7 +952,7 @@ export async function handleBoostRecap(request, env, userId) {
 
 // =====================================================================
 // Boost DISPLAY — the fair-rotation selection primitive.
-// *** UNCHANGED in 3a. Targeting-aware serving is part 3b. ***
+// *** UNCHANGED — kept as the automatic fallback for the 3b engine below. ***
 // =====================================================================
 
 const POOL_MULTIPLIER = 3;
@@ -992,6 +992,166 @@ export async function selectBoostedItems(env, { scope, excludeProfileId = null, 
   }
 
   return selected;
+}
+
+// =====================================================================
+// 3b — TARGETED SERVING ENGINE  (ADDITIVE — selectBoostedItems above is
+// untouched and remains the automatic fallback if anything below fails
+// or the feature switch is off.)
+//
+//  Gate (never relaxed):  the boost targets ALL countries, or includes
+//                         the viewer's country. Unknown viewer country
+//                         -> only ALL-country boosts are eligible.
+//  Tier 0: the boost chose THIS page's category.
+//  Tier 1: the boost targets ALL categories (or the page has no category).
+//  Tier 2: the boost chose a different category — only used to fill
+//          whatever slots tiers 0 and 1 could not.
+//  Within a tier: PACING order — boosts that are behind their fair
+//          delivery rate (impressions per hour paid-for) go first, so a
+//          brand-new boost can't starve older paid boosts and nobody is
+//          left unseen. Random tiebreak + a small shuffled window keep
+//          simultaneous visitors from all receiving identical strips.
+//  One card per product/brand (stacked boosts no longer duplicate).
+//
+//  Switch:  app_settings  boost_targeting_enabled = '1'  (default OFF).
+// =====================================================================
+
+const SMART_FLAG_KEY = "boost_targeting_enabled";
+let smartFlagCache = { value: false, at: 0 };
+
+/** Feature switch, cached ~30s per isolate so it costs ~0 queries. */
+export async function isTargetingEnabled(env) {
+  const now = Date.now();
+  if (now - smartFlagCache.at < 30000) return smartFlagCache.value;
+  const raw = await getSettingLocal(env, SMART_FLAG_KEY, "0");
+  const value = raw === "1" || raw === "true" || raw === "on";
+  smartFlagCache = { value, at: now };
+  return value;
+}
+
+/** A page category must look like a slug; anything else is ignored. */
+export function sanitizePageCategory(raw) {
+  const s = String(raw == null ? "" : raw).toLowerCase().trim();
+  return /^[a-z0-9_-]{1,40}$/.test(s) ? s : null;
+}
+
+// LIKE pattern matching a quoted member of a stored JSON array, with
+// LIKE wildcards escaped (slugs may contain "_").
+function jsonMemberLike(value) {
+  return `%"${String(value).replace(/[\\%_]/g, (c) => "\\" + c)}"%`;
+}
+
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+async function runSmartSelection(env, { scope, excludeProfileId = null, limit = 4, viewerCountry = null, pageCategory = null, dryRun = false }) {
+  const poolSize = Math.max(24, limit * 6);
+
+  // Placeholder order must follow the SQL text order: SELECT -> WHERE -> LIMIT.
+  const binds = [];
+  let tierSql = "1";
+  if (pageCategory) {
+    tierSql = `CASE
+        WHEN target_categories LIKE ? ESCAPE '\\' THEN 0
+        WHEN target_categories IS NULL OR target_categories = '' OR target_categories = 'ALL' THEN 1
+        ELSE 2 END`;
+    binds.push(jsonMemberLike(pageCategory));
+  }
+
+  const where = ["scope = ?", "expires_at > datetime('now')"];
+  binds.push(scope);
+  if (excludeProfileId) { where.push("profile_id != ?"); binds.push(excludeProfileId); }
+  if (viewerCountry) {
+    where.push("(target_countries IS NULL OR target_countries = '' OR target_countries = 'ALL' OR target_countries LIKE ? ESCAPE '\\')");
+    binds.push(jsonMemberLike(viewerCountry));
+  } else {
+    where.push("(target_countries IS NULL OR target_countries = '' OR target_countries = 'ALL')");
+  }
+  binds.push(poolSize);
+
+  const { results: pool } = await env.DB.prepare(
+    `SELECT id, profile_id, product_id, scope, boosted_at, expires_at, impression_count,
+            target_countries, target_categories, show_cta,
+            ${tierSql} AS tier,
+            (COALESCE(impression_count, 0) * 1.0) /
+              MAX(1.0, (julianday('now') - julianday(COALESCE(boosted_at, datetime('now', '-1 hour')))) * 24.0) AS pace
+     FROM boost_log
+     WHERE ${where.join(" AND ")}
+     ORDER BY tier ASC, pace ASC, RANDOM()
+     LIMIT ?`
+  ).bind(...binds).all();
+
+  const picked = [];
+  if (pool.length) {
+    const seenKeys = new Set();
+    const brandCount = {};
+    const perBrandCap = scope === "product" ? 2 : 1;
+    const keyOf = (row) => (scope === "product" ? row.product_id : row.profile_id);
+
+    const take = (row, enforceCap) => {
+      const key = keyOf(row);
+      if (!key || seenKeys.has(key)) return;
+      if (enforceCap && (brandCount[row.profile_id] || 0) >= perBrandCap) return;
+      seenKeys.add(key);
+      brandCount[row.profile_id] = (brandCount[row.profile_id] || 0) + 1;
+      picked.push(row);
+    };
+
+    for (const tier of [0, 1, 2]) {
+      if (picked.length >= limit) break;
+      const group = pool.filter((r) => Number(r.tier) === tier);
+      if (!group.length) continue;
+      const windowSize = Math.max(limit * 2, 8);
+      const ordered = shuffleInPlace(group.slice(0, windowSize)).concat(group.slice(windowSize));
+      for (const row of ordered) {
+        if (picked.length >= limit) break;
+        take(row, true);
+      }
+    }
+    // Strip still short and one brand dominated the pool: relax the
+    // per-brand cap (never the per-product dedupe) so the strip fills.
+    if (picked.length < limit && scope === "product") {
+      for (const row of pool) {
+        if (picked.length >= limit) break;
+        take(row, false);
+      }
+    }
+  }
+
+  if (picked.length && !dryRun) {
+    const ids = picked.map((s) => s.id);
+    const placeholders = ids.map(() => "?").join(",");
+    await env.DB.prepare(
+      `UPDATE boost_log SET impression_count = impression_count + 1, last_shown_at = datetime('now') WHERE id IN (${placeholders})`
+    ).bind(...ids).run();
+  }
+
+  return { picked, pool };
+}
+
+/** Targeted selection. Returns the chosen boost_log rows (same shape the
+ *  legacy selector returns, plus tier / pace / show_cta). May throw —
+ *  callers fall back to selectBoostedItems. */
+export async function selectBoostedItemsSmart(env, opts) {
+  const { picked } = await runSmartSelection(env, opts);
+  return picked;
+}
+
+/** Admin-only explanation: same ranking, but never counts impressions. */
+export async function explainSmartSelection(env, opts) {
+  const { picked, pool } = await runSmartSelection(env, { ...opts, dryRun: true });
+  const pickedIds = new Set(picked.map((p) => p.id));
+  return pool.map((r) => ({
+    boost_id: r.id, profile_id: r.profile_id, product_id: r.product_id,
+    tier: Number(r.tier), pace: Number(Number(r.pace).toFixed(4)),
+    impressions: r.impression_count, countries: r.target_countries, categories: r.target_categories,
+    show_cta: r.show_cta, selected: pickedIds.has(r.id)
+  }));
 }
 
 async function getSettingLocal(env, key, fallback) {
