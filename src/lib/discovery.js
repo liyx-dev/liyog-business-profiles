@@ -1,24 +1,141 @@
 // =====================================================================
-// LIYOG WORLD — src/lib/discovery.js
+// LIYOG WORLD — src/lib/discovery.js   (3b-1: targeted serving)
 // Assembles what actually gets DISPLAYED for boosted items: joins the
-// fair-rotation selections from boost.js's selectBoostedItems with
-// real profile/product data, and gracefully fills any remaining slots
-// with regular (non-boosted) items so a strip never looks sparse or
-// broken while boost adoption is still growing.
+// fair-rotation selections from boost.js with real profile/product data,
+// and gracefully fills any remaining slots with regular (non-boosted)
+// items so a strip never looks sparse or broken.
 //
-// This is deliberately a separate file from boost.js — boost.js owns
-// the fairness/rotation MECHANISM (domain-agnostic, works on raw
-// boost_log rows), this file owns turning that into something a page
-// can actually render (profile cards, product cards).
+// 3b-1 CHANGES (everything else is as before):
+//  - Viewer country is decided HERE, on the server, never by the browser:
+//      registered viewer -> country on their own brand profile,
+//      else / empty      -> Cloudflare's geo-detection of the request.
+//  - The page's category arrives as ?category=<slug> (validated).
+//  - When the switch app_settings.boost_targeting_enabled = '1', boosts
+//    are chosen by the targeted engine in boost.js. If that switch is
+//    off — or the engine ever throws — the original selector is used,
+//    so a bug here can never blank out a strip.
+//  - Fillers prefer the page's category when one is known.
+//  - Admin-only testing: send header x-admin-secret and
+//      ?debug=1            -> adds a _debug block explaining the ranking
+//                             (never counts impressions)
+//      &force=1            -> run the targeted engine even if switched off
+//      &country=NG|NONE    -> pretend to be a viewer from that country
 // =====================================================================
 
-import { selectBoostedItems } from "./boost.js";
+import {
+  selectBoostedItems, selectBoostedItemsSmart, explainSmartSelection,
+  isTargetingEnabled, sanitizePageCategory, resolveProfileCountry, COUNTRY_NAMES
+} from "./boost.js";
+import { verifySessionToken } from "./auth.js";
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json" }
+    // Results now vary per viewer (country / category) — never let a
+    // shared cache hand one viewer's strip to another.
+    headers: { "content-type": "application/json", "cache-control": "private, no-store" }
   });
+}
+
+function getCookie(request, name) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const match = cookieHeader.match(new RegExp(`${name}=([^;]+)`));
+  return match ? match[1] : null;
+}
+
+// ---------------------------------------------------------------------
+// Serving context — who is looking, and at what kind of page.
+// ---------------------------------------------------------------------
+
+async function detectViewerCountry(request, env) {
+  // 1) Registered viewer: the country on their own brand profile.
+  try {
+    const token = getCookie(request, "liyog_session");
+    if (token) {
+      const userId = await verifySessionToken(env, token);
+      if (userId) {
+        const { results } = await env.DB.prepare(
+          "SELECT store_country, map_address, store_address FROM profiles WHERE owner_id = ? AND is_active = 1 ORDER BY created_at ASC LIMIT 5"
+        ).bind(userId).all();
+        for (const row of results) {
+          const c = resolveProfileCountry(row);
+          if (c) return { code: c.code, source: "viewer_profile" };
+        }
+      }
+    }
+  } catch (e) { /* fall through to geo-detection */ }
+
+  // 2) Everyone else (and registered viewers with no country on file).
+  const geo = request.cf && request.cf.country ? String(request.cf.country).toUpperCase() : null;
+  if (geo && COUNTRY_NAMES[geo]) return { code: geo, source: "geo" };
+
+  // 3) Unknown (VPN/Tor/odd network): only "All countries" boosts qualify.
+  return { code: null, source: "unknown" };
+}
+
+async function getServingContext(request, env, url) {
+  const adminOk = !!env.ADMIN_SECRET && request.headers.get("x-admin-secret") === env.ADMIN_SECRET;
+  const debug = adminOk && url.searchParams.get("debug") === "1";
+  const forced = adminOk && url.searchParams.get("force") === "1";
+
+  let enabled = false;
+  try { enabled = forced || await isTargetingEnabled(env); } catch (e) { enabled = false; }
+
+  const serving = {
+    useSmart: enabled, viewerCountry: null, countrySource: "off",
+    pageCategory: null, dryRun: debug, debug, forced
+  };
+  if (!enabled) return serving;
+
+  serving.pageCategory = sanitizePageCategory(url.searchParams.get("category"));
+
+  const override = adminOk ? (url.searchParams.get("country") || "").toUpperCase() : "";
+  if (override) {
+    serving.viewerCountry = COUNTRY_NAMES[override] ? override : null;
+    serving.countrySource = "admin_override";
+  } else {
+    const v = await detectViewerCountry(request, env);
+    serving.viewerCountry = v.code;
+    serving.countrySource = v.source;
+  }
+  return serving;
+}
+
+/** Targeted engine when switched on; original selector otherwise — and
+ *  as an automatic fallback if the targeted engine throws for any reason. */
+async function pickBoosts(env, serving, { scope, excludeProfileId, limit }) {
+  if (serving.useSmart) {
+    try {
+      const opts = {
+        scope, excludeProfileId, limit,
+        viewerCountry: serving.viewerCountry,
+        pageCategory: serving.pageCategory,
+        dryRun: serving.dryRun
+      };
+      if (serving.debug) {
+        serving.explain = serving.explain || {};
+        serving.explain[scope] = await explainSmartSelection(env, opts);
+      }
+      return await selectBoostedItemsSmart(env, opts);
+    } catch (err) {
+      console.error("Targeted boost selection failed — using legacy selector:", err);
+      serving.fellBack = true;
+    }
+  }
+  return selectBoostedItems(env, { scope, excludeProfileId, limit });
+}
+
+function withDebug(payload, serving) {
+  if (!serving.debug) return payload;
+  return {
+    ...payload,
+    _debug: {
+      engine: serving.useSmart && !serving.fellBack ? "targeted" : "legacy",
+      forced: serving.forced, fellBack: !!serving.fellBack,
+      viewerCountry: serving.viewerCountry, countrySource: serving.countrySource,
+      pageCategory: serving.pageCategory, ranking: serving.explain || null
+    }
+  };
 }
 
 /**
@@ -27,12 +144,13 @@ function jsonResponse(data, status = 200) {
  * excludeProfileId keeps a profile from ever seeing itself sponsored
  * on its own page.
  */
-export async function handleSponsoredProfiles(request, env) {
+export async function handleSponsoredProfiles(request, env, servingOverride = null) {
   const url = new URL(request.url);
   const excludeProfileId = url.searchParams.get("exclude");
   const limit = Math.min(20, Math.max(1, Number(url.searchParams.get("limit")) || 4));
+  const serving = servingOverride || await getServingContext(request, env, url);
 
-  const boosted = await selectBoostedItems(env, { scope: "profile", excludeProfileId, limit });
+  const boosted = await pickBoosts(env, serving, { scope: "profile", excludeProfileId, limit });
   const boostedProfiles = await hydrateProfiles(env, boosted.map((b) => b.profile_id));
 
   let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true }));
@@ -40,20 +158,15 @@ export async function handleSponsoredProfiles(request, env) {
   if (combined.length < limit) {
     const filler = await fillWithRegularProfiles(env, {
       excludeIds: [...combined.map((p) => p.id), excludeProfileId].filter(Boolean),
-      limit: limit - combined.length
+      limit: limit - combined.length,
+      pageCategory: serving.useSmart ? serving.pageCategory : null
     });
     combined = combined.concat(filler.map((p) => ({ ...p, isSponsored: false })));
   }
 
-  return jsonResponse({ profiles: combined });
+  return jsonResponse(withDebug({ profiles: combined }, serving));
 }
 
-/**
- * Sponsored PRODUCTS strip — for a catalogue/product page, or the
- * Products tab of Discover. excludeProfileId excludes products
- * belonging to the profile currently being viewed (so a shop doesn't
- * see its own products labeled "sponsored" on its own catalogue page).
- */
 /**
  * Premium ad-suppression check — a SINGLE point of control for a
  * future feature: profiles on a paid "no ads on my catalogue/product
@@ -80,14 +193,21 @@ async function isAdSuppressed(env, profileId) {
   return false;
 }
 
-export async function handleSponsoredProducts(request, env) {
+/**
+ * Sponsored PRODUCTS strip — for a catalogue/product page, or the
+ * Products tab of Discover. excludeProfileId excludes products
+ * belonging to the profile currently being viewed (so a shop doesn't
+ * see its own products labeled "sponsored" on its own catalogue page).
+ */
+export async function handleSponsoredProducts(request, env, servingOverride = null) {
   const url = new URL(request.url);
   const excludeProfileId = url.searchParams.get("exclude");
   const limit = Math.min(20, Math.max(1, Number(url.searchParams.get("limit")) || 8));
 
   if (await isAdSuppressed(env, excludeProfileId)) return jsonResponse({ products: [] });
+  const serving = servingOverride || await getServingContext(request, env, url);
 
-  const boosted = await selectBoostedItems(env, { scope: "product", excludeProfileId, limit });
+  const boosted = await pickBoosts(env, serving, { scope: "product", excludeProfileId, limit });
   const boostedProducts = await hydrateProducts(env, boosted.map((b) => b.product_id));
 
   let combined = boostedProducts.map((p) => ({ ...p, isSponsored: true }));
@@ -96,29 +216,29 @@ export async function handleSponsoredProducts(request, env) {
     const filler = await fillWithRegularProducts(env, {
       excludeIds: combined.map((p) => p.id),
       excludeProfileId,
-      limit: limit - combined.length
+      limit: limit - combined.length,
+      pageCategory: serving.useSmart ? serving.pageCategory : null
     });
     combined = combined.concat(filler.map((p) => ({ ...p, isSponsored: false })));
   }
 
-  return jsonResponse({ products: combined });
+  return jsonResponse(withDebug({ products: combined }, serving));
 }
 
 /**
  * Sponsored CATALOGUES strip — "check out this shop's full catalogue"
  * cards, distinct from individual product cards. Same profile data as
- * handleSponsoredProfiles but framed for catalogue browsing (Discover
- * page's "Catalogues" tab links to /b/{slug}#products, not the bare
- * profile).
+ * handleSponsoredProfiles but framed for catalogue browsing.
  */
-export async function handleSponsoredCatalogues(request, env) {
+export async function handleSponsoredCatalogues(request, env, servingOverride = null) {
   const url = new URL(request.url);
   const excludeProfileId = url.searchParams.get("exclude");
   const limit = Math.min(20, Math.max(1, Number(url.searchParams.get("limit")) || 4));
 
   if (await isAdSuppressed(env, excludeProfileId)) return jsonResponse({ catalogues: [] });
+  const serving = servingOverride || await getServingContext(request, env, url);
 
-  const boosted = await selectBoostedItems(env, { scope: "catalogue", excludeProfileId, limit });
+  const boosted = await pickBoosts(env, serving, { scope: "catalogue", excludeProfileId, limit });
   const boostedProfiles = await hydrateProfiles(env, boosted.map((b) => b.profile_id));
 
   let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true }));
@@ -127,12 +247,13 @@ export async function handleSponsoredCatalogues(request, env) {
     const filler = await fillWithRegularProfiles(env, {
       excludeIds: [...combined.map((p) => p.id), excludeProfileId].filter(Boolean),
       limit: limit - combined.length,
-      requireProducts: true // catalogue filler should have actual products to show, unlike a plain profile filler
+      requireProducts: true, // catalogue filler should have actual products to show
+      pageCategory: serving.useSmart ? serving.pageCategory : null
     });
     combined = combined.concat(filler.map((p) => ({ ...p, isSponsored: false })));
   }
 
-  return jsonResponse({ catalogues: combined });
+  return jsonResponse(withDebug({ catalogues: combined }, serving));
 }
 
 // ---------------------------------------------------------------------
@@ -148,10 +269,8 @@ async function hydrateProfiles(env, profileIds) {
      WHERE id IN (${placeholders}) AND moderation_status = 'approved' AND is_active = 1`
   ).bind(...profileIds).all();
 
-  // Preserve the fair-rotation order selectBoostedItems already
-  // decided — the SQL IN() clause does NOT guarantee row order, so
-  // without this re-sort the fairness work upstream would be silently
-  // discarded by however SQLite happens to return matching rows.
+  // Preserve the fair-rotation order the selector already decided — the
+  // SQL IN() clause does NOT guarantee row order.
   const byId = {};
   results.forEach((r) => { byId[r.id] = r; });
   return profileIds.map((id) => byId[id]).filter(Boolean);
@@ -177,37 +296,46 @@ async function hydrateProducts(env, productIds) {
 // ---------------------------------------------------------------------
 // Graceful fill — when there aren't enough active boosts to fill a
 // strip, top it up with regular (non-boosted, non-sponsored) items so
-// the section never looks sparse or broken, especially while boost
-// adoption is still growing. Random sample, not "oldest" or "newest"
-// first, so the fill doesn't quietly become its own unpaid ad slot for
-// whoever happens to rank first by some other criterion.
+// the section never looks sparse or broken. Random sample, with the
+// page's category first when one is known (3b-1).
 // ---------------------------------------------------------------------
 
-async function fillWithRegularProfiles(env, { excludeIds, limit, requireProducts = false }) {
+async function fillWithRegularProfiles(env, { excludeIds, limit, requireProducts = false, pageCategory = null }) {
   if (limit <= 0) return [];
   const excludeClause = excludeIds.length ? `AND id NOT IN (${excludeIds.map(() => "?").join(",")})` : "";
   const productsJoinClause = requireProducts
     ? "AND EXISTS (SELECT 1 FROM products pr WHERE pr.profile_id = profiles.id AND pr.is_active = 1)"
     : "";
+  const orderBy = pageCategory
+    ? "ORDER BY CASE WHEN business_category = ? THEN 0 ELSE 1 END, RANDOM()"
+    : "ORDER BY RANDOM()";
+
+  const binds = [...excludeIds];
+  if (pageCategory) binds.push(pageCategory);
+  binds.push(limit);
 
   const { results } = await env.DB.prepare(
     `SELECT id, slug, business_name, business_category, tagline, logo_url, cover_url
      FROM profiles
      WHERE moderation_status = 'approved' AND is_active = 1 ${excludeClause} ${productsJoinClause}
-     ORDER BY RANDOM()
+     ${orderBy}
      LIMIT ?`
-  ).bind(...excludeIds, limit).all();
+  ).bind(...binds).all();
 
   return results;
 }
 
-async function fillWithRegularProducts(env, { excludeIds, excludeProfileId, limit }) {
+async function fillWithRegularProducts(env, { excludeIds, excludeProfileId, limit, pageCategory = null }) {
   if (limit <= 0) return [];
   const excludeClause = excludeIds.length ? `AND pr.id NOT IN (${excludeIds.map(() => "?").join(",")})` : "";
   const excludeProfileClause = excludeProfileId ? "AND pr.profile_id != ?" : "";
+  const orderBy = pageCategory
+    ? "ORDER BY CASE WHEN p.business_category = ? THEN 0 ELSE 1 END, RANDOM()"
+    : "ORDER BY RANDOM()";
 
   const binds = [...excludeIds];
   if (excludeProfileId) binds.push(excludeProfileId);
+  if (pageCategory) binds.push(pageCategory);
   binds.push(limit);
 
   const { results } = await env.DB.prepare(
@@ -217,7 +345,7 @@ async function fillWithRegularProducts(env, { excludeIds, excludeProfileId, limi
      JOIN profiles p ON p.id = pr.profile_id
      WHERE pr.is_active = 1 AND pr.is_draft = 0 ${excludeClause} ${excludeProfileClause}
        AND p.moderation_status = 'approved' AND p.is_active = 1
-     ORDER BY RANDOM()
+     ${orderBy}
      LIMIT ?`
   ).bind(...binds).all();
 
@@ -226,22 +354,20 @@ async function fillWithRegularProducts(env, { excludeIds, excludeProfileId, limi
 
 /**
  * GET /api/discover — powers the full Discover page. Returns a batch
- * of sponsored profiles, catalogues, and products in one call so the
- * page loads its three sections together rather than firing three
- * separate requests on mount. Search/filter (by category, keyword)
- * happens client-side against a fuller fetched set for now — fine at
- * current scale; if the catalog grows large enough that this becomes
- * slow, this is the endpoint to add real server-side search to later.
+ * of sponsored profiles, catalogues, and products in one call. The
+ * serving context (viewer country, category) is worked out ONCE from
+ * the real request and shared with the three inner calls.
  */
 export async function handleDiscoverPage(request, env) {
   const url = new URL(request.url);
   const category = url.searchParams.get("category");
   const search = url.searchParams.get("q");
+  const serving = await getServingContext(request, env, url);
 
   const [profilesRes, cataloguesRes, productsRes] = await Promise.all([
-    handleSponsoredProfiles(new Request(`${url.origin}/api/discover/profiles?limit=12`), env),
-    handleSponsoredCatalogues(new Request(`${url.origin}/api/discover/catalogues?limit=12`), env),
-    handleSponsoredProducts(new Request(`${url.origin}/api/discover/products?limit=24`), env)
+    handleSponsoredProfiles(new Request(`${url.origin}/api/discover/profiles?limit=12`), env, serving),
+    handleSponsoredCatalogues(new Request(`${url.origin}/api/discover/catalogues?limit=12`), env, serving),
+    handleSponsoredProducts(new Request(`${url.origin}/api/discover/products?limit=24`), env, serving)
   ]);
 
   const [profilesData, cataloguesData, productsData] = await Promise.all([
