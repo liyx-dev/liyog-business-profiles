@@ -1,5 +1,5 @@
 // =====================================================================
-// LIYOG WORLD — src/lib/discovery.js   (3b-1: targeted serving)
+// LIYOG WORLD — src/lib/discovery.js   (3b-1 targeted serving + 3b-2 contact buttons)
 // Assembles what actually gets DISPLAYED for boosted items: joins the
 // fair-rotation selections from boost.js with real profile/product data,
 // and gracefully fills any remaining slots with regular (non-boosted)
@@ -15,6 +15,12 @@
 //    off — or the engine ever throws — the original selector is used,
 //    so a bug here can never blank out a strip.
 //  - Fillers prefer the page's category when one is known.
+//  3b-2: boosts whose advertiser switched "Contact buttons" ON now carry a
+//    small `cta` object ({ wa, tel }) so the sponsored card can show WApp /
+//    Call buttons. Numbers are sanitised HERE (digits only, sane length),
+//    only ever attached to boosts that opted in, and never to filler items.
+//    If this lookup fails for any reason the strip simply renders without
+//    buttons — it can never break the strip.
 //  - Admin-only testing: send header x-admin-secret and
 //      ?debug=1            -> adds a _debug block explaining the ranking
 //                             (never counts impressions)
@@ -125,6 +131,67 @@ async function pickBoosts(env, serving, { scope, excludeProfileId, limit }) {
   return selectBoostedItems(env, { scope, excludeProfileId, limit });
 }
 
+// ---------------------------------------------------------------------
+// 3b-2 — contact buttons for boosts that opted in (show_cta = 1)
+// ---------------------------------------------------------------------
+
+function cleanWhatsappDigits(raw) {
+  const digits = String(raw == null ? "" : raw).replace(/[^\d]/g, "");
+  return /^\d{7,15}$/.test(digits) ? digits : null;
+}
+function cleanTel(raw) {
+  const t = String(raw == null ? "" : raw).replace(/[^\d+]/g, "");
+  return /^\+?\d{6,16}$/.test(t) ? t : null;
+}
+
+/**
+ * Returns { [key]: { wa, tel } } for the picked boosts that opted in.
+ * keyField is "product_id" (products strip) or "profile_id" (profiles /
+ * catalogues). Never throws — on any problem it returns what it has.
+ */
+async function buildCtaMap(env, boosted, keyField) {
+  const map = {};
+  try {
+    if (!boosted || !boosted.length) return map;
+
+    let rows = boosted;
+    // The original selector doesn't carry show_cta — look it up by boost id.
+    if (boosted.some((b) => b.show_cta === undefined)) {
+      const ids = boosted.map((b) => b.id);
+      const { results } = await env.DB.prepare(
+        `SELECT id, show_cta FROM boost_log WHERE id IN (${ids.map(() => "?").join(",")})`
+      ).bind(...ids).all();
+      const byId = {};
+      results.forEach((r) => { byId[r.id] = r.show_cta; });
+      rows = boosted.map((b) => ({ ...b, show_cta: b.show_cta !== undefined ? b.show_cta : byId[b.id] }));
+    }
+
+    const wanted = rows.filter((r) => Number(r.show_cta) === 1);
+    if (!wanted.length) return map;
+
+    const profileIds = [...new Set(wanted.map((r) => r.profile_id))];
+    const { results: profs } = await env.DB.prepare(
+      `SELECT id, whatsapp_number, phone_number FROM profiles WHERE id IN (${profileIds.map(() => "?").join(",")})`
+    ).bind(...profileIds).all();
+
+    const ctaByProfile = {};
+    profs.forEach((p) => {
+      const wa = cleanWhatsappDigits(p.whatsapp_number);
+      const tel = cleanTel(p.phone_number);
+      if (wa || tel) ctaByProfile[p.id] = { wa, tel };
+    });
+
+    wanted.forEach((r) => {
+      const cta = ctaByProfile[r.profile_id];
+      const key = r[keyField];
+      if (cta && key) map[key] = cta;
+    });
+  } catch (err) {
+    console.error("CTA lookup failed — serving strip without contact buttons:", err);
+  }
+  return map;
+}
+
 function withDebug(payload, serving) {
   if (!serving.debug) return payload;
   return {
@@ -153,7 +220,8 @@ export async function handleSponsoredProfiles(request, env, servingOverride = nu
   const boosted = await pickBoosts(env, serving, { scope: "profile", excludeProfileId, limit });
   const boostedProfiles = await hydrateProfiles(env, boosted.map((b) => b.profile_id));
 
-  let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true }));
+  const ctaMap = await buildCtaMap(env, boosted, "profile_id");
+  let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}) }));
 
   if (combined.length < limit) {
     const filler = await fillWithRegularProfiles(env, {
@@ -210,7 +278,8 @@ export async function handleSponsoredProducts(request, env, servingOverride = nu
   const boosted = await pickBoosts(env, serving, { scope: "product", excludeProfileId, limit });
   const boostedProducts = await hydrateProducts(env, boosted.map((b) => b.product_id));
 
-  let combined = boostedProducts.map((p) => ({ ...p, isSponsored: true }));
+  const ctaMap = await buildCtaMap(env, boosted, "product_id");
+  let combined = boostedProducts.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}) }));
 
   if (combined.length < limit) {
     const filler = await fillWithRegularProducts(env, {
@@ -241,7 +310,8 @@ export async function handleSponsoredCatalogues(request, env, servingOverride = 
   const boosted = await pickBoosts(env, serving, { scope: "catalogue", excludeProfileId, limit });
   const boostedProfiles = await hydrateProfiles(env, boosted.map((b) => b.profile_id));
 
-  let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true }));
+  const ctaMap = await buildCtaMap(env, boosted, "profile_id");
+  let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}) }));
 
   if (combined.length < limit) {
     const filler = await fillWithRegularProfiles(env, {
