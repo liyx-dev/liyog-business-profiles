@@ -3890,7 +3890,7 @@ function bindSponsoredProfilesSection(p) {
       getOverlayHost().appendChild(container);
     }
   }
-  window.LiyogSponsoredUI.mountProfilesStrip(container, { excludeProfileId: p.id, title: "You Might Also Like" });
+  window.LiyogSponsoredUI.mountProfilesStrip(container, { excludeProfileId: p.id, title: "You Might Also Like", category: p.business_category });
 }
 
 /**
@@ -3908,7 +3908,7 @@ function bindSponsoredCatalogueSection(p) {
     container.hidden = true;
     getOverlayHost().appendChild(container); // appended last = true bottom of the page
   }
-  window.LiyogSponsoredUI.mountCataloguesStrip(container, { excludeProfileId: p.id, title: "Discover More Shops" });
+  window.LiyogSponsoredUI.mountCataloguesStrip(container, { excludeProfileId: p.id, title: "Discover More Shops", category: p.business_category });
 }
 
 /**
@@ -4390,3 +4390,4 @@ window.LiyogProductUI = {
 };
 
 })();
+
