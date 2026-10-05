@@ -23,6 +23,12 @@
    container element — callers only need to create/position an empty
    <div> and hand it to this module; nothing else.
 
+   3b-2: a boost whose advertiser switched "Contact buttons" ON arrives
+   with a small `cta` object ({ wa, tel }) from the server. Sponsored
+   PRODUCT cards then show the real card's own WhatsApp/Call buttons;
+   profile/catalogue cards get a WApp/Call row. Without `cta` a card is
+   exactly as it was before. Numbers are re-validated here before use.
+
    3b-1: `category` (optional) is the category of the page the strip sits
    on. It is sent to the server as a plain slug so boosts that chose
    that category are shown first. The viewer's COUNTRY is never sent —
@@ -115,6 +121,52 @@
   }
   function categoryQuery(category) {
     return category ? `&category=${encodeURIComponent(category)}` : "";
+  }
+
+  // ---------------------------------------------------------------------
+  // 3b-2: contact buttons. The server only attaches `cta` to boosts that
+  // opted in AND already sanitised the numbers; they are checked again
+  // here so nothing odd can ever reach an href.
+  // ---------------------------------------------------------------------
+  function validCta(cta) {
+    if (!cta || typeof cta !== "object") return null;
+    const wa = typeof cta.wa === "string" && /^\d{7,15}$/.test(cta.wa) ? cta.wa : null;
+    const tel = typeof cta.tel === "string" && /^\+?\d{6,16}$/.test(cta.tel) ? cta.tel : null;
+    return wa || tel ? { wa, tel } : null;
+  }
+
+  const CTA_WA_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2z"/></svg>';
+  const CTA_CALL_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>';
+
+  /** WApp / Call row for profile + catalogue ad cards. Empty string when
+   *  the boost did not opt in — the card is then unchanged. */
+  function adCtaRowHtml(profile, linkMode) {
+    if (!profile.isSponsored) return "";
+    const cta = validCta(profile.cta);
+    if (!cta) return "";
+    const name = profile.business_name || "this brand";
+    const text = linkMode === "catalogue"
+      ? `Hi ${name}, I saw your catalogue on Liyog World and I'm interested.`
+      : `Hi ${name}, I found your brand profile on Liyog World and I'm interested.`;
+    return `
+      <div class="lp-ad-cta">
+        ${cta.wa ? `<a class="lp-ad-cta-btn lp-ad-cta-wa" href="https://wa.me/${cta.wa}?text=${encodeURIComponent(text)}" target="_blank" rel="noopener noreferrer" aria-label="Message ${escAttr(name)} on WhatsApp">${CTA_WA_ICON}<span>WApp</span></a>` : ""}
+        ${cta.tel ? `<a class="lp-ad-cta-btn lp-ad-cta-call" href="tel:${cta.tel}" aria-label="Call ${escAttr(name)}">${CTA_CALL_ICON}<span>Call</span></a>` : ""}
+      </div>`;
+  }
+
+  /** The stand-in "brand" the real product card is built from. For a
+   *  sponsored product that opted in, it carries the contact numbers so
+   *  the card's OWN WhatsApp/Call buttons appear and work exactly like on
+   *  any catalogue card. Otherwise it has none -> no buttons (as before). */
+  function fakeProfileFor(product) {
+    const profile = { slug: product.profile_slug, business_name: product.profile_business_name, logo_url: product.profile_logo_url };
+    const cta = product.isSponsored ? validCta(product.cta) : null;
+    if (cta) {
+      if (cta.wa) profile.whatsapp_number = cta.wa;
+      if (cta.tel) profile.phone_number = cta.tel;
+    }
+    return profile;
   }
 
   const AD_FALLBACK_GRADIENTS = [
@@ -248,7 +300,7 @@
       : (profile.tagline ? `<div class="lp-ad-card-tagline">${esc(truncate(profile.tagline, 60))}</div>` : "");
 
     return `
-      <div class="lp-ad-card">
+      <div class="lp-ad-card${profile.isSponsored ? " lp-ad-card-sponsored" : ""}">
         <a class="lp-ad-card-media" href="${linkBase}" style="${coverStyle}">
           ${!profile.cover_url ? `<div class="lp-ad-card-media-fallback-mark">${esc(initial)}</div>` : ""}
           ${profile.isSponsored ? adBadgeHtml() : ""}
@@ -261,6 +313,7 @@
             ${subtitle}
           </div>
         </a>
+        ${adCtaRowHtml(profile, opts.linkMode)}
         ${profile.isSponsored ? adInfoTriggerHtml(profile.business_name, linkBase) : ""}
       </div>
     `;
@@ -393,9 +446,9 @@
   // ad tile, per instruction: a sponsored product should look and
   // behave exactly like any other catalogue product — same price,
   // description, engagement bar, like/rate/zoom/report — with ONLY
-  // the sponsored badge + info trigger added, and contact buttons
-  // (WhatsApp/call) intentionally omitted since tapping through to the
-  // product's own page is where real contact happens.
+  // the sponsored badge + info trigger added. WhatsApp/Call buttons
+  // appear ONLY when the advertiser opted in (product.cta, see
+  // fakeProfileFor); otherwise the card has none, as before.
   // ---------------------------------------------------------------------
   async function mountProductsStrip(containerEl, opts) {
     if (!containerEl) return;
@@ -446,7 +499,7 @@
 
   function productCardHtml(product) {
     const ui = window.LiyogProductUI;
-    const fakeProfile = { slug: product.profile_slug, business_name: product.profile_business_name, logo_url: product.profile_logo_url };
+    const fakeProfile = fakeProfileFor(product);
     const cardHtml = ui.compactCardHtml(product, fakeProfile, false);
     if (!product.isSponsored) return cardHtml;
 
@@ -484,7 +537,7 @@
     scopeEl.querySelectorAll(".lp-prodcard[data-product-id]").forEach((cardEl) => {
       const product = products.find((prd) => prd.id === cardEl.dataset.productId);
       if (!product) return;
-      const fakeProfile = { slug: product.profile_slug, business_name: product.profile_business_name, logo_url: product.profile_logo_url };
+      const fakeProfile = fakeProfileFor(product);
       cardEl.dataset.allProducts = JSON.stringify([product]);
       ui.wireProductCardActions(cardEl, fakeProfile);
     });
