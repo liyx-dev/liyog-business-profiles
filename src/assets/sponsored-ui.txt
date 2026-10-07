@@ -23,6 +23,19 @@
    container element — callers only need to create/position an empty
    <div> and hand it to this module; nothing else.
 
+   3b-3: PAGE CONTEXT. A strip on a page that cannot name its category
+   (blog post, homepage, community feed, another site) reads a few short
+   public signals from that page — labels/tags, headline, description,
+   opening lines — and sends only that short text (never cookies, never
+   personal data). The server decides, conservatively, what the page is
+   about and shows boosts from that category first. Declarative embed:
+     <div data-liyog-ads="products" data-title="Sponsored"></div>
+   (also "profiles" / "catalogues"; optional data-limit, data-category,
+   data-context, data-labels, data-exclude, data-auto-context="false").
+   Programmatic: LiyogSponsoredUI.mountAuto(el, { surface, context,
+   labels, category, ... }) — a feed passes each post's own text as
+   `context`. An explicit category always beats page text.
+
    3b-2: a boost whose advertiser switched "Contact buttons" ON arrives
    with a small `cta` object ({ wa, tel }) from the server. Sponsored
    PRODUCT cards then show the real card's own WhatsApp/Call buttons;
@@ -121,6 +134,74 @@
   }
   function categoryQuery(category) {
     return category ? `&category=${encodeURIComponent(category)}` : "";
+  }
+
+  // ---------------------------------------------------------------------
+  // 3b-3: page context. Reads PUBLIC page signals only, once per page
+  // load, never throws, and sends at most ~600 characters. On list pages
+  // (several posts on one page, e.g. the homepage) labels/description/
+  // opening lines belong to many posts at once, so only the headline is
+  // used — that avoids guessing a topic from one random post.
+  // ---------------------------------------------------------------------
+  function cleanText(str, max) {
+    return String(str == null ? "" : str)
+      .replace(/[\u0000-\u001F\u007F|]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, max);
+  }
+
+  let cachedPageContext = null;
+  function readPageContext() {
+    if (cachedPageContext !== null) return cachedPageContext;
+    cachedPageContext = "";
+    try {
+      const txt = (el) => (el && el.textContent ? el.textContent : "");
+      const meta = (sel) => { const m = document.querySelector(sel); return m ? (m.getAttribute("content") || "") : ""; };
+
+      const postBodies = document.querySelectorAll(".post-body, .entry-content");
+      const singlePost = postBodies.length === 1 || (postBodies.length === 0 && document.querySelectorAll("article").length === 1);
+
+      const labels = [];
+      if (singlePost) {
+        document.querySelectorAll('.post-labels a, a[rel="tag"], .labels a').forEach((a) => {
+          const t = cleanText(txt(a), 40);
+          if (t && labels.length < 8) labels.push(t);
+        });
+        document.querySelectorAll('meta[property="article:tag"], meta[property="article:section"]').forEach((m) => {
+          const t = cleanText(m.getAttribute("content"), 40);
+          if (t && labels.length < 8) labels.push(t);
+        });
+        const kw = cleanText(meta('meta[name="keywords"]'), 120);
+        if (kw) labels.push(kw);
+      }
+
+      const h = document.querySelector("h1.post-title, h1.entry-title, .post-title h1, .post-title, article h1, h1");
+      const headline = cleanText(txt(h) || meta('meta[property="og:title"]') || document.title, 140);
+      const description = singlePost ? cleanText(meta('meta[name="description"]') || meta('meta[property="og:description"]'), 160) : "";
+      const lead = singlePost && postBodies.length === 1 ? cleanText(txt(postBodies[0]), 220) : "";
+
+      const labelText = cleanText(labels.join(", "), 160);
+      if (labelText || headline || description || lead) {
+        cachedPageContext = [labelText, headline, description, lead].join("|");
+      }
+    } catch (e) { cachedPageContext = ""; }
+    return cachedPageContext;
+  }
+
+  /** Explicit context (a feed post's own text, labels) beats page reading;
+   *  autoContext:false switches page reading off for a slot. */
+  function resolveContextText(opts) {
+    if (opts && (typeof opts.context === "string" || Array.isArray(opts.labels))) {
+      const labels = Array.isArray(opts.labels) ? cleanText(opts.labels.slice(0, 8).join(", "), 160) : "";
+      const text = typeof opts.context === "string" ? cleanText(opts.context, 400) : "";
+      if (labels || text) return labels + "|" + text;
+    }
+    if (opts && opts.autoContext === false) return "";
+    return readPageContext();
+  }
+  function contextQuery(text) {
+    return text ? `&ctx=${encodeURIComponent(text)}` : "";
   }
 
   // ---------------------------------------------------------------------
@@ -395,8 +476,9 @@
     if (!containerEl) return;
     const { excludeProfileId = null, title = "You Might Also Like", limit = 8 } = opts || {};
     const category = resolveCategory(opts);
+    const contextText = category ? "" : resolveContextText(opts);
     try {
-      const res = await fetch(`${WORKER_BASE}/api/discover/profiles?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}${categoryQuery(category)}`);
+      const res = await fetch(`${WORKER_BASE}/api/discover/profiles?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}${categoryQuery(category)}${contextQuery(contextText)}`);
       const data = await res.json();
       const profiles = data.profiles || [];
       if (!profiles.length) { containerEl.hidden = true; return; }
@@ -409,7 +491,7 @@
       wireStripArrows(sectionId);
 
       document.getElementById(seeMoreId).addEventListener("click", () => {
-        openMoreModal("profiles", { excludeProfileId, title: "More Brands", category });
+        openMoreModal("profiles", { excludeProfileId, title: "More Brands", category, contextText });
       });
     } catch (e) { containerEl.hidden = true; }
   }
@@ -421,8 +503,9 @@
     if (!containerEl) return;
     const { excludeProfileId = null, title = "Discover More Shops", limit = 8 } = opts || {};
     const category = resolveCategory(opts);
+    const contextText = category ? "" : resolveContextText(opts);
     try {
-      const res = await fetch(`${WORKER_BASE}/api/discover/catalogues?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}${categoryQuery(category)}`);
+      const res = await fetch(`${WORKER_BASE}/api/discover/catalogues?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}${categoryQuery(category)}${contextQuery(contextText)}`);
       const data = await res.json();
       const catalogues = data.catalogues || [];
       if (!catalogues.length) { containerEl.hidden = true; return; }
@@ -435,7 +518,7 @@
       wireStripArrows(sectionId);
 
       document.getElementById(seeMoreId).addEventListener("click", () => {
-        openMoreModal("catalogues", { excludeProfileId, title: "More Shops", category });
+        openMoreModal("catalogues", { excludeProfileId, title: "More Shops", category, contextText });
       });
     } catch (e) { containerEl.hidden = true; }
   }
@@ -454,11 +537,12 @@
     if (!containerEl) return;
     const { excludeProfileId = null, title = "Sponsored Products", limit = 8 } = opts || {};
     const category = resolveCategory(opts);
+    const contextText = category ? "" : resolveContextText(opts);
     const ui = window.LiyogProductUI;
     if (!ui || !ui.compactCardHtml) { containerEl.hidden = true; return; }
 
     try {
-      const res = await fetch(`${WORKER_BASE}/api/discover/products?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}${categoryQuery(category)}`);
+      const res = await fetch(`${WORKER_BASE}/api/discover/products?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=${limit}${categoryQuery(category)}${contextQuery(contextText)}`);
       const data = await res.json();
       const products = data.products || [];
       if (!products.length) { containerEl.hidden = true; return; }
@@ -481,7 +565,7 @@
       wireProductCards(document.getElementById(`${sectionId}-scroll`), products);
 
       document.getElementById(seeMoreId).addEventListener("click", () => {
-        openMoreModal("products", { excludeProfileId, title: "More Products", category });
+        openMoreModal("products", { excludeProfileId, title: "More Products", category, contextText });
       });
     } catch (e) { containerEl.hidden = true; }
   }
@@ -554,6 +638,7 @@
   async function openMoreModal(kind, opts) {
     const { excludeProfileId, title } = opts;
     const category = resolveCategory(opts);
+    const contextText = category ? "" : (typeof opts.contextText === "string" ? opts.contextText : resolveContextText(opts));
     const myToken = ++moreModalRequestToken; // any earlier in-flight call becomes stale the instant this runs
 
     let overlay = document.getElementById("lp-sponsored-more-overlay");
@@ -584,7 +669,7 @@
 
     const endpoint = kind === "profiles" ? "profiles" : kind === "catalogues" ? "catalogues" : "products";
     try {
-      const res = await fetch(`${WORKER_BASE}/api/discover/${endpoint}?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=20${categoryQuery(category)}`);
+      const res = await fetch(`${WORKER_BASE}/api/discover/${endpoint}?exclude=${encodeURIComponent(excludeProfileId || "")}&limit=20${categoryQuery(category)}${contextQuery(contextText)}`);
       const data = await res.json();
       const items = kind === "profiles" ? (data.profiles || []) : kind === "catalogues" ? (data.catalogues || []) : (data.products || []);
 
@@ -668,9 +753,78 @@
     });
   }
 
+  // ---------------------------------------------------------------------
+  // 3b-3: embed anywhere. mountAuto() mounts a strip into ANY element —
+  // a blog post, the homepage, a feed slot — wrapping it in the site's
+  // theme root (.lp-root) when the host isn't already inside one, so the
+  // look and dark mode work outside the brand pages too.
+  // ---------------------------------------------------------------------
+  const SURFACES = { products: mountProductsStrip, profiles: mountProfilesStrip, catalogues: mountCataloguesStrip };
+
+  function ensureEmbedSlot(hostEl) {
+    const slot = document.createElement("div");
+    if (hostEl.closest(".lp-root")) {
+      hostEl.appendChild(slot);
+    } else {
+      const root = document.createElement("div");
+      root.className = "lp-root lp-embed";
+      root.appendChild(slot);
+      hostEl.appendChild(root);
+    }
+    return slot;
+  }
+
+  function mountAuto(hostEl, options) {
+    if (!hostEl) return;
+    const opts = options || {};
+    const mount = SURFACES[String(opts.surface || "products").toLowerCase()];
+    if (!mount) return;
+    return mount(ensureEmbedSlot(hostEl), opts);
+  }
+
+  function readEmbedOptions(host) {
+    const opts = { surface: host.getAttribute("data-liyog-ads") || "products" };
+    const title = host.getAttribute("data-title");
+    if (title) opts.title = title;
+    const limit = Number(host.getAttribute("data-limit"));
+    if (limit >= 1 && limit <= 20) opts.limit = Math.floor(limit);
+    const category = host.getAttribute("data-category");
+    if (category) opts.category = category;
+    const context = host.getAttribute("data-context");
+    if (context) opts.context = context;
+    const labels = host.getAttribute("data-labels");
+    if (labels) opts.labels = labels.split(",").map((x) => x.trim()).filter(Boolean);
+    const exclude = host.getAttribute("data-exclude");
+    if (exclude) opts.excludeProfileId = exclude;
+    if (host.getAttribute("data-auto-context") === "false") opts.autoContext = false;
+    return opts;
+  }
+
+  // Declarative embeds load lazily: nothing is fetched until the slot is
+  // near the screen, so ads never slow a blog post's first paint.
+  function initDeclarativeEmbeds() {
+    document.querySelectorAll("[data-liyog-ads]").forEach((host) => {
+      if (host.dataset.liyogMounted) return;
+      host.dataset.liyogMounted = "1";
+      const start = () => mountAuto(host, readEmbedOptions(host));
+      if ("IntersectionObserver" in window) {
+        const io = new IntersectionObserver((entries) => {
+          if (entries.some((e) => e.isIntersecting)) { io.disconnect(); start(); }
+        }, { rootMargin: "300px 0px" });
+        io.observe(host);
+      } else {
+        start();
+      }
+    });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initDeclarativeEmbeds);
+  else initDeclarativeEmbeds();
+
   window.LiyogSponsoredUI = {
     mountProfilesStrip,
     mountCataloguesStrip,
-    mountProductsStrip
+    mountProductsStrip,
+    mountAuto,
+    scanEmbeds: initDeclarativeEmbeds
   };
 })();
