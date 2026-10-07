@@ -1,5 +1,5 @@
 // =====================================================================
-// LIYOG WORLD — src/lib/discovery.js   (3b-1 targeted serving + 3b-2 contact buttons)
+// LIYOG WORLD — src/lib/discovery.js   (3b-1 targeted serving + 3b-2 contact buttons + 3b-3 page context)
 // Assembles what actually gets DISPLAYED for boosted items: joins the
 // fair-rotation selections from boost.js with real profile/product data,
 // and gracefully fills any remaining slots with regular (non-boosted)
@@ -21,6 +21,13 @@
 //    only ever attached to boosts that opted in, and never to filler items.
 //    If this lookup fails for any reason the strip simply renders without
 //    buttons — it can never break the strip.
+//  3b-3: pages that cannot name their category (blog posts, homepage,
+//    feed) may send ?ctx=<short text read from the page> instead. When no
+//    explicit, valid ?category= is given, lib/context.js works out which
+//    category that text is about — only if the evidence is clear — and
+//    the result feeds the same ranking as an explicit category. An
+//    explicit category ALWAYS wins. Runs only while the targeting switch
+//    is on; any failure simply means "no category" (country-only).
 //  - Admin-only testing: send header x-admin-secret and
 //      ?debug=1            -> adds a _debug block explaining the ranking
 //                             (never counts impressions)
@@ -33,6 +40,7 @@ import {
   isTargetingEnabled, sanitizePageCategory, resolveProfileCountry, COUNTRY_NAMES
 } from "./boost.js";
 import { verifySessionToken } from "./auth.js";
+import { inferCategoryFromContext } from "./context.js";
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -94,6 +102,20 @@ async function getServingContext(request, env, url) {
   if (!enabled) return serving;
 
   serving.pageCategory = sanitizePageCategory(url.searchParams.get("category"));
+  serving.contextSource = serving.pageCategory ? "explicit" : "none";
+  if (!serving.pageCategory) {
+    const ctxText = url.searchParams.get("ctx");
+    if (ctxText) {
+      const inferred = await inferCategoryFromContext(env, ctxText);   // never throws
+      if (inferred) {
+        serving.pageCategory = inferred.slug;
+        serving.contextSource = "inferred";
+        serving.inference = inferred;
+      } else {
+        serving.contextSource = "context_unclear";
+      }
+    }
+  }
 
   const override = adminOk ? (url.searchParams.get("country") || "").toUpperCase() : "";
   if (override) {
@@ -200,7 +222,8 @@ function withDebug(payload, serving) {
       engine: serving.useSmart && !serving.fellBack ? "targeted" : "legacy",
       forced: serving.forced, fellBack: !!serving.fellBack,
       viewerCountry: serving.viewerCountry, countrySource: serving.countrySource,
-      pageCategory: serving.pageCategory, ranking: serving.explain || null
+      pageCategory: serving.pageCategory, contextSource: serving.contextSource || null,
+      inference: serving.inference || null, ranking: serving.explain || null
     }
   };
 }
