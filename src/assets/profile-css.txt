@@ -4158,6 +4158,275 @@ body.dark .lp-growth-cta {
   accent-color: var(--liyog-green-dark);
 }
 
+/* =====================================================================
+   3b-2 / 3b-3 — PREMIUM SPONSORED DESIGN + CONTACT BUTTONS + EMBEDS
+   PASTE THIS WHOLE BLOCK AT THE VERY END of profile-css.txt.
+   Purely additive: it only touches classes that belong to the sponsored
+   strips (.lp-sponsored-*, .lp-ad-*) and the sponsored PRODUCT card
+   (.lp-sponsored-product-card). Nothing else on the site uses them, so
+   normal product cards, the profile page and every sheet are unaffected.
+   Everything reads the existing theme variables, so dark mode follows
+   automatically. If you ever remove this block, the strips simply go
+   back to their previous look.
+   ===================================================================== */
+
+/* ---- Section header: accent bar + pill "See More" ---- */
+.lp-sponsored-strip-header h3 {
+  position: relative;
+  padding-left: 12px;
+  letter-spacing: -0.01em;
+}
+.lp-sponsored-strip-header h3::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 17px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--liyog-gold), var(--liyog-green));
+}
+.lp-sponsored-see-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+}
+.lp-sponsored-see-more::after {
+  content: "\203A";
+  font-size: 16px;
+  line-height: 1;
+  transform: translateY(-1px);
+  transition: transform 0.15s ease;
+}
+.lp-sponsored-see-more:hover {
+  background: var(--liyog-green);
+  border-color: var(--liyog-green);
+  color: #fff;
+}
+.lp-sponsored-see-more:hover::after { transform: translate(2px, -1px); }
+.lp-sponsored-see-more:active { transform: scale(0.96); }
+
+/* ---- Scroll arrows: softer shadow, green on hover ---- */
+.lp-sponsored-arrow {
+  box-shadow: 0 6px 16px rgba(17, 17, 17, 0.16);
+}
+.lp-sponsored-arrow:hover:not(:disabled) {
+  background: var(--liyog-green);
+  border-color: var(--liyog-green);
+  color: #fff;
+}
+
+/* ---- Cards glide in (backwards fill-mode only, so the hover lift that
+   other rules apply is never overridden once the animation ends) ---- */
+@keyframes lp-ad-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.lp-sponsored-scroll > *,
+.lp-sponsored-more-grid > * {
+  animation: lp-ad-in 0.42s var(--ease, ease) backwards;
+}
+.lp-sponsored-scroll > *:nth-child(1), .lp-sponsored-more-grid > *:nth-child(1) { animation-delay: 0.02s; }
+.lp-sponsored-scroll > *:nth-child(2), .lp-sponsored-more-grid > *:nth-child(2) { animation-delay: 0.08s; }
+.lp-sponsored-scroll > *:nth-child(3), .lp-sponsored-more-grid > *:nth-child(3) { animation-delay: 0.14s; }
+.lp-sponsored-scroll > *:nth-child(4), .lp-sponsored-more-grid > *:nth-child(4) { animation-delay: 0.20s; }
+.lp-sponsored-scroll > *:nth-child(5), .lp-sponsored-more-grid > *:nth-child(5) { animation-delay: 0.26s; }
+.lp-sponsored-scroll > *:nth-child(n+6), .lp-sponsored-more-grid > *:nth-child(n+6) { animation-delay: 0.30s; }
+
+/* ---- "Sponsored" label: glass pill with a glowing gold dot ---- */
+.lp-ad-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px 3px 7px;
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  color: #FFE27A;
+  background: rgba(17, 17, 17, 0.62);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+  border: 1px solid rgba(255, 215, 0, 0.38);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.lp-ad-badge::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--liyog-gold);
+  box-shadow: 0 0 6px rgba(255, 215, 0, 0.95);
+  flex-shrink: 0;
+}
+
+/* ---- Info button: glassy with a fine light edge ---- */
+.lp-ad-info-btn {
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* ---- Profile / catalogue ad cards ---- */
+.lp-ad-card {
+  border-radius: var(--r-lg);
+}
+.lp-ad-card:hover {
+  box-shadow: 0 14px 30px rgba(17, 17, 17, 0.16);
+}
+.lp-ad-card-sponsored {
+  border-color: rgba(212, 175, 55, 0.42);
+  box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255, 215, 0, 0.10);
+}
+/* soft shade at the bottom of the cover so the avatar/name sit cleanly */
+.lp-ad-card-media::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.34), transparent 58%);
+  pointer-events: none;
+}
+.lp-ad-card-avatar {
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 2px rgba(255, 215, 0, 0.55), 0 4px 10px rgba(0, 0, 0, 0.18);
+}
+.lp-ad-card-name { letter-spacing: -0.005em; }
+.lp-ad-card-category {
+  background: linear-gradient(135deg, rgba(40, 164, 40, 0.14), rgba(40, 164, 40, 0.06));
+  border: 1px solid rgba(40, 164, 40, 0.22);
+}
+
+/* ---- Contact buttons on profile / catalogue ad cards (WApp / Call) ---- */
+.lp-ad-cta {
+  display: flex;
+  gap: 7px;
+  padding: 0 12px 12px;
+}
+.lp-ad-cta-btn {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 34px;
+  border-radius: var(--r-pill);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+}
+.lp-ad-cta-btn svg { flex-shrink: 0; }
+.lp-ad-cta-wa   { background: linear-gradient(135deg, #2FE87A, #1DA851); }
+.lp-ad-cta-call { background: linear-gradient(135deg, #4A9FFF, var(--liyog-blue)); }
+.lp-ad-cta-btn:hover { transform: translateY(-1px); filter: brightness(1.07); box-shadow: 0 7px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.3); }
+.lp-ad-cta-btn:active { transform: scale(0.97); }
+.lp-ad-cta-btn:focus-visible { outline: 2px solid var(--liyog-blue); outline-offset: 2px; }
+
+/* ---- Sponsored PRODUCT card: gold hairline + refined contact buttons.
+   The buttons themselves are the real product card's own (only present
+   when the advertiser opted in); this just dresses them to match. ---- */
+.lp-sponsored-product-card {
+  border-color: rgba(212, 175, 55, 0.42);
+  box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255, 215, 0, 0.10);
+}
+.lp-sponsored-product-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 2;
+  background: linear-gradient(90deg, var(--liyog-gold), var(--liyog-orange));
+  pointer-events: none;
+}
+.lp-sponsored-product-card .lp-prodcard-contacts { gap: 7px; }
+.lp-sponsored-product-card .lp-prodcard-btn {
+  min-width: 0;
+  height: 34px;
+  gap: 4px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+.lp-sponsored-product-card .lp-prodcard-btn-whatsapp { background: linear-gradient(135deg, #2FE87A, #1DA851); }
+.lp-sponsored-product-card .lp-prodcard-btn-call     { background: linear-gradient(135deg, #4A9FFF, var(--liyog-blue)); }
+.lp-sponsored-product-card .lp-prodcard-btn span {
+  display: inline;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+/* short, always-fitting labels: "WApp" instead of "WhatsApp" */
+.lp-sponsored-product-card .lp-prodcard-btn-whatsapp span { font-size: 0; }
+.lp-sponsored-product-card .lp-prodcard-btn-whatsapp span::after { content: "WApp"; font-size: 11.5px; }
+
+/* ---- "See More" sheet: a little more polish ---- */
+.lp-sponsored-modal-card { border-radius: var(--r-xl); }
+.lp-sponsored-more-title {
+  position: relative;
+  padding-bottom: 12px;
+}
+.lp-sponsored-more-title::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--liyog-gold), var(--liyog-orange));
+}
+
+/* ---- Dark mode: brighter green for small text so it stays readable.
+   Covers all three ways the site goes dark (Blogger toggle, manual
+   data-theme, OS setting). Hover keeps its white-on-green. ---- */
+body.dark .lp-sponsored-see-more,
+[data-theme="dark"] .lp-sponsored-see-more,
+body.dark .lp-ad-card-category,
+[data-theme="dark"] .lp-ad-card-category { color: var(--liyog-green-light); }
+body.dark .lp-sponsored-see-more:hover,
+[data-theme="dark"] .lp-sponsored-see-more:hover { color: #fff; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .lp-sponsored-see-more,
+  :root:not([data-theme="light"]) .lp-ad-card-category { color: var(--liyog-green-light); }
+  :root:not([data-theme="light"]) .lp-sponsored-see-more:hover { color: #fff; }
+}
+
+/* ---- 3b-3: embedded strips (blog posts, homepage, feed slots, other
+   sites). The embed gets its own theme root so colours and dark mode
+   work outside the brand pages, but without the profile page's width,
+   padding or beige background, so it blends into whatever page it is on. ---- */
+.lp-root.lp-embed {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  animation: none;
+}
+.lp-root.lp-embed .lp-sponsored-strip-section {
+  margin-top: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-sponsored-scroll > *,
+  .lp-sponsored-more-grid > * { animation: none; }
+}
+
+
 
 
 
