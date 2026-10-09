@@ -23,6 +23,12 @@
    container element — callers only need to create/position an empty
    <div> and hand it to this module; nothing else.
 
+   LAYOUTS: every mount accepts an optional `format`:
+     "strip" (default, the scroller) | "grid" (6 cards + View more) |
+     "banner" (one native square ad at a time that rotates while on screen;
+     optional `interval` seconds, 3-20, default 6).
+   Declarative: data-format="grid|banner" and data-interval="6".
+
    3b-3: PAGE CONTEXT. A strip on a page that cannot name its category
    (blog post, homepage, community feed, another site) reads a few short
    public signals from that page — labels/tags, headline, description,
@@ -474,6 +480,7 @@
   // ---------------------------------------------------------------------
   async function mountProfilesStrip(containerEl, opts) {
     if (!containerEl) return;
+    if (opts && (opts.format === "grid" || opts.format === "banner")) return mountFormatted("profiles", containerEl, opts);
     const { excludeProfileId = null, title = "You Might Also Like", limit = 8 } = opts || {};
     const category = resolveCategory(opts);
     const contextText = category ? "" : resolveContextText(opts);
@@ -501,6 +508,7 @@
   // ---------------------------------------------------------------------
   async function mountCataloguesStrip(containerEl, opts) {
     if (!containerEl) return;
+    if (opts && (opts.format === "grid" || opts.format === "banner")) return mountFormatted("catalogues", containerEl, opts);
     const { excludeProfileId = null, title = "Discover More Shops", limit = 8 } = opts || {};
     const category = resolveCategory(opts);
     const contextText = category ? "" : resolveContextText(opts);
@@ -535,6 +543,7 @@
   // ---------------------------------------------------------------------
   async function mountProductsStrip(containerEl, opts) {
     if (!containerEl) return;
+    if (opts && (opts.format === "grid" || opts.format === "banner")) return mountFormatted("products", containerEl, opts);
     const { excludeProfileId = null, title = "Sponsored Products", limit = 8 } = opts || {};
     const category = resolveCategory(opts);
     const contextText = category ? "" : resolveContextText(opts);
@@ -754,6 +763,203 @@
   }
 
   // ---------------------------------------------------------------------
+  // 4-format layouts. `format` is optional on every mount call:
+  //   "strip"  (default) the horizontal scroller — unchanged
+  //   "grid"   a neat responsive grid of 6 + a "View more" button
+  //   "banner" ONE native square ad at a time that rotates while it is on
+  //            screen (like Google / Meta feed ads)
+  // Both new formats reuse the SAME server data, cards, buttons and the
+  // SAME "See More" sheet as the strip — nothing is rebuilt.
+  // ---------------------------------------------------------------------
+  const FORMAT_DEFAULTS = {
+    products:   { title: "Sponsored Products",  more: "More Products" },
+    profiles:   { title: "You Might Also Like", more: "More Brands" },
+    catalogues: { title: "Discover More Shops", more: "More Shops" }
+  };
+
+  function clampInt(value, min, max, fallback) {
+    const n = Math.floor(Number(value));
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+  }
+
+  async function fetchSurfaceItems(surface, query, limit) {
+    const res = await fetch(`${WORKER_BASE}/api/discover/${surface}?exclude=${encodeURIComponent(query.excludeProfileId || "")}&limit=${limit}${categoryQuery(query.category)}${contextQuery(query.contextText)}`);
+    const data = await res.json();
+    return (surface === "profiles" ? data.profiles : surface === "catalogues" ? data.catalogues : data.products) || [];
+  }
+
+  function cardHtmlFor(surface, item) {
+    if (surface === "products") return productCardHtml(item);
+    return profileCardHtml(item, { linkMode: surface === "catalogues" ? "catalogue" : "profile" });
+  }
+
+  function skeletonCardHtml() {
+    return `<div class="lp-sk-card"><div class="lp-sk lp-sk-img"></div><div class="lp-sk lp-sk-line"></div><div class="lp-sk lp-sk-line lp-sk-short"></div><div class="lp-sk lp-sk-line lp-sk-btn"></div></div>`;
+  }
+
+  /** Shared entry for the two new formats. Always safe: any problem
+   *  simply hides the slot, exactly like the strip does. */
+  async function mountFormatted(surface, containerEl, opts) {
+    const format = opts.format;
+    const defaults = FORMAT_DEFAULTS[surface];
+    const category = resolveCategory(opts);
+    const contextText = category ? "" : resolveContextText(opts);
+    const ctx = { opts, excludeProfileId: opts.excludeProfileId || null, category, contextText, title: opts.title != null ? opts.title : (format === "banner" ? "" : defaults.title) };
+
+    const ui = window.LiyogProductUI;
+    if (surface === "products" && (!ui || !ui.compactCardHtml)) { containerEl.hidden = true; return; }
+
+    containerEl.hidden = false;
+    containerEl.className = `lp-section lp-sponsored-strip-section lp-sponsored-${format}-section`;
+    containerEl.innerHTML = format === "grid"
+      ? `<div class="lp-sponsored-grid">${skeletonCardHtml().repeat(6)}</div>`
+      : `<div class="lp-banner"><div class="lp-banner-stage">${skeletonCardHtml()}</div></div>`;
+
+    try {
+      const limit = format === "grid" ? clampInt(opts.limit, 1, 12, 6) : clampInt(opts.limit, 2, 8, 5);
+      const items = await fetchSurfaceItems(surface, ctx, limit);
+      if (!items.length) { containerEl.hidden = true; return; }
+      if (surface === "products") await fetchEngagementFor(items);
+      if (format === "grid") renderGrid(containerEl, surface, items, ctx);
+      else renderBanner(containerEl, surface, items, ctx, limit);
+    } catch (e) { containerEl.hidden = true; }
+  }
+
+  // ---- GRID: neat, responsive, "View more" reuses the See More sheet ----
+  function renderGrid(containerEl, surface, items, ctx) {
+    containerEl.innerHTML = `
+      ${ctx.title ? `<div class="lp-sponsored-strip-header"><h3>${esc(ctx.title)}</h3></div>` : ""}
+      <div class="lp-sponsored-grid">${items.map((it) => cardHtmlFor(surface, it)).join("")}</div>
+      <button type="button" class="lp-sponsored-viewmore">View more <span aria-hidden="true">&rsaquo;</span></button>
+    `;
+    if (surface === "products") wireProductCards(containerEl.querySelector(".lp-sponsored-grid"), items);
+    containerEl.querySelector(".lp-sponsored-viewmore").addEventListener("click", () => {
+      openMoreModal(surface, { excludeProfileId: ctx.excludeProfileId, title: FORMAT_DEFAULTS[surface].more, category: ctx.category, contextText: ctx.contextText });
+    });
+  }
+
+  // ---- BANNER: one native square ad at a time ----
+  // All ads sit stacked in ONE grid cell, so the banner is always as tall
+  // as the tallest ad (the page never jumps) and swapping is a pure CSS
+  // cross-fade. A thin progress bar is the timer: its CSS animation ends
+  // -> next ad. Pausing is just pausing that animation, which happens
+  // whenever the banner is off-screen, the tab is hidden, a mouse hovers
+  // it, or a finger is on it. After a full cycle the next fairly-rotated
+  // set is fetched (up to 3 times) so long viewing still shows new ads.
+  function renderBanner(containerEl, surface, firstItems, ctx, limit) {
+    const reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    const intervalMs = clampInt(ctx.opts.interval, 3, 20, 6) * 1000;
+    const MAX_REFRESHES = 3;
+    let items = firstItems, index = 0, refreshes = 0, inView = false, hovering = false, touchTimer = null;
+
+    containerEl.innerHTML = `
+      ${ctx.title ? `<div class="lp-sponsored-strip-header"><h3>${esc(ctx.title)}</h3></div>` : ""}
+      <div class="lp-banner is-paused" role="region" aria-roledescription="carousel" aria-label="Sponsored" style="--lp-banner-ms:${intervalMs}ms">
+        <div class="lp-banner-stage"></div>
+        <div class="lp-banner-bar" aria-hidden="true"><span class="lp-banner-progress"></span></div>
+        <div class="lp-banner-foot">
+          <div class="lp-banner-dots"></div>
+          <button type="button" class="lp-banner-more">More sponsored <span aria-hidden="true">&rsaquo;</span></button>
+        </div>
+      </div>
+    `;
+    const root = containerEl.querySelector(".lp-banner");
+    const stage = root.querySelector(".lp-banner-stage");
+    const progress = root.querySelector(".lp-banner-progress");
+    const dotsEl = root.querySelector(".lp-banner-dots");
+
+    function updatePaused() {
+      const isStatic = items.length < 2 || reduceMotion;
+      root.classList.toggle("is-static", isStatic);
+      root.classList.toggle("is-paused", isStatic || !inView || hovering || document.hidden);
+    }
+
+    function restartProgress() {
+      progress.style.animation = "none";
+      void progress.offsetWidth;          // force reflow so the animation restarts
+      progress.style.animation = "";
+    }
+
+    function go(i) {
+      index = (i + items.length) % items.length;
+      Array.prototype.forEach.call(stage.children, (card, k) => card.classList.toggle("is-active", k === index));
+      Array.prototype.forEach.call(dotsEl.children, (dot, k) => dot.classList.toggle("is-active", k === index));
+      restartProgress();
+    }
+
+    function fillStage() {
+      stage.innerHTML = items.map((it) => cardHtmlFor(surface, it)).join("");
+      if (surface === "products") wireProductCards(stage, items);
+      dotsEl.innerHTML = items.map((_, k) => `<button type="button" class="lp-banner-dot" data-i="${k}" aria-label="Show ad ${k + 1} of ${items.length}"></button>`).join("");
+      root.classList.toggle("is-single", items.length < 2);
+      updatePaused();
+      go(0);
+    }
+
+    async function advance() {
+      if (!containerEl.isConnected) return;
+      if (index < items.length - 1) { go(index + 1); return; }
+      if (refreshes < MAX_REFRESHES) {
+        refreshes++;
+        try {
+          const fresh = await fetchSurfaceItems(surface, ctx, limit);
+          if (fresh.length) {
+            if (surface === "products") await fetchEngagementFor(fresh);
+            items = fresh;
+            fillStage();
+            return;
+          }
+        } catch (e) { /* keep looping the current set */ }
+      }
+      go(0);
+    }
+
+    progress.addEventListener("animationend", advance);
+    dotsEl.addEventListener("click", (e) => {
+      const dot = e.target.closest(".lp-banner-dot");
+      if (dot) go(Number(dot.dataset.i));
+    });
+    root.querySelector(".lp-banner-more").addEventListener("click", () => {
+      openMoreModal(surface, { excludeProfileId: ctx.excludeProfileId, title: FORMAT_DEFAULTS[surface].more, category: ctx.category, contextText: ctx.contextText });
+    });
+
+    // Mouse hover / keyboard focus pause it; a finger on it pauses it and a
+    // horizontal swipe changes ad without blocking normal page scrolling.
+    root.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") { hovering = true; updatePaused(); } });
+    root.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") { hovering = false; updatePaused(); } });
+    root.addEventListener("focusin", () => { hovering = true; updatePaused(); });
+    root.addEventListener("focusout", () => { hovering = false; updatePaused(); });
+    let touchX = null;
+    stage.addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; hovering = true; updatePaused(); }, { passive: true });
+    stage.addEventListener("touchend", (e) => {
+      if (touchX !== null && items.length > 1) {
+        const dx = e.changedTouches[0].clientX - touchX;
+        if (Math.abs(dx) > 45) go(dx < 0 ? index + 1 : index - 1);
+      }
+      touchX = null;
+      clearTimeout(touchTimer);
+      touchTimer = setTimeout(() => { hovering = false; updatePaused(); }, 2500);
+    }, { passive: true });
+
+    const onVisibility = () => {
+      if (!containerEl.isConnected) { document.removeEventListener("visibilitychange", onVisibility); return; }
+      updatePaused();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver((entries) => {
+        inView = entries[0].isIntersecting && entries[0].intersectionRatio >= 0.4;
+        updatePaused();
+      }, { threshold: [0, 0.4, 1] }).observe(root);
+    } else {
+      inView = true;
+    }
+
+    fillStage();
+  }
+
+  // ---------------------------------------------------------------------
   // 3b-3: embed anywhere. mountAuto() mounts a strip into ANY element —
   // a blog post, the homepage, a feed slot — wrapping it in the site's
   // theme root (.lp-root) when the host isn't already inside one, so the
@@ -794,6 +1000,10 @@
     if (context) opts.context = context;
     const labels = host.getAttribute("data-labels");
     if (labels) opts.labels = labels.split(",").map((x) => x.trim()).filter(Boolean);
+    const format = host.getAttribute("data-format");
+    if (format === "grid" || format === "banner") opts.format = format;
+    const interval = Number(host.getAttribute("data-interval"));
+    if (interval >= 3 && interval <= 20) opts.interval = interval;
     const exclude = host.getAttribute("data-exclude");
     if (exclude) opts.excludeProfileId = exclude;
     if (host.getAttribute("data-auto-context") === "false") opts.autoContext = false;
