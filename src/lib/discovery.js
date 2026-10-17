@@ -28,6 +28,10 @@
 //    the result feeds the same ranking as an explicit category. An
 //    explicit category ALWAYS wins. Runs only while the targeting switch
 //    is on; any failure simply means "no category" (country-only).
+//  Analytics: while app_settings.boost_analytics_enabled = '1', each
+//    sponsored item also carries `t`, a short-lived signed token the
+//    browser sends back with view/tap events (see lib/ad-analytics.js).
+//    Off by default; failures just mean "no token", never a broken strip.
 //  - Admin-only testing: send header x-admin-secret and
 //      ?debug=1            -> adds a _debug block explaining the ranking
 //                             (never counts impressions)
@@ -41,6 +45,7 @@ import {
 } from "./boost.js";
 import { verifySessionToken } from "./auth.js";
 import { inferCategoryFromContext } from "./context.js";
+import { buildTrackingTokens } from "./ad-analytics.js";
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -244,7 +249,8 @@ export async function handleSponsoredProfiles(request, env, servingOverride = nu
   const boostedProfiles = await hydrateProfiles(env, boosted.map((b) => b.profile_id));
 
   const ctaMap = await buildCtaMap(env, boosted, "profile_id");
-  let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}) }));
+  const tokenMap = await buildTrackingTokens(env, boosted, "profile_id");
+  let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}), ...(tokenMap[p.id] ? { t: tokenMap[p.id] } : {}) }));
 
   if (combined.length < limit) {
     const filler = await fillWithRegularProfiles(env, {
@@ -302,7 +308,8 @@ export async function handleSponsoredProducts(request, env, servingOverride = nu
   const boostedProducts = await hydrateProducts(env, boosted.map((b) => b.product_id));
 
   const ctaMap = await buildCtaMap(env, boosted, "product_id");
-  let combined = boostedProducts.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}) }));
+  const tokenMap = await buildTrackingTokens(env, boosted, "product_id");
+  let combined = boostedProducts.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}), ...(tokenMap[p.id] ? { t: tokenMap[p.id] } : {}) }));
 
   if (combined.length < limit) {
     const filler = await fillWithRegularProducts(env, {
@@ -334,7 +341,8 @@ export async function handleSponsoredCatalogues(request, env, servingOverride = 
   const boostedProfiles = await hydrateProfiles(env, boosted.map((b) => b.profile_id));
 
   const ctaMap = await buildCtaMap(env, boosted, "profile_id");
-  let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}) }));
+  const tokenMap = await buildTrackingTokens(env, boosted, "profile_id");
+  let combined = boostedProfiles.map((p) => ({ ...p, isSponsored: true, ...(ctaMap[p.id] ? { cta: ctaMap[p.id] } : {}), ...(tokenMap[p.id] ? { t: tokenMap[p.id] } : {}) }));
 
   if (combined.length < limit) {
     const filler = await fillWithRegularProfiles(env, {
