@@ -23,6 +23,11 @@
    container element — callers only need to create/position an empty
    <div> and hand it to this module; nothing else.
 
+   ANALYTICS: cards the server has signed (data-ad-t) report "seen" (half
+   the card on screen for 1 second, once per page view), taps, and
+   WApp/Call taps back to /api/ads/track in small batches. Silent and
+   best-effort; nothing is sent unless the server issued a token.
+
    LAYOUTS: every mount accepts an optional `format`:
      "strip" (default, the scroller) | "grid" (6 cards + View more) |
      "banner" (one native square ad at a time that rotates while on screen;
@@ -256,6 +261,151 @@
     return profile;
   }
 
+  // ---------------------------------------------------------------------
+  // Ad analytics (seen / taps / contacts). Only cards that carry a
+  // server-signed token (data-ad-t) are ever tracked, and the server only
+  // issues tokens while its analytics switch is ON — with it OFF this code
+  // finds nothing to track and sends nothing.
+  //   SEEN        at least half the card on screen for 1 full second,
+  //               counted once per page view
+  //   TAP         opening the brand / shop / product from the ad
+  //   WApp / Call taps on the contact buttons
+  // Events are batched (one tiny message per page view, sent when the page
+  // is hidden or left) and taps go out immediately. Everything is
+  // best-effort and silent: it can never change how a card looks or works.
+  // ---------------------------------------------------------------------
+  const KNOWN_PLACEMENTS = ["brand", "catalogue", "product", "blog", "home", "more", "other"];
+
+  function inferPlacement() {
+    const path = window.location.pathname || "";
+    if (path.indexOf("/products/") === 0) return "catalogue";
+    if (path.indexOf("/product/") === 0) return "product";
+    if (document.getElementById("liyog-profile-root")) return "brand";
+    return path === "/" || path === "" ? "home" : "blog";
+  }
+  function placementFor(opts) {
+    return opts && KNOWN_PLACEMENTS.indexOf(opts.placement) !== -1 ? opts.placement : inferPlacement();
+  }
+  function validToken(t) { return typeof t === "string" && /^[A-Za-z0-9._-]{10,120}$/.test(t); }
+  function adTokenAttr(item) {
+    return item && item.isSponsored && validToken(item.t) ? ` data-ad-t="${escAttr(item.t)}"` : "";
+  }
+
+  const Tracker = (function () {
+    const TRACK_URL = `${WORKER_BASE}/api/ads/track`;
+    const seen = new Set();            // views already counted in this page view (ad + page type)
+    const taps = {};                   // taps counted per token+type (capped)
+    let queue = [];
+    let timer = null;
+    let observer = null;
+
+    function send(events) {
+      let payload;
+      try { payload = JSON.stringify({ e: events }); } catch (e) { return; }
+      try {
+        if (navigator.sendBeacon && navigator.sendBeacon(TRACK_URL, new Blob([payload], { type: "text/plain;charset=UTF-8" }))) return;
+      } catch (e) { /* fall through */ }
+      try {
+        fetch(TRACK_URL, { method: "POST", body: payload, keepalive: true, headers: { "content-type": "text/plain;charset=UTF-8" } }).catch(() => {});
+      } catch (e) { /* analytics must never throw */ }
+    }
+
+    function flush() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      while (queue.length) send(queue.splice(0, 24));
+    }
+
+    function enqueue(token, type, placement, immediate) {
+      queue.push([token, type, placement || "other"]);
+      if (immediate || queue.length >= 8) flush();
+      else if (!timer) timer = setTimeout(flush, 8000);
+    }
+
+    function isViewable(card) {
+      if (document.hidden) return false;
+      const stage = card.closest(".lp-banner-stage");
+      if (stage) {
+        const root = stage.parentElement;
+        return card.classList.contains("is-active") && !!root && root.dataset.inview === "1";
+      }
+      return card.__adVisible === true;
+    }
+
+    // Counts a view only after the card has stayed viewable for a full second.
+    function arm(card) {
+      const token = card.dataset.adT;
+      if (!token || card.__adArmed) return;
+      // One view per ad per place on the page: the same ad seen in the strip
+      // and again in the See More sheet is two real exposures.
+      const key = token + "|" + card.dataset.adP;
+      if (seen.has(key)) return;
+      card.__adArmed = true;
+      setTimeout(() => {
+        card.__adArmed = false;
+        if (seen.has(key) || !isViewable(card)) return;
+        seen.add(key);
+        enqueue(token, "i", card.dataset.adP);
+      }, 1000);
+    }
+
+    function getObserver() {
+      if (!observer) {
+        observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            // Half the card on screen counts; a very tall card (taller than twice the
+            // screen) can never reach half, so it also counts once at least 30% of it
+            // is showing AND that covers half the screen height.
+            entry.target.__adVisible = entry.isIntersecting && (entry.intersectionRatio >= 0.5 ||
+              (entry.intersectionRatio >= 0.3 && entry.intersectionRect.height >= window.innerHeight * 0.5));
+            if (entry.target.__adVisible) arm(entry.target);
+          });
+        }, { threshold: [0, 0.3, 0.5, 1] });
+      }
+      return observer;
+    }
+
+    /** Start watching every signed card inside `container`. Safe to call repeatedly. */
+    function scan(container, placement) {
+      try {
+        if (!container) return;
+        container.querySelectorAll("[data-ad-t]").forEach((card) => {
+          if (card.__adBound) return;
+          card.__adBound = true;
+          card.dataset.adP = placement || "other";
+          if (card.closest(".lp-banner-stage")) return;          // banners arm the active card themselves
+          if ("IntersectionObserver" in window) getObserver().observe(card);
+          else { card.__adVisible = true; arm(card); }
+        });
+      } catch (e) { /* ignore */ }
+    }
+
+    // Taps: one listener for the whole page (capture phase, so it still sees
+    // taps on buttons that stop the event from bubbling).
+    document.addEventListener("click", (e) => {
+      try {
+        const target = e.target;
+        const card = target && target.closest ? target.closest("[data-ad-t]") : null;
+        if (!card) return;
+        let type = null;
+        if (target.closest("[data-action='whatsapp'], .lp-ad-cta-wa")) type = "w";
+        else if (target.closest("[data-action='call'], .lp-ad-cta-call")) type = "p";
+        else if (target.closest(".lp-ad-info-btn, .lp-card-report-btn, [data-action='like'], [data-action='rate'], [data-ad-modal-action]")) type = null;
+        else if (target.closest("a[href], [data-action='zoom']")) type = "c";
+        if (!type) return;
+        const token = card.dataset.adT;
+        const key = token + type;
+        taps[key] = (taps[key] || 0) + 1;
+        if (taps[key] > 5) return;
+        enqueue(token, type, card.dataset.adP, true);
+      } catch (err) { /* ignore */ }
+    }, true);
+
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
+    window.addEventListener("pagehide", flush);
+
+    return { scan, arm };
+  })();
+
   const AD_FALLBACK_GRADIENTS = [
     ["#FF9A56", "#FF6B6B"], ["#4FACFE", "#00F2FE"], ["#43E97B", "#38F9D7"],
     ["#FA709A", "#FEE140"], ["#667EEA", "#764BA2"], ["#F093FB", "#F5576C"],
@@ -387,7 +537,7 @@
       : (profile.tagline ? `<div class="lp-ad-card-tagline">${esc(truncate(profile.tagline, 60))}</div>` : "");
 
     return `
-      <div class="lp-ad-card${profile.isSponsored ? " lp-ad-card-sponsored" : ""}">
+      <div class="lp-ad-card${profile.isSponsored ? " lp-ad-card-sponsored" : ""}"${adTokenAttr(profile)}>
         <a class="lp-ad-card-media" href="${linkBase}" style="${coverStyle}">
           ${!profile.cover_url ? `<div class="lp-ad-card-media-fallback-mark">${esc(initial)}</div>` : ""}
           ${profile.isSponsored ? adBadgeHtml() : ""}
@@ -496,6 +646,7 @@
       containerEl.className = "lp-section lp-sponsored-strip-section";
       containerEl.innerHTML = stripShellHtml(sectionId, title, profiles.map((p) => profileCardHtml(p, { linkMode: "profile" })).join(""), seeMoreId);
       wireStripArrows(sectionId);
+      Tracker.scan(containerEl, placementFor(opts));
 
       document.getElementById(seeMoreId).addEventListener("click", () => {
         openMoreModal("profiles", { excludeProfileId, title: "More Brands", category, contextText });
@@ -524,6 +675,7 @@
       containerEl.className = "lp-section lp-sponsored-strip-section";
       containerEl.innerHTML = stripShellHtml(sectionId, title, catalogues.map((p) => profileCardHtml(p, { linkMode: "catalogue" })).join(""), seeMoreId);
       wireStripArrows(sectionId);
+      Tracker.scan(containerEl, placementFor(opts));
 
       document.getElementById(seeMoreId).addEventListener("click", () => {
         openMoreModal("catalogues", { excludeProfileId, title: "More Shops", category, contextText });
@@ -571,6 +723,7 @@
       containerEl.className = "lp-section lp-sponsored-strip-section";
       containerEl.innerHTML = stripShellHtml(sectionId, title, products.map((p) => productCardHtml(p)).join(""), seeMoreId);
       wireStripArrows(sectionId);
+      Tracker.scan(containerEl, placementFor(opts));
       wireProductCards(document.getElementById(`${sectionId}-scroll`), products);
 
       document.getElementById(seeMoreId).addEventListener("click", () => {
@@ -602,6 +755,7 @@
     const cardEl = wrapper.firstElementChild;
     if (cardEl) {
       cardEl.classList.add("lp-sponsored-product-card");
+      if (validToken(product.t)) cardEl.setAttribute("data-ad-t", product.t);
       // The normal card's own report-flag button is removed for
       // sponsored items specifically — the info popup already has a
       // "Report this ad" action, so keeping both was two overlapping
@@ -706,6 +860,7 @@
         const linkMode = kind === "catalogues" ? "catalogue" : "profile";
         gridEl.innerHTML = items.map((p) => profileCardHtml(p, { linkMode })).join("");
       }
+      Tracker.scan(gridEl, "more");
     } catch (e) {
       if (myToken !== moreModalRequestToken) return;
       const gridEl = document.getElementById("lp-sponsored-more-grid");
@@ -833,6 +988,7 @@
       <button type="button" class="lp-sponsored-viewmore">View more <span aria-hidden="true">&rsaquo;</span></button>
     `;
     if (surface === "products") wireProductCards(containerEl.querySelector(".lp-sponsored-grid"), items);
+    Tracker.scan(containerEl, placementFor(ctx.opts));
     containerEl.querySelector(".lp-sponsored-viewmore").addEventListener("click", () => {
       openMoreModal(surface, { excludeProfileId: ctx.excludeProfileId, title: FORMAT_DEFAULTS[surface].more, category: ctx.category, contextText: ctx.contextText });
     });
@@ -872,6 +1028,13 @@
       const isStatic = items.length < 2 || reduceMotion;
       root.classList.toggle("is-static", isStatic);
       root.classList.toggle("is-paused", isStatic || !inView || hovering || document.hidden);
+      root.dataset.inview = inView ? "1" : "0";
+      if (inView) trackActive();
+    }
+
+    function trackActive() {
+      const card = stage.children[index];
+      if (card) Tracker.arm(card);
     }
 
     function restartProgress() {
@@ -885,11 +1048,13 @@
       Array.prototype.forEach.call(stage.children, (card, k) => card.classList.toggle("is-active", k === index));
       Array.prototype.forEach.call(dotsEl.children, (dot, k) => dot.classList.toggle("is-active", k === index));
       restartProgress();
+      trackActive();
     }
 
     function fillStage() {
       stage.innerHTML = items.map((it) => cardHtmlFor(surface, it)).join("");
       if (surface === "products") wireProductCards(stage, items);
+      Tracker.scan(stage, placementFor(ctx.opts));
       dotsEl.innerHTML = items.map((_, k) => `<button type="button" class="lp-banner-dot" data-i="${k}" aria-label="Show ad ${k + 1} of ${items.length}"></button>`).join("");
       root.classList.toggle("is-single", items.length < 2);
       updatePaused();
