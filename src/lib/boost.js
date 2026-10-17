@@ -634,10 +634,24 @@ export async function handleBoostCheckout(request, env, userId) {
 
   const purchaseId = crypto.randomUUID();
 
-  await env.DB.prepare(
-    `INSERT INTO boost_purchases (id, profile_id, scope, product_id, duration_id, custom_hours, country_code, currency, amount, method, status, target_countries, target_categories, show_cta)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
-  ).bind(purchaseId, profile_id, scope, product_id || null, resolvedDurationId, resolvedCustomHours, countryCode, currency, amount, method, targeting.targetCountries, targeting.targetCategories, targeting.showCta).run();
+  // created_at stamps WHEN the request was made, so the daily clean-up can
+  // remove unpaid ("pending") requests after a retention period (see
+  // cleanupOldLogs in index.js). If the column hasn't been added to the
+  // database yet, fall back to the original insert so checkout can NEVER
+  // fail because of it — the order of deploy vs. database change is safe.
+  const purchaseValues = [purchaseId, profile_id, scope, product_id || null, resolvedDurationId, resolvedCustomHours, countryCode, currency, amount, method, targeting.targetCountries, targeting.targetCategories, targeting.showCta];
+  try {
+    await env.DB.prepare(
+      `INSERT INTO boost_purchases (id, profile_id, scope, product_id, duration_id, custom_hours, country_code, currency, amount, method, status, target_countries, target_categories, show_cta, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`
+    ).bind(...purchaseValues).run();
+  } catch (insertErr) {
+    if (!/created_at/i.test(String(insertErr && insertErr.message))) throw insertErr;
+    await env.DB.prepare(
+      `INSERT INTO boost_purchases (id, profile_id, scope, product_id, duration_id, custom_hours, country_code, currency, amount, method, status, target_countries, target_categories, show_cta)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
+    ).bind(...purchaseValues).run();
+  }
 
   // Recap is built from the EXACT values just stored.
   const recap = await buildRecap(env, {
@@ -854,15 +868,35 @@ async function getPurchaseHours(env, purchase) {
 async function applyConfirmedBoost(env, purchase) {
   const hours = await getPurchaseHours(env, purchase);
 
-  await env.DB.batch([
-    env.DB.prepare(
-      "UPDATE boost_purchases SET status = 'confirmed', confirmed_at = datetime('now') WHERE id = ?"
-    ).bind(purchase.id),
-    env.DB.prepare(
-      `INSERT INTO boost_log (profile_id, product_id, scope, expires_at, target_countries, target_categories, show_cta)
-       VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'), ?, ?, ?)`
-    ).bind(purchase.profile_id, purchase.product_id || null, purchase.scope, hours, purchase.target_countries, purchase.target_categories, purchase.show_cta)
-  ]);
+  const confirmStmt = env.DB.prepare(
+    "UPDATE boost_purchases SET status = 'confirmed', confirmed_at = datetime('now') WHERE id = ?"
+  ).bind(purchase.id);
+  const logValues = [purchase.profile_id, purchase.product_id || null, purchase.scope, hours, purchase.target_countries, purchase.target_categories, purchase.show_cta];
+
+  // purchase_id links the live boost to its purchase, so analytics can
+  // outlive the boost row. If that column has not been added yet, fall back
+  // to the original insert — activating a paid boost must NEVER fail
+  // because of analytics (the batch is atomic, so nothing is half-applied).
+  try {
+    await env.DB.batch([
+      confirmStmt,
+      env.DB.prepare(
+        `INSERT INTO boost_log (profile_id, product_id, scope, expires_at, target_countries, target_categories, show_cta, purchase_id)
+         VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'), ?, ?, ?, ?)`
+      ).bind(...logValues, purchase.id)
+    ]);
+  } catch (err) {
+    if (!/purchase_id/i.test(String(err && err.message))) throw err;
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE boost_purchases SET status = 'confirmed', confirmed_at = datetime('now') WHERE id = ?"
+      ).bind(purchase.id),
+      env.DB.prepare(
+        `INSERT INTO boost_log (profile_id, product_id, scope, expires_at, target_countries, target_categories, show_cta)
+         VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'), ?, ?, ?)`
+      ).bind(...logValues)
+    ]);
+  }
 }
 
 /** Recap rebuilt from a STORED purchase row (admin response + owner recap). */
@@ -910,7 +944,7 @@ export async function handleActivateBoostPurchase(request, env) {
   const { results } = await env.DB.prepare(
     "SELECT * FROM boost_purchases WHERE id = ?"
   ).bind(purchase_id).all();
-  if (!results.length) return jsonResponse({ error: "Purchase not found." }, 404);
+  if (!results.length) return jsonResponse({ error: "Purchase not found. (Unpaid requests are removed automatically after a few days — if it is older than that, ask the customer to create a new one.)" }, 404);
   const purchase = results[0];
 
   if (purchase.status === "confirmed") return jsonResponse({ success: true, alreadyConfirmed: true });
