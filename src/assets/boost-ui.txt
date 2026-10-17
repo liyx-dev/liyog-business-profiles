@@ -122,6 +122,33 @@
 .lpb-toast{max-width:400px;padding:13px 18px;border-radius:16px;font-size:14px;font-weight:600;color:#fff;box-shadow:0 12px 30px rgba(0,0,0,.28);background:#228b22;opacity:0;transform:translateY(12px);transition:opacity .3s ease,transform .3s ease}
 .lpb-toast.show{opacity:1;transform:translateY(0)}
 .lpb-toast.error{background:#c1271a}
+.lpi-list{display:flex;flex-direction:column;gap:14px;padding-bottom:6px}
+.lpi-card{background:var(--surface-soft,#faf8f2);border:1px solid var(--line,#e4dfd1);border-radius:var(--r-lg,22px);padding:16px;box-shadow:var(--shadow-sm,0 2px 10px rgba(17,17,17,.07))}
+.lpi-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.lpi-title{margin:0;min-width:0;font-family:var(--font-display,inherit);font-size:15px;font-weight:800;line-height:1.3;color:var(--ink,#111);overflow-wrap:anywhere}
+.lpi-chip{flex-shrink:0;display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase}
+.lpi-chip.active{background:rgba(40,164,40,.14);color:var(--liyog-green-dark,#228b22)}
+.lpi-chip.ended{background:var(--line,#e4dfd1);color:var(--ink-soft,#625f53)}
+.lpi-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.lpi-chip.active .lpi-dot{animation:lpi-pulse 1.6s ease-in-out infinite}
+@keyframes lpi-pulse{50%{opacity:.3}}
+.lpi-when{margin:8px 0 0;font-size:12px;line-height:1.5;color:var(--ink-soft,#625f53)}
+.lpi-bar{height:6px;margin-top:10px;border-radius:6px;background:var(--line,#e4dfd1);overflow:hidden}
+.lpi-bar>span{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,#ffd700,#ff7a00)}
+.lpi-left{display:flex;justify-content:space-between;gap:10px;margin-top:6px;font-size:12px;font-weight:700;color:var(--ink,#111)}
+.lpi-left span:last-child{color:var(--ink-soft,#625f53);font-weight:600}
+.lpi-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
+.lpi-kpi{min-width:0;padding:11px 12px;border-radius:14px;background:var(--surface,#fff);border:1px solid var(--line,#e4dfd1)}
+.lpi-kpi strong{display:block;font-family:var(--font-display,inherit);font-size:20px;line-height:1.1;color:var(--ink,#111)}
+.lpi-kpi span{display:block;margin-top:4px;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint,#9b9686)}
+.lpi-kpi em{display:block;margin-top:2px;font-style:normal;font-size:11.5px;line-height:1.35;color:var(--ink-soft,#625f53)}
+.lpi-kpi.good strong{color:var(--liyog-green-dark,#228b22)}
+.lpi-note{margin:12px 0 0;padding:10px 12px;border-radius:14px;background:rgba(255,167,38,.13);border:1px solid rgba(255,167,38,.4);font-size:12px;line-height:1.5;color:var(--ink,#111)}
+.lpi-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.lpi-again{margin-top:12px}
+.lpi-legend{margin:2px 2px 4px;font-size:11.5px;line-height:1.55;color:var(--ink-soft,#625f53)}
+.lpi-empty{padding:26px 10px;text-align:center;font-size:13.5px;line-height:1.6;color:var(--ink-soft,#625f53)}
+.lpi-skel{height:230px;margin-bottom:14px}
 `;
     const style = document.createElement("style");
     style.id = "lpb-styles";
@@ -883,9 +910,151 @@
 
   handleReturnFromCheckout();
 
+  // ------------------------------------------------------------------
+  // Boost insights — what each boost has done for the owner, in plain
+  // numbers: time left, how many times it was delivered / seen, taps,
+  // contacts, profile visits and cost per tap. Read-only; one request
+  // (answers are cached ~2 minutes), nothing here can change a boost.
+  // ------------------------------------------------------------------
+  function fmtNum(n) { return Number(n || 0).toLocaleString(); }
+
+  function fmtWhen(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? "" : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function fmtSpan(ms) {
+    const mins = Math.max(1, Math.round(ms / 60000));
+    if (mins < 60) return `${mins} min`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 48) { const m = mins % 60; return m && hrs < 10 ? `${hrs}h ${m}m` : `${hrs}h`; }
+    const days = Math.floor(hrs / 24), h = hrs % 24;
+    return h ? `${days}d ${h}h` : `${days}d`;
+  }
+
+  function insightTitle(b) {
+    if (b.scope === "product") return b.productName || "A product";
+    return b.scope === "catalogue" ? "All Products Page" : "Your Brand Profile";
+  }
+
+  function insightKpis(b) {
+    const kpis = [];
+    if (b.stats) {
+      const s = b.stats, contacts = s.whatsapp + s.calls;
+      kpis.push({ k: "Seen", v: fmtNum(s.impressions) });
+      kpis.push({ k: "Taps", v: fmtNum(s.clicks), sub: s.impressions ? `${((s.clicks / s.impressions) * 100).toFixed(1)}% of views` : "" });
+      kpis.push({ k: "Contacts", v: fmtNum(contacts), sub: contacts ? `${fmtNum(s.whatsapp)} WApp · ${fmtNum(s.calls)} Call` : "WApp + Call taps" });
+      if (b.amount != null && s.clicks > 0) kpis.push({ k: "Cost per tap", v: formatPrice(Math.round(b.amount / s.clicks), b.currency), good: true });
+    }
+    if (b.served != null) kpis.push({ k: "Delivered", v: fmtNum(b.served), sub: "sent to pages" });
+    if (b.visits) {
+      const d = b.visits.during, before = b.visits.before;
+      kpis.push({ k: "Profile visits", v: fmtNum(d), sub: before ? `vs ${fmtNum(before)} before` : "during your boost", good: d > before });
+    }
+    return kpis;
+  }
+
+  function insightCardHtml(b, nowMs, analyticsOn) {
+    const start = Date.parse(b.startedAt), end = Date.parse(b.endsAt);
+    const active = b.status === "active" && nowMs < end;
+    const pct = Math.min(100, Math.max(0, ((nowMs - start) / Math.max(1, end - start)) * 100));
+    const kpis = insightKpis(b);
+
+    let note = "";
+    if (!analyticsOn) note = "Detailed numbers (Seen, Taps, Contacts) are coming soon.";
+    else if (!b.stats && active) note = "Tracking is on. Numbers appear here as people see your ad, and refresh about every 2 minutes.";
+
+    const countries = b.countries === "ALL" ? "All countries" : b.countries.map((c) => c.name).join(", ");
+    const categories = b.categories === "ALL" ? "All categories" : b.categories.map(prettify).join(", ");
+
+    return `
+      <div class="lpi-card">
+        <div class="lpi-head">
+          <h4 class="lpi-title">${esc(insightTitle(b))}</h4>
+          <span class="lpi-chip ${active ? "active" : "ended"}">${active ? '<i class="lpi-dot"></i>Active' : "Ended"}</span>
+        </div>
+        <p class="lpi-when">${esc(fmtWhen(b.startedAt))} → ${esc(fmtWhen(b.endsAt))}${b.amount != null ? ` · Paid ${esc(formatPrice(b.amount, b.currency))}` : " · Added by Liyog World"}</p>
+        <div class="lpi-bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
+        <div class="lpi-left"><strong>${active ? `${esc(fmtSpan(end - nowMs))} left` : `Ended ${esc(fmtSpan(nowMs - end))} ago`}</strong><span>${esc(formatDuration(b.hours))} boost</span></div>
+        ${kpis.length ? `<div class="lpi-kpis">${kpis.map((x) => `
+          <div class="lpi-kpi${x.good ? " good" : ""}"><strong>${esc(x.v)}</strong><span>${esc(x.k)}</span>${x.sub ? `<em>${esc(x.sub)}</em>` : ""}</div>`).join("")}</div>` : ""}
+        ${note ? `<p class="lpi-note">${esc(note)}</p>` : ""}
+        <div class="lpi-tags">
+          <span class="lpb-chip">${ICON.globe || ""}${esc(countries)}</span>
+          <span class="lpb-chip">${esc(categories)}</span>
+          <span class="lpb-chip${b.showCta ? "" : " off"}">Contact buttons ${b.showCta ? "on" : "off"}</span>
+        </div>
+        ${active ? "" : `<button type="button" class="lp-btn lp-btn-gold lpb-btn-full lpi-again" data-again="${esc(b.key)}"><span>Boost again</span></button>`}
+      </div>`;
+  }
+
+  function renderInsights(body, p, data, overlay) {
+    const offset = Date.parse(data.serverNow) - Date.now();
+    const nowMs = Date.now() + (isNaN(offset) ? 0 : offset);
+    const analyticsOn = !!(data.analytics && data.analytics.enabled);
+    const boosts = data.boosts || [];
+
+    if (!boosts.length) {
+      body.innerHTML = `<p class="lpi-empty">You haven't boosted anything yet.<br>Boost your brand profile, your products page, or a single product, and see how it performs right here.</p>`;
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="lpi-list">${boosts.map((b) => insightCardHtml(b, nowMs, analyticsOn)).join("")}</div>
+      ${analyticsOn ? `<p class="lpi-legend"><strong>Seen</strong> = at least half of your ad on screen for 1 second. <strong>Taps</strong> = people who opened it. <strong>Contacts</strong> = WApp and Call taps. Numbers count from when tracking was switched on.</p>` : ""}
+    `;
+    body.querySelectorAll("[data-again]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const b = boosts.find((x) => x.key === btn.dataset.again);
+        if (!b) return;
+        closeSheet(overlay);
+        openBoostSheetWithContext(p, { scope: b.scope, product: b.scope === "product" && b.productId ? { id: b.productId, name: b.productName || "" } : null });
+      });
+    });
+  }
+
+  async function openInsights(p) {
+    const host = getOverlayHost();
+    let overlay = document.getElementById("lp-boost-insights-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "lp-sheet-overlay";
+      overlay.id = "lp-boost-insights-overlay";
+      host.appendChild(overlay);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSheet(overlay); });
+    }
+    overlay.innerHTML = `
+      <div class="lp-sheet lp-sheet-tall">
+        <div class="lp-sheet-top-bar">
+          <div class="lp-sheet-handle"></div>
+          <button class="lp-sheet-close" id="lp-boost-insights-close" type="button" aria-label="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <h3 class="lpb-title">Boost insights</h3>
+        <p class="lpb-sub">How your boosts are performing</p>
+        <div id="lpi-body"><div class="lpb-skeleton lpi-skel"></div><div class="lpb-skeleton lpi-skel"></div></div>
+      </div>`;
+    document.getElementById("lp-boost-insights-close").addEventListener("click", () => closeSheet(overlay));
+    openSheet(overlay);
+
+    const body = overlay.querySelector("#lpi-body");
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/profiles/${encodeURIComponent(p.id)}/boost-insights`, { credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Couldn't load your insights right now.");
+      renderInsights(body, p, data, overlay);
+    } catch (err) {
+      body.innerHTML = `<p class="lpi-empty">${esc(err.message || "Couldn't load your insights right now.")}</p>
+        <button type="button" class="lp-btn lp-btn-primary lpb-btn-full" id="lpi-retry"><span>Try again</span></button>`;
+      document.getElementById("lpi-retry").addEventListener("click", () => openInsights(p));
+    }
+  }
+
   window.LiyogBoostUI = {
-    version: "3a.3",
-    openBoostSheet: openBoostSheetWithContext
+    version: "3c.1",
+    openBoostSheet: openBoostSheetWithContext,
+    openInsights
   };
   try { console.info("[LiyogBoostUI] 3a.3 loaded"); } catch (e) {}
 })();
