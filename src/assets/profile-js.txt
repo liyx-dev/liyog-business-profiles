@@ -3510,6 +3510,10 @@ function renderProductsManagePanel(panel, p, products, maxProducts) {
   panel.innerHTML = `
     <div class="lp-boost-banner" id="lp-profile-boost-banner"></div>
     <div class="lp-boost-banner" id="lp-catalogue-boost-banner"></div>
+<button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-boost-insights-btn" style="width:100%;margin:2px 0 14px;">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="6" y1="20" x2="6" y2="12"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="18" y1="20" x2="18" y2="9"/></svg>
+      <span>Boost insights</span>
+    </button>
 
     <div class="lp-products-tab-header">
       <button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-tab-share-btn-unlocked"><span>Share My Referral Link</span></button>
@@ -3570,7 +3574,13 @@ function renderProductsManagePanel(panel, p, products, maxProducts) {
     navigator.clipboard.writeText(shareUrl).then(() => showToast("Referral link copied!", "success"));
   });
   document.getElementById("lp-tab-referrals-btn")?.addEventListener("click", () => openReferralsSheet(p));
-  document.getElementById("lp-add-product-btn")?.addEventListener("click", () => openProductFormSheet(p, null));
+
+document.getElementById("lp-boost-insights-btn")?.addEventListener("click", () => {
+    if (window.LiyogBoostUI && window.LiyogBoostUI.openInsights) window.LiyogBoostUI.openInsights(p);
+    else showToast("Insights aren't available right now — please refresh and try again.", "error");
+  });
+
+document.getElementById("lp-add-product-btn")?.addEventListener("click", () => openProductFormSheet(p, null));
   document.getElementById("lp-tab-upgrade-btn-unlocked")?.addEventListener("click", () => {
     if (window.LiyogTiersUI) window.LiyogTiersUI.openUpgradeSheet(p);
   });
