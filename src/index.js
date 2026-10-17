@@ -1,3 +1,4 @@
+// index.js edited for boost analytics:
 import PROFILE_CSS from "./assets/profile-css.txt";
 import PROFILE_JS from "./assets/profile-js.txt";
 import PRODUCT_PAGES_CLIENT_JS from "./assets/product-pages-client.txt";
@@ -22,6 +23,7 @@ import {
   handleBoostPaystackWebhook, handleActivateBoostPurchase, handleActiveBoosts, handleBoostRecap
 } from "./lib/boost.js";
 import { handleSponsoredProfiles, handleSponsoredProducts, handleSponsoredCatalogues } from "./lib/discovery.js";
+import { handleAdTrack, handleBoostInsights } from "./lib/ad-analytics.js";
 import { handleGetPricing, handleCheckout, handlePaystackCallback, handlePaystackWebhook, handleActivateTier, handleTierStatus } from "./lib/tiers.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
@@ -1063,6 +1065,22 @@ if (url.pathname === "/api/boost/recap" && request.method === "GET") {
       return handleSponsoredCatalogues(request, env);
     }
 
+// ---- Ad analytics: tracking beacons from sponsored cards. Public,
+    // tiny, and ALWAYS answers 204 (it can never affect a page). Does
+    // nothing while the analytics switch is off. See lib/ad-analytics.js.
+    if (url.pathname === "/api/ads/track" && request.method === "POST") {
+      return handleAdTrack(request, env);
+    }
+
+    // ---- Boost insights for the owner of a profile (owner-only). ----
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/boost-insights$/) && request.method === "GET") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      const profileId = url.pathname.split("/")[3];
+      return handleBoostInsights(env, profileId, userId);
+    }
+
     // ---- Ads: report a sponsored item — logs to D1 for manual review.
     // Fire-and-forget from the frontend, so this stays deliberately
     // simple: no auth required (a report shouldn't be gated behind
@@ -1411,6 +1429,11 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
   }
 };
 
+// How long an UNPAID boost request (manual WhatsApp request or abandoned card
+// checkout) is kept before the daily clean-up removes it. Confirmed purchases
+// are never touched. Change the number to keep them longer or shorter.
+const BOOST_PENDING_RETENTION_DAYS = 7;
+
 async function cleanupOldLogs(env) {
   try {
     const result = await env.DB.batch([
@@ -1429,6 +1452,21 @@ async function cleanupOldLogs(env) {
     console.log("Cleanup complete:", JSON.stringify(result.map(r => r.meta)));
   } catch (err) {
     console.error("Scheduled cleanup failed:", err);
+  }
+
+  // Unpaid boost requests (manual WhatsApp requests never paid, and card
+  // checkouts that were abandoned). Kept in its OWN try/catch, outside the
+  // batch above, so a problem here can never stop the other clean-ups.
+  // Only 'pending' rows older than the retention period are removed;
+  // 'confirmed' (your payment record) and 'failed' are never touched, and
+  // neither is any row without a creation time.
+  try {
+    const res = await env.DB.prepare(
+      "DELETE FROM boost_purchases WHERE status = 'pending' AND created_at IS NOT NULL AND created_at < datetime('now', '-' || ? || ' days')"
+    ).bind(BOOST_PENDING_RETENTION_DAYS).run();
+    console.log("Boost purchase clean-up:", JSON.stringify(res.meta));
+  } catch (err) {
+    console.error("Boost purchase clean-up failed (other clean-ups unaffected):", err);
   }
 }
 
@@ -1481,3 +1519,4 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
+
