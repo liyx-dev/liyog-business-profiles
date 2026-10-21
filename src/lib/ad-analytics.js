@@ -29,6 +29,7 @@
 import { COUNTRY_NAMES, parseTargetList } from "./boost.js";
 
 const FLAG_KEY = "boost_analytics_enabled";
+const SINCE_KEY = "boost_analytics_since";
 const TOKEN_TTL_SECONDS = 12 * 3600;
 const MAX_EVENTS_PER_BEACON = 24;
 const MAX_BODY_CHARS = 6000;
@@ -56,9 +57,41 @@ export async function isAnalyticsEnabled(env) {
   return value;
 }
 
-/** Forget the cached switch value (used by tests and safe to call anytime). */
+/** Forget the cached values (used by tests and safe to call anytime). */
 export function resetAnalyticsCache() {
   flagCache = { value: false, at: 0 };
+  sinceCache = { value: null };
+}
+
+// ---------------------------------------------------------------------
+// "Tracking began" — the moment counting started. A boost that started
+// BEFORE this has only part of its life counted, so its cost per tap
+// would look too high; the Insights sheet hides it for those boosts.
+// Stored once in app_settings (boost_analytics_since, UTC). If the switch
+// was turned on without it, it is worked out once from the data (the
+// first hour that has any counts) and remembered.
+// ---------------------------------------------------------------------
+let sinceCache = { value: null };    // 'YYYY-MM-DD HH:MM:SS' once known; it never changes
+
+export async function getAnalyticsSince(env, { derive = true } = {}) {
+  if (sinceCache.value) return sinceCache.value;
+  try {
+    const { results } = await env.DB.prepare("SELECT value FROM app_settings WHERE key = ?").bind(SINCE_KEY).all();
+    if (results.length && results[0].value) { sinceCache.value = String(results[0].value); return sinceCache.value; }
+    if (!derive) return null;
+
+    let first = null;
+    try {
+      const r = await env.DB.prepare("SELECT MIN(bucket) AS first FROM boost_stats_hourly").all();
+      first = r.results[0] && r.results[0].first;
+    } catch (e) { first = null; }
+    const since = first ? `${first}:00` : new Date().toISOString().slice(0, 19).replace("T", " ");
+    await env.DB.prepare(
+      "INSERT INTO app_settings (key, value) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?)"
+    ).bind(SINCE_KEY, since, SINCE_KEY).run();
+    sinceCache.value = since;
+    return since;
+  } catch (e) { return null; }
 }
 
 // ---------------------------------------------------------------------
@@ -334,6 +367,10 @@ export async function handleBoostInsights(env, profileId, userId) {
     });
     const shown = boosts.slice(0, MAX_BOOSTS);
 
+    const enabled = await isAnalyticsEnabled(env);
+    const sinceStr = await getAnalyticsSince(env, { derive: enabled });
+    const sinceMs = sinceStr ? toMs(sinceStr) : null;
+
     const visits = await loadVisits(env, profileId, shown, nowMs);
     const statKeys = [...new Set(shown.flatMap((b) => b.statKeys))].slice(0, 40);
     const stats = await loadStats(env, statKeys);
@@ -345,9 +382,14 @@ export async function handleBoostInsights(env, profileId, userId) {
 
     return respond({
       serverNow: toIso(nowMs),
-      analytics: { enabled: await isAnalyticsEnabled(env) },
+      analytics: { enabled, since: sinceMs ? toIso(sinceMs) : null },
       boosts: shown.map((b) => {
         const parts = b.statKeys.map((k) => stats[k]).filter(Boolean);
+        // Counting only began at `since`. A boost that started earlier has only part
+        // of its life counted ("partial"); one that ended before it has none.
+        const known = sinceMs != null;
+        const beforeTracking = known && b.endMs <= sinceMs;
+        const statsPartial = !beforeTracking && (enabled || parts.length > 0) && (!known || b.startMs < sinceMs);
         return {
           key: b.key, source: b.source, scope: b.scope, productId: b.productId, productName: b.productName,
           status: b.endMs > nowMs ? "active" : "ended",
@@ -356,6 +398,7 @@ export async function handleBoostInsights(env, profileId, userId) {
           countries: countryList(b.countriesRaw), categories: parseTargetList(b.categoriesRaw), showCta: b.showCta,
           served: b.served,
           visits: visits[b.key] || null,
+          statsPartial, beforeTracking,
           stats: parts.length ? parts.reduce((t, s) => ({
             impressions: t.impressions + s.impressions, clicks: t.clicks + s.clicks,
             whatsapp: t.whatsapp + s.whatsapp, calls: t.calls + s.calls
@@ -368,4 +411,3 @@ export async function handleBoostInsights(env, profileId, userId) {
     return respond({ error: "Couldn't load insights right now." }, 500);
   }
 }
-
