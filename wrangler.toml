@@ -20,3 +20,4 @@ enabled = true
 invocation_logs = true
 [ai]
 binding = "AI"
+
