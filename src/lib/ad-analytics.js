@@ -27,6 +27,7 @@
 // =====================================================================
 
 import { COUNTRY_NAMES, parseTargetList } from "./boost.js";
+import { getTunables } from "./analytics-settings.js";
 
 const FLAG_KEY = "boost_analytics_enabled";
 const SINCE_KEY = "boost_analytics_since";
@@ -61,6 +62,7 @@ export async function isAnalyticsEnabled(env) {
 export function resetAnalyticsCache() {
   flagCache = { value: false, at: 0 };
   sinceCache = { value: null };
+  purchaseCache.clear();
 }
 
 // ---------------------------------------------------------------------
@@ -153,12 +155,24 @@ export async function buildTrackingTokens(env, boosted, keyField) {
   try {
     if (!boosted || !boosted.length) return {};
     if (!env.ADMIN_SECRET || !(await isAnalyticsEnabled(env))) return {};
-    const ids = boosted.map((b) => b.id);
-    const { results } = await env.DB.prepare(
-      `SELECT id, purchase_id FROM boost_log WHERE id IN (${ids.map(() => "?").join(",")})`
-    ).bind(...ids).all();
+
+    // A boost's purchase never changes, so it is remembered in memory for 10 minutes:
+    // after the first look, serving ads costs ZERO extra database reads for this.
+    const now = Date.now();
     const purchaseById = {};
-    results.forEach((r) => { purchaseById[r.id] = r.purchase_id; });
+    const missing = [];
+    boosted.forEach((b) => {
+      const hit = purchaseCache.get(b.id);
+      if (hit && now - hit.at < PURCHASE_CACHE_MS) purchaseById[b.id] = hit.purchaseId;
+      else missing.push(b.id);
+    });
+    if (missing.length) {
+      const { results } = await env.DB.prepare(
+        `SELECT id, purchase_id FROM boost_log WHERE id IN (${missing.map(() => "?").join(",")})`
+      ).bind(...missing).all();
+      if (purchaseCache.size > PURCHASE_CACHE_MAX) purchaseCache.clear();
+      results.forEach((r) => { purchaseById[r.id] = r.purchase_id; purchaseCache.set(r.id, { purchaseId: r.purchase_id, at: now }); });
+    }
 
     const map = {};
     for (const b of boosted) {
@@ -172,6 +186,10 @@ export async function buildTrackingTokens(env, boosted, keyField) {
     return {};
   }
 }
+
+const purchaseCache = new Map();               // boost_log id -> { purchaseId, at }
+const PURCHASE_CACHE_MS = 10 * 60 * 1000;
+const PURCHASE_CACHE_MAX = 5000;
 
 // ---------------------------------------------------------------------
 // Collector
@@ -231,13 +249,25 @@ export async function handleAdTrack(request, env) {
 
 // ---------------------------------------------------------------------
 // Owner insights
+//
+// One "assembler" builds the owner's boost list, and the chart detail uses
+// the same matching logic, so the two can never disagree. Every ACTIVE
+// boost is always shown (up to a generous safety cap); only the ENDED
+// history is limited, by the setting analytics_history_limit.
 // ---------------------------------------------------------------------
 const toMs = (s) => Date.parse(String(s).replace(" ", "T") + "Z");
 const toIso = (ms) => new Date(ms).toISOString();
 const toSqlTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
-const VISITS_WINDOW_DAYS = 30;     // profile_views is only kept for 30 days
-const MAX_BOOSTS = 20;
+const HOUR = 3600e3;
+const DAY = 86400e3;
+const VISITS_WINDOW_DAYS = 30;      // profile_views is only kept for 30 days
+const MAX_ACTIVE = 50;              // safety cap on simultaneously active boosts shown
 const MAX_VISIT_BOOSTS = 6;
+const MATCH_WINDOW_MS = 90000;      // a boost row and its purchase are written in the same second
+const PARAM_CHUNK = 90;             // D1 allows at most 100 bound values in one query
+const CHART_GRACE_MS = 12 * HOUR;   // tracking tokens stay valid 12h, so counts can land just after a boost ends
+const CHART_MAX_POINTS = 340;
+const CHART_MAX_COUNTRIES = 8;
 
 function respond(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -249,24 +279,131 @@ function respond(data, status = 200) {
   });
 }
 
-async function loadLiveBoosts(env, profileId) {
+const chunk = (list, size) => {
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+};
+
+const addCounts = (a, b) => ({
+  impressions: a.impressions + b.impressions, clicks: a.clicks + b.clicks,
+  whatsapp: a.whatsapp + b.whatsapp, calls: a.calls + b.calls
+});
+const ZERO = () => ({ impressions: 0, clicks: 0, whatsapp: 0, calls: 0 });
+
+async function loadLiveBoosts(env, profileId, keepDays) {
   const base = `SELECT bl.id, bl.scope, bl.product_id, bl.boosted_at, bl.expires_at, bl.impression_count,
                        bl.target_countries, bl.target_categories, bl.show_cta, %PURCHASE% pr.name AS product_name
                 FROM boost_log bl LEFT JOIN products pr ON pr.id = bl.product_id
-                WHERE bl.profile_id = ? AND bl.expires_at > datetime('now', '-7 days')
+                WHERE bl.profile_id = ? AND bl.expires_at > datetime('now', '-' || ? || ' days')
                 ORDER BY bl.expires_at ASC`;
   try {
-    const { results } = await env.DB.prepare(base.replace("%PURCHASE%", "bl.purchase_id,")).bind(profileId).all();
+    const { results } = await env.DB.prepare(base.replace("%PURCHASE%", "bl.purchase_id,")).bind(profileId, keepDays).all();
     return results;
   } catch (e) {
-    const { results } = await env.DB.prepare(base.replace("%PURCHASE%", "")).bind(profileId).all();
+    const { results } = await env.DB.prepare(base.replace("%PURCHASE%", "")).bind(profileId, keepDays).all();
     return results.map((r) => ({ ...r, purchase_id: null }));
   }
 }
 
+const PURCHASE_SELECT = `
+  SELECT bpu.id, bpu.scope, bpu.product_id, bpu.custom_hours, bpu.currency, bpu.amount,
+         bpu.target_countries, bpu.target_categories, bpu.show_cta, bpu.confirmed_at,
+         bp.hours AS pricing_hours, pr.name AS product_name
+  FROM boost_purchases bpu
+  LEFT JOIN boost_pricing bp ON bp.duration_id = bpu.duration_id AND bp.country_code = bpu.country_code
+  LEFT JOIN products pr ON pr.id = bpu.product_id`;
+
+/** Newest purchases, plus the purchases behind every live boost even when they are older. */
+async function loadPurchases(env, profileId, logs, historyLimit, activeCount) {
+  const found = new Map();
+  const want = historyLimit + activeCount + 1;
+  const { results: recent } = await env.DB.prepare(
+    `${PURCHASE_SELECT} WHERE bpu.profile_id = ? AND bpu.status = 'confirmed' ORDER BY bpu.confirmed_at DESC LIMIT ?`
+  ).bind(profileId, want).all();
+  recent.forEach((r) => found.set(r.id, r));
+
+  const ids = [...new Set(logs.map((l) => l.purchase_id).filter(Boolean))].filter((id) => !found.has(id)).slice(0, PARAM_CHUNK - 5);
+  const legacy = logs.filter((l) => !l.purchase_id);
+  if (ids.length || legacy.length) {
+    const where = [];
+    const binds = [profileId];
+    if (ids.length) { where.push(`bpu.id IN (${ids.map(() => "?").join(",")})`); binds.push(...ids); }
+    if (legacy.length) {
+      const times = legacy.map((l) => toMs(l.boosted_at));
+      where.push("bpu.confirmed_at BETWEEN ? AND ?");
+      binds.push(toSqlTime(Math.min(...times) - MATCH_WINDOW_MS), toSqlTime(Math.max(...times) + MATCH_WINDOW_MS));
+    }
+    const { results } = await env.DB.prepare(
+      `${PURCHASE_SELECT} WHERE bpu.profile_id = ? AND bpu.status = 'confirmed' AND (${where.join(" OR ")})`
+    ).bind(...binds).all();
+    results.forEach((r) => found.set(r.id, r));
+  }
+  return { rows: [...found.values()], moreExist: recent.length === want };
+}
+
+function boostFromPurchase(pu, logs) {
+  let log = logs.find((l) => !l._used && l.purchase_id && l.purchase_id === pu.id);
+  if (!log) {
+    // Boosts bought before purchase_id existed: match on what they are and the
+    // second they were confirmed (both are written together).
+    log = logs.find((l) => !l._used && !l.purchase_id && l.scope === pu.scope &&
+      (l.product_id || null) === (pu.product_id || null) &&
+      Math.abs(toMs(l.boosted_at) - toMs(pu.confirmed_at)) <= MATCH_WINDOW_MS);
+  }
+  if (log) log._used = true;
+  const hours = pu.custom_hours || pu.pricing_hours || 24;
+  const startMs = log ? toMs(log.boosted_at) : toMs(pu.confirmed_at);
+  const endMs = log ? toMs(log.expires_at) : startMs + hours * HOUR;
+  return {
+    key: pu.id, statKeys: [pu.id, log ? `L${log.id}` : null].filter(Boolean),
+    source: "purchase", scope: pu.scope, productId: pu.product_id || null, productName: pu.product_name || null,
+    startMs, endMs, hours, amount: pu.amount, currency: pu.currency,
+    countriesRaw: pu.target_countries, categoriesRaw: pu.target_categories, showCta: Number(pu.show_cta) === 1,
+    served: log ? Number(log.impression_count) || 0 : null
+  };
+}
+
+function boostFromLog(log) {
+  return {
+    key: `L${log.id}`, statKeys: [`L${log.id}`],
+    source: "granted", scope: log.scope, productId: log.product_id || null, productName: log.product_name || null,
+    startMs: toMs(log.boosted_at), endMs: toMs(log.expires_at),
+    hours: Math.round((toMs(log.expires_at) - toMs(log.boosted_at)) / HOUR), amount: null, currency: null,
+    countriesRaw: log.target_countries, categoriesRaw: log.target_categories, showCta: Number(log.show_cta) === 1,
+    served: Number(log.impression_count) || 0
+  };
+}
+
+async function assembleBoosts(env, profileId, nowMs, t) {
+  const logs = (await loadLiveBoosts(env, profileId, t.boost_log_retention_days)).map((l) => ({ ...l, _used: false }));
+  const activeCount = logs.filter((l) => toMs(l.expires_at) > nowMs).length;
+  const { rows, moreExist } = await loadPurchases(env, profileId, logs, t.analytics_history_limit, activeCount);
+
+  const all = rows.map((pu) => boostFromPurchase(pu, logs));
+  logs.filter((l) => !l._used).forEach((l) => all.push(boostFromLog(l)));
+
+  const active = all.filter((b) => b.endMs > nowMs).sort((a, b) => a.endMs - b.endMs).slice(0, MAX_ACTIVE);
+  const endedAll = all.filter((b) => b.endMs <= nowMs).sort((a, b) => b.endMs - a.endMs);
+  const ended = endedAll.slice(0, t.analytics_history_limit);
+  return { boosts: [...active, ...ended], hasMoreHistory: endedAll.length > ended.length || moreExist };
+}
+
+async function findBoost(env, profileId, key, nowMs, t) {
+  const logs = (await loadLiveBoosts(env, profileId, t.boost_log_retention_days)).map((l) => ({ ...l, _used: false }));
+  if (/^L\d+$/.test(key)) {
+    const log = logs.find((l) => l.id === Number(key.slice(1)));
+    return log ? boostFromLog(log) : null;
+  }
+  const { results } = await env.DB.prepare(
+    `${PURCHASE_SELECT} WHERE bpu.id = ? AND bpu.profile_id = ? AND bpu.status = 'confirmed'`
+  ).bind(key, profileId).all();
+  return results.length ? boostFromPurchase(results[0], logs) : null;
+}
+
 async function loadVisits(env, profileId, boosts, nowMs) {
   const candidates = boosts
-    .filter((b) => b.scope === "profile" && nowMs - b.startMs < VISITS_WINDOW_DAYS * 86400e3)
+    .filter((b) => b.scope === "profile" && nowMs - b.startMs < VISITS_WINDOW_DAYS * DAY)
     .slice(0, MAX_VISIT_BOOSTS);
   if (!candidates.length) return {};
   try {
@@ -294,102 +431,69 @@ async function loadVisits(env, profileId, boosts, nowMs) {
   } catch (e) { return {}; }
 }
 
+/** Totals per boost = recent hourly counters + older daily roll-ups, so the nightly roll-up never changes a number. */
 async function loadStats(env, keys) {
-  if (!keys.length) return {};
-  try {
-    const { results } = await env.DB.prepare(
-      `SELECT stat_key, SUM(impressions) AS i, SUM(clicks) AS c, SUM(whatsapp) AS w, SUM(calls) AS p
-       FROM boost_stats_hourly WHERE stat_key IN (${keys.map(() => "?").join(",")}) GROUP BY stat_key`
-    ).bind(...keys).all();
-    const out = {};
-    results.forEach((r) => { out[r.stat_key] = { impressions: Number(r.i) || 0, clicks: Number(r.c) || 0, whatsapp: Number(r.w) || 0, calls: Number(r.p) || 0 }; });
-    return out;
-  } catch (e) { return {}; }
+  const out = {};
+  const add = (key, c) => { out[key] = out[key] ? addCounts(out[key], c) : c; };
+  for (const table of ["boost_stats_hourly", "boost_stats_daily"]) {
+    for (const part of chunk(keys, PARAM_CHUNK)) {
+      try {
+        const { results } = await env.DB.prepare(
+          `SELECT stat_key, SUM(impressions) AS i, SUM(clicks) AS c, SUM(whatsapp) AS w, SUM(calls) AS p
+           FROM ${table} WHERE stat_key IN (${part.map(() => "?").join(",")}) GROUP BY stat_key`
+        ).bind(...part).all();
+        results.forEach((r) => add(r.stat_key, { impressions: Number(r.i) || 0, clicks: Number(r.c) || 0, whatsapp: Number(r.w) || 0, calls: Number(r.p) || 0 }));
+      } catch (e) { /* that table may not exist yet: skip it */ }
+    }
+  }
+  return out;
 }
 
-/** GET /api/profiles/:id/boost-insights — owner only. */
-export async function handleBoostInsights(env, profileId, userId) {
+const countryList = (raw) => {
+  const list = parseTargetList(raw);
+  return list === "ALL" ? "ALL" : list.map((code) => ({ code, name: COUNTRY_NAMES[code] || code }));
+};
+
+/** Is only part of this boost's life counted? (Tracking began after it started.) */
+function coverage(b, enabled, hasStats, sinceMs) {
+  const known = sinceMs != null;
+  const beforeTracking = known && b.endMs <= sinceMs;
+  const statsPartial = !beforeTracking && (enabled || hasStats) && (!known || b.startMs < sinceMs);
+  return { beforeTracking, statsPartial };
+}
+
+/** GET /api/profiles/:id/boost-insights[?h=N] — owner only. */
+export async function handleBoostInsights(env, profileId, userId, opts = {}) {
   try {
     const { results: owner } = await env.DB.prepare("SELECT owner_id FROM profiles WHERE id = ?").bind(profileId).all();
     if (!owner.length) return respond({ error: "Profile not found." }, 404);
     if (owner[0].owner_id !== userId) return respond({ error: "Not your profile." }, 403);
 
+    const t = await getTunables(env);
+    const asked = Math.floor(Number(opts.history));
+    const tunables = Number.isFinite(asked) && asked > 0 ? { ...t, analytics_history_limit: Math.min(100, Math.max(1, asked)) } : t;
+
     const nowMs = Date.now();
-    const { results: purchases } = await env.DB.prepare(
-      `SELECT bpu.id, bpu.scope, bpu.product_id, bpu.custom_hours, bpu.currency, bpu.amount,
-              bpu.target_countries, bpu.target_categories, bpu.show_cta, bpu.confirmed_at,
-              bp.hours AS pricing_hours, pr.name AS product_name
-       FROM boost_purchases bpu
-       LEFT JOIN boost_pricing bp ON bp.duration_id = bpu.duration_id AND bp.country_code = bpu.country_code
-       LEFT JOIN products pr ON pr.id = bpu.product_id
-       WHERE bpu.profile_id = ? AND bpu.status = 'confirmed'
-       ORDER BY bpu.confirmed_at DESC LIMIT ?`
-    ).bind(profileId, MAX_BOOSTS).all();
-    const logs = (await loadLiveBoosts(env, profileId)).map((l) => ({ ...l, _used: false }));
-
-    const boosts = [];
-    for (const pu of purchases) {
-      let log = logs.find((l) => !l._used && l.purchase_id && l.purchase_id === pu.id);
-      if (!log) {
-        // Boosts bought before purchase_id existed: match on what they are
-        // and the second they were confirmed (both are written together).
-        log = logs.find((l) => !l._used && !l.purchase_id && l.scope === pu.scope &&
-          (l.product_id || null) === (pu.product_id || null) &&
-          Math.abs(toMs(l.boosted_at) - toMs(pu.confirmed_at)) <= 90000);
-      }
-      if (log) log._used = true;
-      const hours = pu.custom_hours || pu.pricing_hours || 24;
-      const startMs = log ? toMs(log.boosted_at) : toMs(pu.confirmed_at);
-      const endMs = log ? toMs(log.expires_at) : startMs + hours * 3600e3;
-      boosts.push({
-        key: pu.id, statKeys: [pu.id, log ? `L${log.id}` : null].filter(Boolean),
-        source: "purchase", scope: pu.scope, productId: pu.product_id || null, productName: pu.product_name || null,
-        startMs, endMs, hours, amount: pu.amount, currency: pu.currency,
-        countriesRaw: pu.target_countries, categoriesRaw: pu.target_categories, showCta: Number(pu.show_cta) === 1,
-        served: log ? Number(log.impression_count) || 0 : null
-      });
-    }
-    for (const log of logs.filter((l) => !l._used)) {
-      boosts.push({
-        key: `L${log.id}`, statKeys: [`L${log.id}`],
-        source: "granted", scope: log.scope, productId: log.product_id || null, productName: log.product_name || null,
-        startMs: toMs(log.boosted_at), endMs: toMs(log.expires_at),
-        hours: Math.round((toMs(log.expires_at) - toMs(log.boosted_at)) / 3600e3), amount: null, currency: null,
-        countriesRaw: log.target_countries, categoriesRaw: log.target_categories, showCta: Number(log.show_cta) === 1,
-        served: Number(log.impression_count) || 0
-      });
-    }
-
-    boosts.sort((a, b) => {
-      const aActive = a.endMs > nowMs, bActive = b.endMs > nowMs;
-      if (aActive !== bActive) return aActive ? -1 : 1;
-      return aActive ? a.endMs - b.endMs : b.endMs - a.endMs;
-    });
-    const shown = boosts.slice(0, MAX_BOOSTS);
+    const { boosts: shown, hasMoreHistory } = await assembleBoosts(env, profileId, nowMs, tunables);
 
     const enabled = await isAnalyticsEnabled(env);
     const sinceStr = await getAnalyticsSince(env, { derive: enabled });
     const sinceMs = sinceStr ? toMs(sinceStr) : null;
 
     const visits = await loadVisits(env, profileId, shown, nowMs);
-    const statKeys = [...new Set(shown.flatMap((b) => b.statKeys))].slice(0, 40);
-    const stats = await loadStats(env, statKeys);
-
-    const countryList = (raw) => {
-      const list = parseTargetList(raw);
-      return list === "ALL" ? "ALL" : list.map((code) => ({ code, name: COUNTRY_NAMES[code] || code }));
-    };
+    const stats = await loadStats(env, [...new Set(shown.flatMap((b) => b.statKeys))]);
 
     return respond({
       serverNow: toIso(nowMs),
       analytics: { enabled, since: sinceMs ? toIso(sinceMs) : null },
+      config: {
+        historyLimit: tunables.analytics_history_limit,
+        chartHourlyMaxHours: t.analytics_chart_hourly_max_hours,
+        summaryWindowDays: t.analytics_summary_window_days
+      },
+      hasMoreHistory,
       boosts: shown.map((b) => {
         const parts = b.statKeys.map((k) => stats[k]).filter(Boolean);
-        // Counting only began at `since`. A boost that started earlier has only part
-        // of its life counted ("partial"); one that ended before it has none.
-        const known = sinceMs != null;
-        const beforeTracking = known && b.endMs <= sinceMs;
-        const statsPartial = !beforeTracking && (enabled || parts.length > 0) && (!known || b.startMs < sinceMs);
         return {
           key: b.key, source: b.source, scope: b.scope, productId: b.productId, productName: b.productName,
           status: b.endMs > nowMs ? "active" : "ended",
@@ -398,11 +502,8 @@ export async function handleBoostInsights(env, profileId, userId) {
           countries: countryList(b.countriesRaw), categories: parseTargetList(b.categoriesRaw), showCta: b.showCta,
           served: b.served,
           visits: visits[b.key] || null,
-          statsPartial, beforeTracking,
-          stats: parts.length ? parts.reduce((t, s) => ({
-            impressions: t.impressions + s.impressions, clicks: t.clicks + s.clicks,
-            whatsapp: t.whatsapp + s.whatsapp, calls: t.calls + s.calls
-          }), { impressions: 0, clicks: 0, whatsapp: 0, calls: 0 }) : null
+          ...coverage(b, enabled, parts.length > 0, sinceMs),
+          stats: parts.length ? parts.reduce(addCounts, ZERO()) : null
         };
       })
     });
@@ -411,3 +512,114 @@ export async function handleBoostInsights(env, profileId, userId) {
     return respond({ error: "Couldn't load insights right now." }, 500);
   }
 }
+
+// ---------------------------------------------------------------------
+// Chart detail for ONE boost: GET /api/profiles/:id/boost-insights/:key
+// Loaded only when the owner opens a boost's chart, so the list stays cheap.
+// ---------------------------------------------------------------------
+const bucketMs = (bucket) => Date.parse(`${bucket.replace(" ", "T")}:00Z`);       // 'YYYY-MM-DD HH:00'
+const dayMs = (day) => Date.parse(`${day}T00:00:00Z`);                            // 'YYYY-MM-DD'
+const contactsOf = (c) => c.whatsapp + c.calls;
+
+async function loadSeriesRows(env, keys) {
+  const rows = [];
+  for (const [table, field] of [["boost_stats_hourly", "bucket"], ["boost_stats_daily", "day"]]) {
+    try {
+      const { results } = await env.DB.prepare(
+        `SELECT ${field} AS t, placement, country, impressions, clicks, whatsapp, calls
+         FROM ${table} WHERE stat_key IN (${keys.map(() => "?").join(",")}) ORDER BY ${field} LIMIT 6000`
+      ).bind(...keys).all();
+      results.forEach((r) => rows.push({ ...r, ms: field === "bucket" ? bucketMs(r.t) : dayMs(r.t), hourly: field === "bucket" }));
+    } catch (e) { /* table not created yet */ }
+  }
+  return rows;
+}
+
+export async function handleBoostInsightDetail(env, profileId, userId, key) {
+  try {
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(String(key || ""))) return respond({ error: "Boost not found." }, 404);
+    const { results: owner } = await env.DB.prepare("SELECT owner_id FROM profiles WHERE id = ?").bind(profileId).all();
+    if (!owner.length) return respond({ error: "Profile not found." }, 404);
+    if (owner[0].owner_id !== userId) return respond({ error: "Not your profile." }, 403);
+
+    const t = await getTunables(env);
+    const nowMs = Date.now();
+    const boost = await findBoost(env, profileId, key, nowMs, t);
+    if (!boost) return respond({ error: "Boost not found." }, 404);
+
+    const enabled = await isAnalyticsEnabled(env);
+    const sinceStr = await getAnalyticsSince(env, { derive: enabled });
+    const sinceMs = sinceStr ? toMs(sinceStr) : null;
+
+    const rows = await loadSeriesRows(env, boost.statKeys);
+    const shortBoost = boost.hours <= t.analytics_chart_hourly_max_hours;
+    const hasRolledUp = rows.some((r) => !r.hourly);
+    const resolution = shortBoost && !hasRolledUp ? "hour" : "day";   // rolled-up days can't show hours
+
+    const step = resolution === "hour" ? HOUR : DAY;
+    const floorTo = (ms) => Math.floor(ms / step) * step;
+    const untilMs = Math.min(nowMs, boost.endMs + CHART_GRACE_MS);
+    let first = floorTo(boost.startMs);
+    const last = floorTo(untilMs);
+    if ((last - first) / step > CHART_MAX_POINTS) first = last - CHART_MAX_POINTS * step;
+
+    const slot = new Map();
+    for (let ms = first; ms <= last; ms += step) slot.set(ms, ZERO());
+    const places = new Map();
+    const countries = new Map();
+    let totals = ZERO();
+    rows.forEach((r) => {
+      const c = { impressions: r.impressions, clicks: r.clicks, whatsapp: r.whatsapp, calls: r.calls };
+      totals = addCounts(totals, c);
+      const s = slot.get(floorTo(r.ms));
+      if (s) slot.set(floorTo(r.ms), addCounts(s, c));
+      places.set(r.placement, addCounts(places.get(r.placement) || ZERO(), c));
+      countries.set(r.country, addCounts(countries.get(r.country) || ZERO(), c));
+    });
+
+    const points = [...slot.entries()].map(([ms, c]) => [ms, c.impressions, c.clicks, contactsOf(c)]);
+    const share = (v, total) => (total > 0 ? Math.round((v / total) * 100) : 0);
+    const placements = [...places.entries()]
+      .map(([placement, c]) => ({ placement, impressions: c.impressions, clicks: c.clicks, contacts: contactsOf(c), share: share(c.impressions, totals.impressions) }))
+      .sort((a, b) => b.impressions - a.impressions);
+
+    let countryRows = [...countries.entries()]
+      .map(([code, c]) => ({ code, name: code === "XX" ? "Unknown" : (COUNTRY_NAMES[code] || code), impressions: c.impressions, clicks: c.clicks, contacts: contactsOf(c), share: share(c.impressions, totals.impressions) }))
+      .sort((a, b) => b.impressions - a.impressions);
+    if (countryRows.length > CHART_MAX_COUNTRIES) {
+      const rest = countryRows.slice(CHART_MAX_COUNTRIES - 1);
+      countryRows = countryRows.slice(0, CHART_MAX_COUNTRIES - 1).concat({
+        code: "OTHER", name: "Other countries",
+        impressions: rest.reduce((n, r) => n + r.impressions, 0), clicks: rest.reduce((n, r) => n + r.clicks, 0),
+        contacts: rest.reduce((n, r) => n + r.contacts, 0), share: rest.reduce((n, r) => n + r.share, 0)
+      });
+    }
+
+    const peak = (index) => {
+      let best = null;
+      points.forEach((p) => { if (p[index] > 0 && (!best || p[index] > best[index])) best = p; });
+      return best ? { t: best[0], value: best[index] } : null;
+    };
+    const known = countryRows.filter((c) => c.code !== "XX" && c.code !== "OTHER");
+
+    return respond({
+      key: boost.key, scope: boost.scope, productName: boost.productName,
+      status: boost.endMs > nowMs ? "active" : "ended",
+      startedAt: toIso(boost.startMs), endsAt: toIso(boost.endMs), hours: boost.hours,
+      resolution,
+      points,                                   // [timeMs, seen, taps, contacts]
+      totals: { impressions: totals.impressions, clicks: totals.clicks, contacts: contactsOf(totals) },
+      placements, countries: countryRows,
+      highlights: {
+        bestSeen: peak(1), bestTaps: peak(2),
+        topPlacement: placements[0] && placements[0].impressions > 0 ? { placement: placements[0].placement, share: placements[0].share } : null,
+        topCountry: known[0] && known[0].impressions > 0 ? { code: known[0].code, name: known[0].name, share: known[0].share } : null
+      },
+      ...coverage(boost, enabled, rows.length > 0, sinceMs)
+    });
+  } catch (err) {
+    console.error("Boost insight detail failed:", err);
+    return respond({ error: "Couldn't load this chart right now." }, 500);
+  }
+}
+
