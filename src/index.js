@@ -23,7 +23,8 @@ import {
   handleBoostPaystackWebhook, handleActivateBoostPurchase, handleActiveBoosts, handleBoostRecap
 } from "./lib/boost.js";
 import { handleSponsoredProfiles, handleSponsoredProducts, handleSponsoredCatalogues } from "./lib/discovery.js";
-import { handleAdTrack, handleBoostInsights } from "./lib/ad-analytics.js";
+import { handleAdTrack, handleBoostInsights, handleBoostInsightDetail } from "./lib/ad-analytics.js";
+import { runBoostMaintenance, handleMaintenanceRequest } from "./lib/maintenance.js";
 import { handleGetPricing, handleCheckout, handlePaystackCallback, handlePaystackWebhook, handleActivateTier, handleTierStatus } from "./lib/tiers.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
 
@@ -1072,13 +1073,31 @@ if (url.pathname === "/api/boost/recap" && request.method === "GET") {
       return handleAdTrack(request, env);
     }
 
-    // ---- Boost insights for the owner of a profile (owner-only). ----
+    // ---- Boost insights for the owner of a profile (owner-only).
+    // ?h=N asks for more ended-boost history (the app uses it for "Show older"). ----
     if (url.pathname.match(/^\/api\/profiles\/[^/]+\/boost-insights$/) && request.method === "GET") {
       const sessionToken = getCookie(request, "liyog_session");
       const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
       if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
       const profileId = url.pathname.split("/")[3];
-      return handleBoostInsights(env, profileId, userId);
+      return handleBoostInsights(env, profileId, userId, { history: url.searchParams.get("h") });
+    }
+
+    // ---- Chart detail for ONE boost (owner-only), opened from "Charts & details". ----
+    if (url.pathname.match(/^\/api\/profiles\/[^/]+\/boost-insights\/[^/]+$/) && request.method === "GET") {
+      const sessionToken = getCookie(request, "liyog_session");
+      const userId = sessionToken ? await verifySessionToken(env, sessionToken) : null;
+      if (!userId) return jsonResponse({ error: "Not authenticated" }, 401);
+      const parts = url.pathname.split("/");
+      let boostKey = "";
+      try { boostKey = decodeURIComponent(parts[5]); } catch (e) { /* malformed: the handler answers 404 */ }
+      return handleBoostInsightDetail(env, parts[3], userId, boostKey);
+    }
+
+    // ---- Admin only: run the nightly boost housekeeping NOW. It is a DRY RUN
+    // (changes nothing, just reports) unless you add ?dry=0. Needs x-admin-secret. ----
+    if (url.pathname === "/api/boost/maintenance" && request.method === "POST") {
+      return handleMaintenanceRequest(request, env);
     }
 
     // ---- Ads: report a sponsored item — logs to D1 for manual review.
@@ -1430,16 +1449,11 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
 };
 
 // How long an UNPAID boost request (manual WhatsApp request or abandoned card
-// checkout) is kept before the daily clean-up removes it. Confirmed purchases
-// are never touched. Change the number to keep them longer or shorter.
-const BOOST_PENDING_RETENTION_DAYS = 7;
-
 async function cleanupOldLogs(env) {
   try {
     const result = await env.DB.batch([
       env.DB.prepare("DELETE FROM profile_views WHERE viewed_at < datetime('now', '-30 days')"),
       env.DB.prepare("DELETE FROM share_events WHERE shared_at < datetime('now', '-90 days')"),
-      env.DB.prepare("DELETE FROM boost_log WHERE expires_at < datetime('now', '-7 days')"),
       env.DB.prepare("DELETE FROM inquiries WHERE created_at < datetime('now', '-7 days')"),
       // Manual tier purchases that never got confirmed within 24h — mostly
       // people exploring the new upgrade flow without actually paying.
@@ -1454,19 +1468,15 @@ async function cleanupOldLogs(env) {
     console.error("Scheduled cleanup failed:", err);
   }
 
-  // Unpaid boost requests (manual WhatsApp requests never paid, and card
-  // checkouts that were abandoned). Kept in its OWN try/catch, outside the
-  // batch above, so a problem here can never stop the other clean-ups.
-  // Only 'pending' rows older than the retention period are removed;
-  // 'confirmed' (your payment record) and 'failed' are never touched, and
-  // neither is any row without a creation time.
+  // Boost housekeeping: ended live boosts, unpaid/failed/paid purchase records,
+  // and the hourly -> daily analytics roll-up. Every rule is a SETTING (see
+  // SETTINGS-CHEATSHEET.txt) and the whole thing can be switched off. Kept in its
+  // OWN try/catch so a problem here can never stop the clean-ups above.
   try {
-    const res = await env.DB.prepare(
-      "DELETE FROM boost_purchases WHERE status = 'pending' AND created_at IS NOT NULL AND created_at < datetime('now', '-' || ? || ' days')"
-    ).bind(BOOST_PENDING_RETENTION_DAYS).run();
-    console.log("Boost purchase clean-up:", JSON.stringify(res.meta));
+    const report = await runBoostMaintenance(env);
+    console.log("Boost maintenance:", JSON.stringify(report.steps || report));
   } catch (err) {
-    console.error("Boost purchase clean-up failed (other clean-ups unaffected):", err);
+    console.error("Boost maintenance failed (other clean-ups unaffected):", err);
   }
 }
 
@@ -1519,4 +1529,3 @@ function extractR2KeyFromUrl(url) {
   const match = url.match(/\/api\/image\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
-
