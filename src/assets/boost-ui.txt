@@ -149,6 +149,41 @@
 .lpi-legend{margin:2px 2px 4px;font-size:11.5px;line-height:1.55;color:var(--ink-soft,#625f53)}
 .lpi-empty{padding:26px 10px;text-align:center;font-size:13.5px;line-height:1.6;color:var(--ink-soft,#625f53)}
 .lpi-skel{height:230px;margin-bottom:14px}
+.lpi-overview{background:linear-gradient(135deg,rgba(255,215,0,.16),rgba(255,122,0,.08)),var(--surface-soft,#faf8f2);border-color:rgba(255,167,38,.45)}
+.lpi-overview .lpi-kpis{margin-top:12px}
+.lpi-card-recent{border-color:rgba(255,167,38,.7);box-shadow:0 0 0 3px rgba(255,215,0,.14),var(--shadow-sm,0 2px 10px rgba(17,17,17,.07))}
+.lpi-chip.recent{background:rgba(255,167,38,.22);color:#9a5a00}
+.lpi-more-btn{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;margin-top:12px;padding:10px 14px;border-radius:999px;border:1.5px solid var(--liyog-green,#28a428);background:var(--surface,#fff);color:var(--liyog-green-dark,#228b22);font-family:inherit;font-size:13px;font-weight:800;cursor:pointer}
+.lpi-more-btn[aria-expanded="true"]{background:var(--liyog-green,#28a428);color:#fff}
+.lpi-detail{margin-top:12px;padding:14px;border-radius:16px;background:var(--surface,#fff);border:1px solid var(--line,#e4dfd1)}
+.lpi-metric-tabs{display:flex;gap:6px;margin-bottom:10px}
+.lpi-metric{flex:1;padding:7px 4px;border-radius:999px;border:1px solid var(--line,#e4dfd1);background:var(--surface-soft,#faf8f2);color:var(--ink-soft,#625f53);font-family:inherit;font-size:12px;font-weight:800;cursor:pointer}
+.lpi-metric.on{background:linear-gradient(90deg,#ffd700,#ff7a00);border-color:transparent;color:#1a1400}
+.lpi-chart{display:block;width:100%;height:120px;overflow:visible}
+.lpi-bar-rect{fill:#ffb300;opacity:.9;cursor:pointer;transition:opacity .15s}
+.lpi-bar-rect.zero{fill:var(--line,#e4dfd1);opacity:1}
+.lpi-bar-rect.sel{fill:var(--liyog-green,#28a428);opacity:1}
+.lpi-axis{display:flex;justify-content:space-between;gap:6px;margin-top:6px;font-size:10.5px;color:var(--ink-faint,#9b9686)}
+.lpi-tip{margin:8px 0 0;min-height:18px;font-size:12px;font-weight:700;color:var(--ink,#111);text-align:center}
+.lpi-hl{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:12.5px;line-height:1.45;color:var(--ink-soft,#625f53)}
+.lpi-hl strong{color:var(--ink,#111)}
+.lpi-h5{margin:16px 0 8px;font-family:var(--font-display,inherit);font-size:13px;font-weight:800;color:var(--ink,#111)}
+.lpi-row{margin-bottom:9px}
+.lpi-row-top{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--ink,#111)}
+.lpi-row-top span:last-child{color:var(--ink-soft,#625f53);font-weight:600;text-align:right}
+.lpi-rowbar{height:6px;margin-top:4px;border-radius:6px;background:var(--line,#e4dfd1);overflow:hidden}
+.lpi-rowbar>span{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,#ffd700,#ff7a00)}
+.lpi-older{display:block;width:100%;margin:6px 0 10px;padding:11px;border-radius:999px;border:1px dashed var(--line,#e4dfd1);background:transparent;color:var(--liyog-green-dark,#228b22);font-family:inherit;font-size:13px;font-weight:800;cursor:pointer}
+.lpi-skel-sm{height:150px}
+.lpi-banner{position:relative;margin:2px 0 14px;padding:14px 38px 14px 14px;border-radius:18px;background:linear-gradient(135deg,rgba(255,215,0,.2),rgba(255,122,0,.1)),var(--surface-soft,#faf8f2);border:1px solid rgba(255,167,38,.55)}
+.lpi-banner-x{position:absolute;top:8px;right:8px;width:26px;height:26px;border:0;border-radius:50%;background:rgba(17,17,17,.08);color:var(--ink,#111);font-size:18px;line-height:1;cursor:pointer}
+.lpi-banner-title{font-family:var(--font-display,inherit);font-size:14px;font-weight:800;line-height:1.35;color:var(--ink,#111)}
+.lpi-banner-nums{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:12.5px;color:var(--ink-soft,#625f53)}
+.lpi-banner-nums b{color:var(--ink,#111);font-size:15px}
+.lpi-banner-cost{margin:8px 0 0;font-size:12.5px;color:var(--ink-soft,#625f53)}
+.lpi-banner-cost strong{color:var(--liyog-green-dark,#228b22)}
+.lpi-banner-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.lpi-banner-actions .lp-btn{flex:1 1 130px}
 `;
     const style = document.createElement("style");
     style.id = "lpb-styles";
@@ -912,10 +947,18 @@
 
   // ------------------------------------------------------------------
   // Boost insights — what each boost has done for the owner, in plain
-  // numbers: time left, how many times it was delivered / seen, taps,
-  // contacts, profile visits and cost per tap. Read-only; one request
-  // (answers are cached ~2 minutes), nothing here can change a boost.
+  // numbers: time left, delivered / seen / taps / contacts, profile
+  // visits, cost per tap, hour-by-hour or day-by-day charts, where it
+  // showed and who saw it. Read-only: nothing here can change a boost.
+  //
+  // Light on the database by design: the list is ONE request (cached ~2
+  // minutes); a boost's chart is fetched only when the owner opens it,
+  // and then remembered for the rest of the visit.
   // ------------------------------------------------------------------
+  const DAY_MS = 86400e3;
+  const PLACEMENT_LABELS = { brand: "Brand pages", catalogue: "Shop pages", product: "Product pages", blog: "Blog posts", home: "Homepage", more: "“See more” sheets", other: "Other places" };
+  const detailCache = new Map();
+
   function fmtNum(n) { return Number(n || 0).toLocaleString(); }
 
   function fmtWhen(iso) {
@@ -937,6 +980,13 @@
     return isNaN(d) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   }
 
+  function fmtPoint(ms, resolution) {
+    const d = new Date(ms);
+    return resolution === "hour"
+      ? d.toLocaleString(undefined, { weekday: "short", hour: "numeric" })
+      : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
   // Cheap taps keep their decimals (₦0.60, not "₦1"); bigger amounts are whole numbers.
   function formatCostPerTap(minorUnitsPerTap, currency) {
     const symbols = { NGN: "₦", GHS: "GH₵", ZAR: "R", KES: "KSh", USD: "$" };
@@ -944,6 +994,11 @@
     const major = minorUnitsPerTap / 100;
     const digits = major < 10 ? 2 : 0;
     return `${symbol}${major.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  }
+
+  function flagEmoji(code) {
+    if (!/^[A-Z]{2}$/.test(code) || code === "XX") return "🌍";
+    return String.fromCodePoint(...[...code].map((c) => 127397 + c.charCodeAt(0)));
   }
 
   function insightTitle(b) {
@@ -970,9 +1025,48 @@
     return kpis;
   }
 
-  function insightCardHtml(b, nowMs, analyticsOn, sinceLabel) {
+  const kpiHtml = (kpis) => `<div class="lpi-kpis">${kpis.map((x) => `
+    <div class="lpi-kpi${x.good ? " good" : ""}"><strong>${esc(x.v)}</strong><span>${esc(x.k)}</span>${x.sub ? `<em>${esc(x.sub)}</em>` : ""}</div>`).join("")}</div>`;
+
+  const isRecentlyEnded = (b, nowMs, windowDays) =>
+    b.status === "ended" && windowDays > 0 && nowMs - Date.parse(b.endsAt) <= windowDays * DAY_MS;
+
+  // ---- All-boosts overview ------------------------------------------
+  function overviewHtml(boosts, nowMs) {
+    const active = boosts.filter((b) => b.status === "active" && Date.parse(b.endsAt) > nowMs).length;
+    let seen = 0, taps = 0, contacts = 0, served = 0, haveStats = false, haveServed = false;
+    const paid = {};
+    let fairPaid = 0, fairTaps = 0, fairCurrency = null;
+    boosts.forEach((b) => {
+      if (b.amount != null) paid[b.currency] = (paid[b.currency] || 0) + b.amount;
+      if (b.served != null) { served += b.served; haveServed = true; }
+      if (!b.stats) return;
+      haveStats = true;
+      seen += b.stats.impressions; taps += b.stats.clicks; contacts += b.stats.whatsapp + b.stats.calls;
+      if (b.amount != null && b.stats.clicks > 0 && !b.statsPartial && (fairCurrency === null || fairCurrency === b.currency)) {
+        fairCurrency = b.currency; fairPaid += b.amount; fairTaps += b.stats.clicks;
+      }
+    });
+    const currencies = Object.keys(paid);
+    const kpis = [{ k: "Active now", v: fmtNum(active), sub: active === 1 ? "boost running" : "boosts running" }];
+    if (haveStats) {
+      kpis.push({ k: "Seen", v: fmtNum(seen) }, { k: "Taps", v: fmtNum(taps) }, { k: "Contacts", v: fmtNum(contacts) });
+    } else if (haveServed) {
+      kpis.push({ k: "Delivered", v: fmtNum(served), sub: "sent to pages" });
+    }
+    if (currencies.length === 1) kpis.push({ k: "Total paid", v: formatPrice(paid[currencies[0]], currencies[0]) });
+    if (fairTaps > 0) kpis.push({ k: "Avg cost per tap", v: formatCostPerTap(fairPaid / fairTaps, fairCurrency), good: true });
+    return `<div class="lpi-card lpi-overview">
+      <div class="lpi-head"><h4 class="lpi-title">All your boosts</h4>${active ? '<span class="lpi-chip active"><i class="lpi-dot"></i>Live</span>' : ""}</div>
+      ${kpiHtml(kpis)}
+    </div>`;
+  }
+
+  // ---- One boost card -------------------------------------------------
+  function insightCardHtml(b, nowMs, analyticsOn, sinceLabel, windowDays) {
     const start = Date.parse(b.startedAt), end = Date.parse(b.endsAt);
     const active = b.status === "active" && nowMs < end;
+    const recent = isRecentlyEnded(b, nowMs, windowDays);
     const pct = Math.min(100, Math.max(0, ((nowMs - start) / Math.max(1, end - start)) * 100));
     const kpis = insightKpis(b);
 
@@ -986,34 +1080,132 @@
 
     const countries = b.countries === "ALL" ? "All countries" : b.countries.map((c) => c.name).join(", ");
     const categories = b.categories === "ALL" ? "All categories" : b.categories.map(prettify).join(", ");
+    const canChart = analyticsOn && !b.beforeTracking;
 
     return `
-      <div class="lpi-card">
+      <div class="lpi-card${recent ? " lpi-card-recent" : ""}" data-boost="${esc(b.key)}">
         <div class="lpi-head">
           <h4 class="lpi-title">${esc(insightTitle(b))}</h4>
-          <span class="lpi-chip ${active ? "active" : "ended"}">${active ? '<i class="lpi-dot"></i>Active' : "Ended"}</span>
+          <span class="lpi-chip ${active ? "active" : recent ? "recent" : "ended"}">${active ? '<i class="lpi-dot"></i>Active' : recent ? "Just ended" : "Ended"}</span>
         </div>
         <p class="lpi-when">${esc(fmtWhen(b.startedAt))} → ${esc(fmtWhen(b.endsAt))}${b.amount != null ? ` · Paid ${esc(formatPrice(b.amount, b.currency))}` : " · Added by Liyog World"}</p>
         <div class="lpi-bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
         <div class="lpi-left"><strong>${active ? `${esc(fmtSpan(end - nowMs))} left` : `Ended ${esc(fmtSpan(nowMs - end))} ago`}</strong><span>${esc(formatDuration(b.hours))} boost</span></div>
-        ${kpis.length ? `<div class="lpi-kpis">${kpis.map((x) => `
-          <div class="lpi-kpi${x.good ? " good" : ""}"><strong>${esc(x.v)}</strong><span>${esc(x.k)}</span>${x.sub ? `<em>${esc(x.sub)}</em>` : ""}</div>`).join("")}</div>` : ""}
+        ${kpis.length ? kpiHtml(kpis) : ""}
         ${note ? `<p class="lpi-note">${esc(note)}</p>` : ""}
+        ${canChart ? `<button type="button" class="lpi-more-btn" data-chart="${esc(b.key)}" aria-expanded="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="6" y1="20" x2="6" y2="12"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="18" y1="20" x2="18" y2="9"/></svg>
+            <span>Charts &amp; details</span></button>
+          <div class="lpi-detail" data-detail="${esc(b.key)}" hidden></div>` : ""}
         <div class="lpi-tags">
           <span class="lpb-chip">${ICON.globe || ""}${esc(countries)}</span>
           <span class="lpb-chip">${esc(categories)}</span>
           <span class="lpb-chip${b.showCta ? "" : " off"}">Contact buttons ${b.showCta ? "on" : "off"}</span>
         </div>
-        ${active ? "" : `<button type="button" class="lp-btn lp-btn-gold lpb-btn-full lpi-again" data-again="${esc(b.key)}"><span>Boost again</span></button>`}
+        ${active ? "" : `<button type="button" class="lp-btn ${recent ? "lp-btn-primary" : "lp-btn-gold"} lpb-btn-full lpi-again" data-again="${esc(b.key)}"><span>${recent ? "Keep the momentum — Boost again" : "Boost again"}</span></button>`}
       </div>`;
   }
 
-  function renderInsights(body, p, data, overlay) {
+  // ---- Charts ---------------------------------------------------------
+  const METRICS = [{ i: 1, label: "Seen", unit: "seen" }, { i: 2, label: "Taps", unit: "taps" }, { i: 3, label: "Contacts", unit: "contacts" }];
+
+  function chartBarsHtml(points, metric) {
+    const W = 320, H = 120, n = points.length;
+    const gap = n > 80 ? 0.4 : n > 40 ? 1 : 2.5;
+    const bw = Math.max(1, (W - gap * (n - 1)) / n);
+    const max = Math.max(1, ...points.map((p) => p[metric]));
+    return points.map((p, k) => {
+      const h = p[metric] > 0 ? Math.max(3, (p[metric] / max) * (H - 4)) : 1.5;
+      return `<rect class="lpi-bar-rect${p[metric] > 0 ? "" : " zero"}" data-k="${k}" x="${(k * (bw + gap)).toFixed(2)}" y="${(H - h).toFixed(2)}" width="${bw.toFixed(2)}" height="${h.toFixed(2)}" rx="1.5"/>`;
+    }).join("");
+  }
+
+  function detailHtml(d) {
+    const tabs = METRICS.map((m, k) => `<button type="button" class="lpi-metric${k === 0 ? " on" : ""}" data-metric="${m.i}">${m.label}</button>`).join("");
+    const mid = d.points[Math.floor(d.points.length / 2)];
+    const hl = d.highlights || {};
+    const lines = [];
+    if (hl.bestSeen) lines.push(`<li>🔥 <strong>Most views:</strong> ${esc(fmtPoint(hl.bestSeen.t, d.resolution))} (${fmtNum(hl.bestSeen.value)})</li>`);
+    if (hl.bestTaps) lines.push(`<li>👆 <strong>Most taps:</strong> ${esc(fmtPoint(hl.bestTaps.t, d.resolution))} (${fmtNum(hl.bestTaps.value)})</li>`);
+    if (hl.topPlacement) lines.push(`<li>📍 <strong>Biggest audience:</strong> ${esc(PLACEMENT_LABELS[hl.topPlacement.placement] || prettify(hl.topPlacement.placement))} (${hl.topPlacement.share}%)</li>`);
+    if (hl.topCountry) lines.push(`<li>${flagEmoji(hl.topCountry.code)} <strong>Top country:</strong> ${esc(hl.topCountry.name)} (${hl.topCountry.share}%)</li>`);
+
+    const rows = (list, labelOf) => list.map((r) => `
+      <div class="lpi-row">
+        <div class="lpi-row-top"><span>${labelOf(r)}</span><span>${fmtNum(r.impressions)} seen${r.clicks ? ` · ${fmtNum(r.clicks)} taps` : ""}</span></div>
+        <div class="lpi-rowbar"><span style="width:${Math.max(2, Math.min(100, r.share))}%"></span></div>
+      </div>`).join("");
+
+    const empty = !d.totals.impressions && !d.totals.clicks;
+    return `
+      ${empty ? `<p class="lpi-note">No views recorded for this boost yet. Numbers appear here as people see your ad.</p>` : `
+      <div class="lpi-metric-tabs" role="tablist">${tabs}</div>
+      <svg class="lpi-chart" viewBox="0 0 320 120" preserveAspectRatio="none" role="img" aria-label="${d.resolution === "hour" ? "Hour by hour" : "Day by day"} chart of how your ad performed">${chartBarsHtml(d.points, 1)}</svg>
+      <div class="lpi-axis"><span>${esc(fmtPoint(d.points[0][0], d.resolution))}</span><span>${mid ? esc(fmtPoint(mid[0], d.resolution)) : ""}</span><span>${esc(fmtPoint(d.points[d.points.length - 1][0], d.resolution))}</span></div>
+      <p class="lpi-tip" aria-live="polite">Tap a bar to see its numbers · ${d.resolution === "hour" ? "each bar is one hour" : "each bar is one day"}</p>
+      ${lines.length ? `<ul class="lpi-hl">${lines.join("")}</ul>` : ""}
+      ${d.placements.length ? `<h5 class="lpi-h5">Where it showed</h5>${rows(d.placements, (r) => esc(PLACEMENT_LABELS[r.placement] || prettify(r.placement)))}` : ""}
+      ${d.countries.length ? `<h5 class="lpi-h5">Who saw it</h5>${rows(d.countries, (r) => `${flagEmoji(r.code)} ${esc(r.name)}`)}` : ""}`}
+      ${d.statsPartial ? `<p class="lpi-note">This boost started before tracking began, so the earliest part isn't in these charts.</p>` : ""}`;
+  }
+
+  function wireChart(box, d) {
+    let metric = 1;
+    const svg = box.querySelector(".lpi-chart");
+    const tip = box.querySelector(".lpi-tip");
+    if (!svg) return;
+    box.querySelectorAll(".lpi-metric").forEach((btn) => btn.addEventListener("click", () => {
+      metric = Number(btn.dataset.metric);
+      box.querySelectorAll(".lpi-metric").forEach((x) => x.classList.toggle("on", x === btn));
+      svg.innerHTML = chartBarsHtml(d.points, metric);
+    }));
+    svg.addEventListener("click", (e) => {
+      const rect = e.target.closest(".lpi-bar-rect");
+      if (!rect) return;
+      const p = d.points[Number(rect.dataset.k)];
+      const m = METRICS.find((x) => x.i === metric);
+      svg.querySelectorAll(".lpi-bar-rect").forEach((r) => r.classList.toggle("sel", r === rect));
+      tip.textContent = `${fmtPoint(p[0], d.resolution)} · ${fmtNum(p[metric])} ${m.unit}`;
+    });
+  }
+
+  async function toggleChart(btn, profileId, key) {
+    const box = btn.parentElement.querySelector(`[data-detail="${key}"]`);
+    if (!box) return;
+    const open = box.hidden;
+    box.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+    if (!open || box.dataset.loaded) return;
+    box.innerHTML = `<div class="lpb-skeleton lpi-skel-sm"></div>`;
+    try {
+      const cacheKey = `${profileId}:${key}`;
+      let d = detailCache.get(cacheKey);
+      if (!d) {
+        const res = await fetch(`${WORKER_BASE}/api/profiles/${encodeURIComponent(profileId)}/boost-insights/${encodeURIComponent(key)}`, { credentials: "include" });
+        d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(d.error || "Couldn't load this chart right now.");
+        detailCache.set(cacheKey, d);
+      }
+      box.innerHTML = detailHtml(d);
+      box.dataset.loaded = "1";
+      wireChart(box, d);
+    } catch (err) {
+      box.innerHTML = `<p class="lpi-note">${esc(err.message || "Couldn't load this chart right now.")}</p>`;
+    }
+  }
+
+  // ---- The sheet ------------------------------------------------------
+  function boostAgain(p, b) {
+    openBoostSheetWithContext(p, { scope: b.scope, product: b.scope === "product" && b.productId ? { id: b.productId, name: b.productName || "" } : null });
+  }
+
+  function renderInsights(body, p, data, overlay, reload) {
     const offset = Date.parse(data.serverNow) - Date.now();
     const nowMs = Date.now() + (isNaN(offset) ? 0 : offset);
     const analyticsOn = !!(data.analytics && data.analytics.enabled);
     const sinceDay = data.analytics && data.analytics.since ? fmtDay(data.analytics.since) : "";
     const sinceLabel = sinceDay || "when tracking was switched on";
+    const windowDays = data.config ? data.config.summaryWindowDays : 0;
     const boosts = data.boosts || [];
 
     if (!boosts.length) {
@@ -1022,16 +1214,22 @@
     }
 
     body.innerHTML = `
-      <div class="lpi-list">${boosts.map((b) => insightCardHtml(b, nowMs, analyticsOn, sinceLabel)).join("")}</div>
+      ${overviewHtml(boosts, nowMs)}
+      <div class="lpi-list">${boosts.map((b) => insightCardHtml(b, nowMs, analyticsOn, sinceLabel, windowDays)).join("")}</div>
+      ${data.hasMoreHistory ? `<button type="button" class="lpi-older" id="lpi-older">Show older boosts</button>` : ""}
       ${analyticsOn ? `<p class="lpi-legend"><strong>Seen</strong> = at least half of your ad on screen for 1 second. <strong>Taps</strong> = people who opened it. <strong>Contacts</strong> = WApp and Call taps. Numbers count from ${esc(sinceLabel)}${sinceDay ? ", when tracking began" : ""}.</p>` : ""}
     `;
-    body.querySelectorAll("[data-again]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const b = boosts.find((x) => x.key === btn.dataset.again);
-        if (!b) return;
-        closeSheet(overlay);
-        openBoostSheetWithContext(p, { scope: b.scope, product: b.scope === "product" && b.productId ? { id: b.productId, name: b.productName || "" } : null });
-      });
+    body.querySelectorAll("[data-again]").forEach((btn) => btn.addEventListener("click", () => {
+      const b = boosts.find((x) => x.key === btn.dataset.again);
+      if (!b) return;
+      closeSheet(overlay);
+      boostAgain(p, b);
+    }));
+    body.querySelectorAll("[data-chart]").forEach((btn) => btn.addEventListener("click", () => toggleChart(btn, p.id, btn.dataset.chart)));
+    const older = body.querySelector("#lpi-older");
+    if (older) older.addEventListener("click", () => {
+      older.disabled = true; older.textContent = "Loading…";
+      reload(Math.min(100, ((data.config && data.config.historyLimit) || 20) * 2));
     });
   }
 
@@ -1061,22 +1259,85 @@
     openSheet(overlay);
 
     const body = overlay.querySelector("#lpi-body");
-    try {
-      const res = await fetch(`${WORKER_BASE}/api/profiles/${encodeURIComponent(p.id)}/boost-insights`, { credentials: "include" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Couldn't load your insights right now.");
-      renderInsights(body, p, data, overlay);
-    } catch (err) {
-      body.innerHTML = `<p class="lpi-empty">${esc(err.message || "Couldn't load your insights right now.")}</p>
-        <button type="button" class="lp-btn lp-btn-primary lpb-btn-full" id="lpi-retry"><span>Try again</span></button>`;
-      document.getElementById("lpi-retry").addEventListener("click", () => openInsights(p));
+    async function load(history) {
+      try {
+        const res = await fetch(`${WORKER_BASE}/api/profiles/${encodeURIComponent(p.id)}/boost-insights${history ? `?h=${history}` : ""}`, { credentials: "include" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Couldn't load your insights right now.");
+        renderInsights(body, p, data, overlay, load);
+      } catch (err) {
+        body.innerHTML = `<p class="lpi-empty">${esc(err.message || "Couldn't load your insights right now.")}</p>
+          <button type="button" class="lp-btn lp-btn-primary lpb-btn-full" id="lpi-retry"><span>Try again</span></button>`;
+        document.getElementById("lpi-retry").addEventListener("click", () => openInsights(p));
+      }
     }
+    load(0);
+  }
+
+  // ---- End-of-boost summary card (shown inside Manage Products) -------
+  const SUMMARY_STORE = "lp_boost_summary_dismissed";
+  function dismissedSummaries() {
+    try { const v = JSON.parse(localStorage.getItem(SUMMARY_STORE) || "[]"); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+  }
+  function dismissSummary(key) {
+    try { localStorage.setItem(SUMMARY_STORE, JSON.stringify([key, ...dismissedSummaries().filter((k) => k !== key)].slice(0, 50))); } catch (e) { /* storage blocked: it simply shows again */ }
+  }
+
+  function summaryTitle(b) {
+    if (b.scope === "product") return `your boost for “${esc(b.productName || "a product")}”`;
+    return b.scope === "catalogue" ? "your products-page boost" : "your brand-profile boost";
+  }
+
+  async function mountEndedSummary(container, p) {
+    if (!container) return;
+    container.hidden = true;
+    container.innerHTML = "";
+    try {
+      const res = await fetch(`${WORKER_BASE}/api/profiles/${encodeURIComponent(p.id)}/boost-insights?h=3`, { credentials: "include" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const windowDays = data.config ? data.config.summaryWindowDays : 0;
+      if (!windowDays) return;                                      // the owner of the site switched summaries off
+      const offset = Date.parse(data.serverNow) - Date.now();
+      const nowMs = Date.now() + (isNaN(offset) ? 0 : offset);
+      const dismissed = dismissedSummaries();
+      const b = (data.boosts || []).find((x) => isRecentlyEnded(x, nowMs, windowDays) && !dismissed.includes(x.key));
+      if (!b) return;
+
+      const nums = [];
+      if (b.stats) {
+        nums.push(`<span><b>${fmtNum(b.stats.impressions)}</b> seen</span>`, `<span><b>${fmtNum(b.stats.clicks)}</b> taps</span>`,
+          `<span><b>${fmtNum(b.stats.whatsapp + b.stats.calls)}</b> contacts</span>`);
+      } else if (b.served != null) {
+        nums.push(`<span><b>${fmtNum(b.served)}</b> delivered</span>`);
+      }
+      if (b.visits && b.visits.during) nums.push(`<span><b>${fmtNum(b.visits.during)}</b> profile visits</span>`);
+      const cost = b.stats && b.amount != null && b.stats.clicks > 0 && !b.statsPartial
+        ? `<p class="lpi-banner-cost">That's just <strong>${esc(formatCostPerTap(b.amount / b.stats.clicks, b.currency))}</strong> for every person who tapped.</p>` : "";
+
+      container.innerHTML = `
+        <div class="lpi-banner">
+          <button type="button" class="lpi-banner-x" aria-label="Dismiss">&times;</button>
+          <div class="lpi-banner-title">🏁 ${summaryTitle(b)} ended ${esc(fmtSpan(nowMs - Date.parse(b.endsAt)))} ago</div>
+          ${nums.length ? `<div class="lpi-banner-nums">${nums.join("")}</div>` : ""}
+          ${cost}
+          <div class="lpi-banner-actions">
+            <button type="button" class="lp-btn lp-btn-primary" data-sum="again"><span>Boost again</span></button>
+            <button type="button" class="lp-btn lp-btn-outline-subtle" data-sum="report"><span>See full report</span></button>
+          </div>
+        </div>`;
+      container.hidden = false;
+      container.querySelector(".lpi-banner-x").addEventListener("click", () => { dismissSummary(b.key); container.hidden = true; });
+      container.querySelector('[data-sum="again"]').addEventListener("click", () => boostAgain(p, b));
+      container.querySelector('[data-sum="report"]').addEventListener("click", () => openInsights(p));
+    } catch (err) { /* a summary is a nicety: never show an error for it */ }
   }
 
   window.LiyogBoostUI = {
-    version: "3c.1",
+    version: "3c.2",
     openBoostSheet: openBoostSheetWithContext,
-    openInsights
+    openInsights,
+    mountEndedSummary
   };
   try { console.info("[LiyogBoostUI] 3a.3 loaded"); } catch (e) {}
 })();
