@@ -5,7 +5,8 @@
 (function () {
   "use strict";
 
-  const WORKER_BASE = "https://www.liyogworld.com.ng";
+  const IS_NEW_SITE = /^(www\.)?biziplex\.com$/.test(location.hostname);
+  const WORKER_BASE = IS_NEW_SITE ? location.origin : "https://www.liyogworld.com.ng";
   const TEMPLATE_URL = `${WORKER_BASE}/brands-template.html`;
   const BIO_PREVIEW_CHAR_LIMIT = 160;
 
@@ -16,9 +17,9 @@
   }
 
   const params = new URLSearchParams(window.location.search);
-  const slug = params.get("biz");
+  const slug = params.get("biz") || window.__LIYOG_SLUG__ || null;
   const claimSlug = params.get("claim");
-  let pagePath = window.location.pathname;
+  let pagePath = IS_NEW_SITE ? "/join" : window.location.pathname;
 
   // Only the brand-profile page itself (which has #liyog-profile-root)
   // runs the full profile init() flow. The standalone /products/{slug}
@@ -50,7 +51,7 @@
     try {
       const cfgRes = await fetchWithTimeout(`${WORKER_BASE}/api/config`, undefined, 6000);
       const cfg = await cfgRes.json();
-      if (cfg.blogger_profile_page) pagePath = cfg.blogger_profile_page;
+      if (cfg.blogger_profile_page && !IS_NEW_SITE) pagePath = cfg.blogger_profile_page;
     } catch (e) { /* fallback already set */ }
 
     if (claimSlug) { showClaimScreen(claimSlug); return; }
