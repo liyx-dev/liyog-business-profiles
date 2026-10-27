@@ -8,7 +8,7 @@
 (function () {
   "use strict";
 
-  const WORKER_BASE = "https://www.liyogworld.com.ng";
+  const WORKER_BASE = /(^|\.)biziplex\.com$/.test(location.hostname) ? location.origin : "https://www.liyogworld.com.ng";
   let GOOGLE_CLIENT_ID = null;
 
   window.LiyogAuth = {
