@@ -321,7 +321,10 @@ export async function handlePaystackCallback(request, env) {
     const { results: profileRows } = await env.DB.prepare(
       "SELECT slug FROM profiles WHERE id = ?"
     ).bind(purchaseRows[0].profile_id).all();
-    if (profileRows.length) redirectBase.searchParams.set("biz", profileRows[0].slug);
+    if (profileRows.length) {
+      if (onNewSite) redirectBase.pathname = `/b/${profileRows[0].slug}`;
+      else redirectBase.searchParams.set("biz", profileRows[0].slug);
+    }
   }
 
   redirectBase.searchParams.set("tier_result", result.success ? "success" : "error");
@@ -499,4 +502,3 @@ async function hmacSha512Hex(secret, message) {
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-
