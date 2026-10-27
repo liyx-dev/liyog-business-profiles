@@ -767,8 +767,9 @@ export async function handleBoostPaystackCallback(request, env) {
   const url = new URL(request.url);
   const reference = url.searchParams.get("reference") || url.searchParams.get("trxref");
 
+  const onNewSite = /(^|\.)biziplex\.com$/.test(url.hostname);
   const pagePath = await getSettingLocal(env, "blogger_profile_page", "/p/brands.html");
-  const redirectBase = new URL(pagePath, url.origin);
+  const redirectBase = new URL(onNewSite ? "/" : pagePath, url.origin);
 
   if (!reference) {
     redirectBase.searchParams.set("boost_result", "error");
@@ -784,7 +785,10 @@ export async function handleBoostPaystackCallback(request, env) {
     const { results: profileRows } = await env.DB.prepare(
       "SELECT slug FROM profiles WHERE id = ?"
     ).bind(purchaseRows[0].profile_id).all();
-    if (profileRows.length) redirectBase.searchParams.set("biz", profileRows[0].slug);
+    if (profileRows.length) {
+      if (onNewSite) redirectBase.pathname = `/b/${profileRows[0].slug}`;
+      else redirectBase.searchParams.set("biz", profileRows[0].slug);
+    }
     redirectBase.searchParams.set("boost_ref", reference);
   }
 
