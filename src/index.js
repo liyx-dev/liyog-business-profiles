@@ -30,6 +30,70 @@ import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/r
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
 
+// ---- Biziplex: new-site gate. Old domain keeps its exact old behavior. ----
+function isNewSite(url) {
+  return url.hostname === "biziplex.com" || url.hostname.endsWith(".biziplex.com");
+}
+
+function escAttrServer(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function htmlResponse(html, status = 200) {
+  return new Response(html, {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" }
+  });
+}
+
+// Minimal real HTML document for /b/:slug and /join on the new domain.
+// profile.js (brands.js) still renders the page, but title/description/
+// canonical/OG are now server-side, so Google and link previews see them.
+function appShellHtml(url, { slug = null, profile = null } = {}) {
+  const o = url.origin;
+  const title = profile ? `${profile.business_name} | Biziplex` : "Biziplex — Brand profiles & catalogues";
+  const desc = profile
+    ? (profile.tagline || `${profile.business_name} on Biziplex.`)
+    : "Create your free brand profile on Biziplex.";
+  const canonical = slug ? `${o}/b/${encodeURIComponent(slug)}` : `${o}/join`;
+  const image = profile ? (profile.logo_url || profile.cover_url || "") : "";
+  const noindex = slug && !profile ? '<meta name="robots" content="noindex">' : "";
+  const slugJs = JSON.stringify(slug || null).replace(/</g, "\\u003c");
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escAttrServer(title)}</title>
+<meta name="description" content="${escAttrServer(desc)}">
+<link rel="canonical" href="${escAttrServer(canonical)}">
+${noindex}
+<meta property="og:title" content="${escAttrServer(title)}">
+<meta property="og:description" content="${escAttrServer(desc)}">
+<meta property="og:url" content="${escAttrServer(canonical)}">
+${image ? `<meta property="og:image" content="${escAttrServer(image)}">` : ""}
+<style>html,body{margin:0}</style>
+<link rel="stylesheet" href="${o}/brands.css">
+<link rel="stylesheet" href="${o}/auth-ui.css">
+<script>
+(function(){try{var t=localStorage.getItem("liyog_shop_theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();
+window.__LIYOG_SLUG__ = ${slugJs};
+</script>
+</head>
+<body>
+<div id="liyog-profile-root"></div>
+<script src="${o}/auth-ui.js"></script>
+<script src="${o}/reviews-ui.js"></script>
+<script src="${o}/tiers-ui.js"></script>
+<script src="${o}/boost-ui.js"></script>
+<script src="${o}/sponsored-ui.js"></script>
+<script src="${o}/brands.js"></script>
+</body>
+</html>`;
+}
+
 function computeIsVerified(profile) {
   const daysSinceCreated = (Date.now() - new Date(profile.created_at.replace(" ", "T") + "Z").getTime()) / (1000 * 60 * 60 * 24);
   if (daysSinceCreated < 7) return false;
@@ -291,7 +355,8 @@ if (url.pathname === "/reviews-ui.js") {
         httpMetadata: { contentType: "image/webp" }
       });
 
-      const publicUrl = `${url.origin}/api/image/${key}`;
+      const imageOrigin = await getSetting(env, "image_origin", url.origin);
+      const publicUrl = `${imageOrigin}/api/image/${key}`;
 
       // Handle Immediate DB and R2 replacements
       let oldImageToDelete = null;
@@ -1397,6 +1462,14 @@ if (url.pathname === "/api/boost/recap" && request.method === "GET") {
       return handleProductDetailPage(request, env, ctx, url);
     }
 
+// ---- Biziplex only: temporary root + signup page ----
+    if (isNewSite(url)) {
+      // Temporary: the real landing page ships in patch set 3.
+      if (url.pathname === "/") return Response.redirect(`${url.origin}/join`, 302);
+      // Same shell with no slug -> profile.js shows the claim/signup screen.
+      if (url.pathname === "/join") return htmlResponse(appShellHtml(url));
+    }
+
     // -----------------------------------------------------------------
     // Public profile routes
     // -----------------------------------------------------------------
@@ -1409,6 +1482,16 @@ if (url.pathname === "/api/boost/recap" && request.method === "GET") {
 
     const wantsJson = url.searchParams.get("format") === "json";
     if (!wantsJson) {
+      if (isNewSite(url)) {
+        let shellProfile = null;
+        try {
+          const { results: shellRows } = await env.DB.prepare(
+            "SELECT business_name, tagline, logo_url, cover_url, moderation_status FROM profiles WHERE slug = ? AND is_active = 1"
+          ).bind(slug.toLowerCase()).all();
+          if (shellRows.length && shellRows[0].moderation_status === "approved") shellProfile = shellRows[0];
+        } catch (e) { console.error("Shell profile lookup failed:", e); }
+        return htmlResponse(appShellHtml(url, { slug, profile: shellProfile }), shellProfile ? 200 : 404);
+      }
       const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
       const redirectUrl = new URL(pagePath, url.origin);
       redirectUrl.searchParams.set("biz", slug);
