@@ -10,6 +10,7 @@
 // unlocks product listing (no referral needed), matching the two
 // separate paths: "refer to unlock" (free) vs "upgrade to unlock" (paid).
 // =====================================================================
+import { isAdminRequest } from "./security.js";
 
 // Paystack natively settles these currencies today. Any country code
 // not in this list falls back to the 'USD' pricing row below — this
@@ -446,8 +447,7 @@ async function getTierMaxProducts(env, tierId, countryCode) {
  * purchase row.
  */
 export async function handleActivateTier(request, env) {
-  const adminHeader = request.headers.get("x-admin-secret");
-  if (!env.ADMIN_SECRET || adminHeader !== env.ADMIN_SECRET) {
+  if (!isAdminRequest(request, env)) {
     return jsonResponse({ error: "Not authorized." }, 403);
   }
 
