@@ -28,7 +28,7 @@
   const ui = window.LiyogProductUI;
   if (!ui) { console.error("LiyogProductUI not found — profile.js must load before this script."); return; }
 
-  const WORKER_BASE = "https://www.liyogworld.com.ng";
+const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location.origin : "https://www.liyogworld.com.ng";
 
   // Auto-fill footer year on whichever page has it — never hardcoded.
   const yearEl = document.getElementById("lp-shop-footer-year");
