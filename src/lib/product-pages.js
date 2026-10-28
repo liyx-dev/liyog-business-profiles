@@ -455,7 +455,7 @@ async function handleProductsListingPage(request, env, ctx, url) {
   const insight = await productsEngagement.getCatalogueInsight(env, profile.id);
 
   const canonicalUrl = `${url.origin}/products/${brandSlug}`;
-  const title = `Products & Services — ${profile.business_name} | ${siteNameFor(url)}`;`
+  const title = `Products & Services — ${profile.business_name} | ${siteNameFor(url)}`;
   const metaDescription = buildMetaDescription(
     profile.tagline || `Browse everything ${profile.business_name} offers — quality products and services.`,
     null,
@@ -678,7 +678,7 @@ async function handleProductDetailPage(request, env, ctx, url) {
   }
 
   const canonicalUrl = `${url.origin}/product/${encodeURIComponent(product.slug || product.id)}/${brandSlug}`;
-  const title = `${product.name} — ${profile.business_name} | ${siteNameFor(url)}`;`
+  const title = `${product.name} — ${profile.business_name} | ${siteNameFor(url)}`;
   const metaDescription = buildMetaDescription(product.description, product.price_display);
   const ogImage = product.image_url || profile.cover_url || `${url.origin}/default-og-image.png`;
 
