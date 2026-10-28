@@ -407,7 +407,7 @@ const ui = window.LiyogProductUI;
         maybeShowTierResultToast();
       }
     }, 250);
-
+})();
   window.LiyogTiersUI = {
     openUpgradeSheet,
     maybeShowTierResultToast
