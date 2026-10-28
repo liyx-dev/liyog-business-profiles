@@ -64,7 +64,7 @@
 (function () {
   "use strict";
 
-  const WORKER_BASE = "https://www.liyogworld.com.ng";
+  const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location.origin : "https://www.liyogworld.com.ng";
 
   function esc(str) {
     return String(str == null ? "" : str).replace(/[&<>"']/g, (c) => ({
