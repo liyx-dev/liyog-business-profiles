@@ -48,10 +48,19 @@ export async function verifyGoogleToken(idToken, expectedClientId) {
   }
 }
 
+let certCache = { keys: null, at: 0 };
 async function getGoogleCert(kid) {
-  const res = await fetch(GOOGLE_CERTS_URL);
-  const { keys } = await res.json();
-  const key = keys.find((k) => k.kid === kid);
+  const now = Date.now();
+  // Refresh when older than 1 hour, or when the key id is unknown (Google rotates
+  // keys) — but never more than once a minute, so fake key ids can't spam Google.
+  const unknownKid = certCache.keys && !certCache.keys.some((k) => k.kid === kid);
+  if (!certCache.keys || now - certCache.at > 3600000 || (unknownKid && now - certCache.at > 60000)) {
+    const res = await fetch(GOOGLE_CERTS_URL);
+    const data = await res.json();
+    if (!data || !Array.isArray(data.keys)) return null;
+    certCache = { keys: data.keys, at: now };
+  }
+  const key = certCache.keys.find((k) => k.kid === kid);
   if (!key) return null;
   return crypto.subtle.importKey(
     "jwk",
@@ -130,15 +139,22 @@ export async function createSessionToken(env, userId) {
   return btoa(payloadStr) + "." + signature;
 }
 
+function timingSafeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 export async function verifySessionToken(env, token) {
   try {
     const [payloadB64, signature] = token.split(".");
     const payloadStr = atob(payloadB64);
     const expectedSig = await signPayload(env, payloadStr);
-    if (signature !== expectedSig) return null;
+    if (!timingSafeEqual(signature, expectedSig)) return null;
 
     const payload = JSON.parse(payloadStr);
-    if (payload.exp < Date.now()) return null;
+    if (!payload.uid || payload.exp < Date.now()) return null;
     return payload.uid;
   } catch (err) {
     return null;
@@ -146,9 +162,10 @@ export async function verifySessionToken(env, token) {
 }
 
 async function signPayload(env, payloadStr) {
+if (!env.SESSION_SECRET) throw new Error("SESSION_SECRET is not set");
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(env.SESSION_SECRET || "liyog-fallback-secret-change-me"),
+    new TextEncoder().encode(env.SESSION_SECRET),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
