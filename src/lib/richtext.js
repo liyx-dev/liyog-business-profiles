@@ -54,14 +54,14 @@ export function parseRichText(rawInput) {
   const trimmed = rawInput.slice(0, MAX_INPUT_LENGTH);
   let safe = escapeHtml(trimmed);
 
-  // Links: [text](url) — only http/https URLs allowed, anything else
-  // (javascript:, data:, etc.) is rejected and rendered as plain text
-  // instead of a link, closing off the classic XSS-via-href vector.
+  // Links: set aside behind placeholders so later formatting rules can't touch the URL.
+  const savedLinks = [];
   const linkPattern = new RegExp(`\\[([^\\]]{1,100})\\]\\(([^)]{1,${MAX_LINK_LENGTH}})\\)`, "g");
   safe = safe.replace(linkPattern, (match, text, url) => {
     const cleanUrl = url.trim();
-    if (!/^https?:\/\//i.test(cleanUrl)) return escapeHtml(match);
-    return `<a href="${escapeHtml(cleanUrl)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    if (!/^https?:\/\//i.test(cleanUrl)) return match;   // already escaped: leave as plain text
+    savedLinks.push(`<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`);
+    return `\uE000${savedLinks.length - 1}\uE001`;
   });
 
   // Bold: *text*
@@ -79,6 +79,8 @@ export function parseRichText(rawInput) {
     const hex = ALLOWED_COLORS[colorName];
     return `<span style="color:${hex}">${text}</span>`;
   });
+
+  safe = safe.replace(/\uE000(\d+)\uE001/g, (m, i) => savedLinks[Number(i)] || "");
 
   // Line breaks last, so they don't interfere with multi-line matching above.
   safe = safe.replace(/\n/g, "<br>");
