@@ -14,7 +14,7 @@
 (function () {
   "use strict";
 
-  const WORKER_BASE = "https://www.liyogworld.com.ng";
+  const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location.origin : "https://www.liyogworld.com.ng";
 
   const TIER_LABELS = {
     tier1: "Basic",
@@ -34,31 +34,37 @@
   }
 
   function lockBodyScroll() {
+    const ui = window.LiyogProductUI;
+    if (ui && ui.lockBodyScroll) { ui.lockBodyScroll(); return; }
     document.body.style.overflow = "hidden";
   }
+
   function unlockBodyScroll() {
-    // Same caveat as profile.js's own version: only release the lock if
-    // nothing ELSE that also locks scroll is currently open, otherwise a
-    // stacked sheet closing would unlock the one still open beneath it.
+    const ui = window.LiyogProductUI;
+    if (ui && ui.unlockBodyScroll) { ui.unlockBodyScroll(); return; }
     const somethingStillOpen =
       document.querySelector(".lp-sheet-overlay.lp-open") ||
       document.querySelector(".lp-product-lightbox.lp-open");
     if (!somethingStillOpen) document.body.style.overflow = "";
   }
-
   function openSheet(overlay) {
+    if (overlay.classList.contains("lp-open")) return; // Back re-renders the same open sheet: never double-lock
     overlay.classList.add("lp-open");
     lockBodyScroll();
   }
   function closeSheet(overlay) {
+    if (!overlay.classList.contains("lp-open")) return;
     overlay.classList.remove("lp-open");
     unlockBodyScroll();
   }
+  
 
   // Minimal, self-contained toast — reuses the same classnames profile.js
   // uses so it looks identical, but doesn't call into profile.js's
   // showToast (that function lives inside its private closure).
   function showToast(message, type = "success") {
+const ui = window.LiyogProductUI;
+    if (ui && ui.showToast) { ui.showToast(message, type); return; }
     let host = document.getElementById("lp-tiers-toast-host");
     if (!host) {
       host = document.createElement("div");
@@ -361,20 +367,46 @@
    * URL, so the visitor gets a toast confirming what happened instead
    * of landing back on the page with no feedback at all.
    */
+  
+    // Captured at load: profile.js cleans the address bar once the profile
+  // renders, which would erase ?tier_result before anything could read it.
+  const TIER_RETURN_RESULT = (function () {
+    try { return new URLSearchParams(window.location.search).get("tier_result"); } catch (e) { return null; }
+  })();
+  let tierToastShown = false;
+
   function maybeShowTierResultToast() {
-    const params = new URLSearchParams(window.location.search);
-    const result = params.get("tier_result");
-    if (!result) return;
-    if (result === "success") {
+    if (!TIER_RETURN_RESULT || tierToastShown) return;
+    // Wait for the real profile (the loading skeleton gets wiped, taking toasts with it).
+    if (!document.querySelector("[data-bind='business_name']")) return;
+    tierToastShown = true;
+    if (TIER_RETURN_RESULT === "success") {
       showToast("Payment confirmed — your plan has been upgraded!", "success");
     } else {
       showToast("Payment couldn't be confirmed. If you were charged, message us on WhatsApp.", "error");
     }
-    // Clean the flag out of the URL so refreshing doesn't re-show it.
-    params.delete("tier_result");
-    const newUrl = `${window.location.pathname}?${params.toString()}`;
-    window.history.replaceState({}, "", newUrl);
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("tier_result")) {
+        params.delete("tier_result");
+        const qs = params.toString();
+        window.history.replaceState({}, "", window.location.pathname + (qs ? "?" + qs : ""));
+      }
+    } catch (e) { /* cosmetic */ }
   }
+
+  // Runs by itself once the profile has rendered, so it works on the new
+  // /b/slug page (nothing there calls it) and on Blogger (a second call is a no-op).
+  (function autoShowTierResult() {
+    if (!TIER_RETURN_RESULT) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      if (document.querySelector("[data-bind='business_name']") || tries > 80) {
+        clearInterval(timer);
+        maybeShowTierResultToast();
+      }
+    }, 250);
 
   window.LiyogTiersUI = {
     openUpgradeSheet,
