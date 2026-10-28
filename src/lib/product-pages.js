@@ -31,6 +31,10 @@ function escapeHtmlAttr(str) {
     .replace(/'/g, "&#39;");
 }
 
+function siteNameFor(url) {
+  return /^(www\.)?biziplex\.com$/.test(url.hostname) ? "BiziPlex" : "Liyog World";
+}
+
 // Safe for putting JSON inside an inline <script>: "<" ">" "&" and the two
 // JS line-separator characters can never end the script or start a tag.
 function safeJson(value) {
@@ -451,9 +455,9 @@ async function handleProductsListingPage(request, env, ctx, url) {
   const insight = await productsEngagement.getCatalogueInsight(env, profile.id);
 
   const canonicalUrl = `${url.origin}/products/${brandSlug}`;
-  const title = `Products & Services — ${profile.business_name} | Liyog World`;
+  const title = `Products & Services — ${profile.business_name} | ${siteNameFor(url)}`;`
   const metaDescription = buildMetaDescription(
-    profile.tagline || `Browse everything ${profile.business_name} offers — quality products and services in Nigeria.`,
+    profile.tagline || `Browse everything ${profile.business_name} offers — quality products and services.`,
     null,
     160
   );
@@ -568,7 +572,7 @@ async function handleProductsListingPage(request, env, ctx, url) {
     <footer class="lp-shop-footer">
       <div class="lp-shop-footer-inner">
         <div class="lp-shop-footer-brand">${escapeHtmlAttr(profile.business_name)}</div>
-        <div class="lp-shop-footer-text">© <span id="lp-shop-footer-year"></span> ${escapeHtmlAttr(profile.business_name)}. Powered by Liyog World.</div>
+        <div class="lp-shop-footer-text">© <span id="lp-shop-footer-year"></span> ${escapeHtmlAttr(profile.business_name)}. Powered by ${siteNameFor(url)}.</div>
         <div class="lp-shop-footer-links">
           <a href="/b/${escapeHtmlAttr(brandSlug)}">Brand Profile</a>
           <a href="/products/${escapeHtmlAttr(brandSlug)}">All Products</a>
@@ -674,7 +678,7 @@ async function handleProductDetailPage(request, env, ctx, url) {
   }
 
   const canonicalUrl = `${url.origin}/product/${encodeURIComponent(product.slug || product.id)}/${brandSlug}`;
-  const title = `${product.name} — ${profile.business_name} | Liyog World`;
+  const title = `${product.name} — ${profile.business_name} | ${siteNameFor(url)}`;`
   const metaDescription = buildMetaDescription(product.description, product.price_display);
   const ogImage = product.image_url || profile.cover_url || `${url.origin}/default-og-image.png`;
 
@@ -826,7 +830,7 @@ async function handleProductDetailPage(request, env, ctx, url) {
     <footer class="lp-shop-footer">
       <div class="lp-shop-footer-inner">
         <div class="lp-shop-footer-brand">${escapeHtmlAttr(profile.business_name)}</div>
-        <div class="lp-shop-footer-text">© <span id="lp-shop-footer-year"></span> ${escapeHtmlAttr(profile.business_name)}. Powered by Liyog World.</div>
+        <div class="lp-shop-footer-text">© <span id="lp-shop-footer-year"></span> ${escapeHtmlAttr(profile.business_name)}. Powered by ${siteNameFor(url)}.</div>
         <div class="lp-shop-footer-links">
           <a href="/b/${escapeHtmlAttr(brandSlug)}">Brand Profile</a>
           <a href="/products/${escapeHtmlAttr(brandSlug)}">All Products</a>
