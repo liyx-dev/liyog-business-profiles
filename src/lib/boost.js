@@ -26,6 +26,7 @@
 //  8. handleActiveBoosts additionally returns the stored targeting.
 //  selectBoostedItems (rotation engine) is NOT touched — that is 3b.
 // =====================================================================
+import { isAdminRequest } from "./security.js";
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -371,8 +372,7 @@ export async function handleBoostConfig(env) {
 }
 
 export async function handleActivateBoost(request, env) {
-  const adminHeader = request.headers.get("x-admin-secret");
-  if (!env.ADMIN_SECRET || adminHeader !== env.ADMIN_SECRET) {
+  if (!isAdminRequest(request, env)) {
     return jsonResponse({ error: "Not authorized." }, 403);
   }
 
@@ -936,8 +936,7 @@ async function recapFromPurchaseRow(env, purchase) {
  * confirm country / category / CTA at a glance.
  */
 export async function handleActivateBoostPurchase(request, env) {
-  const adminHeader = request.headers.get("x-admin-secret");
-  if (!env.ADMIN_SECRET || adminHeader !== env.ADMIN_SECRET) {
+  if (!isAdminRequest(request, env)) {
     return jsonResponse({ error: "Not authorized." }, 403);
   }
 
