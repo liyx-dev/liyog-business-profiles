@@ -12,7 +12,7 @@
 (function () {
   "use strict";
 
-  const WORKER_BASE = "https://www.liyogworld.com.ng";
+const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location.origin : "https://www.liyogworld.com.ng";
 
   // ---------------------------------------------------------------------
   // Premium SVG star — single source of truth for every star drawn
