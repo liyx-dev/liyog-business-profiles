@@ -1561,6 +1561,16 @@ async function cleanupOldLogs(env) {
   } catch (err) {
     console.error("Boost maintenance failed (other clean-ups unaffected):", err);
   }
+  // Product engagement event logs: the charts only look back 30 days, so keep 90.
+  // Own try/catch so a problem here can never stop the clean-ups above.
+  try {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM product_view_events WHERE created_at < datetime('now', '-90 days')"),
+      env.DB.prepare("DELETE FROM product_shares WHERE created_at < datetime('now', '-90 days')")
+    ]);
+  } catch (err) {
+    console.error("Product event cleanup failed (other clean-ups unaffected):", err);
+  }
 }
 
 async function logProfileView(request, env, profile) {
