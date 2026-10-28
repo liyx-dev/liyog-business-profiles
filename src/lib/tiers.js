@@ -304,8 +304,9 @@ export async function handlePaystackCallback(request, env) {
   const url = new URL(request.url);
   const reference = url.searchParams.get("reference") || url.searchParams.get("trxref");
 
+  const onNewSite = /(^|\.)biziplex\.com$/.test(url.hostname);
   const pagePath = await getSettingLocal(env, "blogger_profile_page", "/p/brands.html");
-  const redirectBase = new URL(pagePath, url.origin);
+  const redirectBase = new URL(onNewSite ? "/" : pagePath, url.origin);
 
   if (!reference) {
     redirectBase.searchParams.set("tier_result", "error");
