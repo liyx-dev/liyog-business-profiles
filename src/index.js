@@ -815,8 +815,8 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
         const body = await cloned.json();
         const newProductId = body?.productId || body?.product?.id || body?.id;
         if (newProductId) {
-          const { results } = await env.DB.prepare("SELECT profile_id, name, slug FROM products WHERE id = ?").bind(newProductId).all();
-          if (results.length && !results[0].slug) {
+            const { results } = await env.DB.prepare("SELECT profile_id, name, slug, is_draft FROM products WHERE id = ?").bind(newProductId).all();
+          if (results.length && !results[0].slug && !results[0].is_draft) { 
             const slug = await productsEngagement.generateUniqueProductSlug(env, results[0].profile_id, results[0].name);
             await env.DB.prepare("UPDATE products SET slug = ? WHERE id = ?").bind(slug, newProductId).run();
           }
