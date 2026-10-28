@@ -31,6 +31,19 @@ function escapeHtmlAttr(str) {
     .replace(/'/g, "&#39;");
 }
 
+// Safe for putting JSON inside an inline <script>: "<" ">" "&" and the two
+// JS line-separator characters can never end the script or start a tag.
+function safeJson(value) {
+  const s = JSON.stringify(value);
+  if (s === undefined) return "null";
+  return s
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 // Local, read-only cookie reader — deliberately duplicated rather than
 // imported from index.js (which doesn't export it) to avoid touching
 // index.js's existing exports/surface at all. Pure, single-purpose,
@@ -245,7 +258,7 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
 <meta name="twitter:image" content="${escapeHtmlAttr(ogImage)}">
 <link rel="stylesheet" href="${origin}/brands.css" id="lp-css-brands" onerror="window.__lpCssFailed=true">
 <link rel="stylesheet" href="${origin}/product-pages.css" id="lp-css-shop" onerror="window.__lpCssFailed=true">
-<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
+<script type="application/ld+json">${safeJson(jsonLd)}</script>
 <script>
 // Runs before first paint so a returning visitor's saved dark-mode
 // choice applies immediately — no flash of the wrong theme. Mirrors
@@ -563,15 +576,15 @@ async function handleProductsListingPage(request, env, ctx, url) {
       </div>
     </footer>
 
-    <script>
-      window.__LIYOG_SHOP_CONTEXT__ = {
-        profileId: ${JSON.stringify(profile.id)},
-        profile: ${JSON.stringify(profile)},
-        brandSlug: ${JSON.stringify(brandSlug)},
-        businessName: ${JSON.stringify(profile.business_name)},
-        products: ${JSON.stringify(filtered)},
-        statsByProduct: ${JSON.stringify(statsByProduct)},
-        insight: ${JSON.stringify(insight)},
+    <script>    
+window.__LIYOG_SHOP_CONTEXT__ = {
+        profileId: ${safeJson(profile.id)},
+        profile: ${safeJson(profile)},
+        brandSlug: ${safeJson(brandSlug)},
+        businessName: ${safeJson(profile.business_name)},
+        products: ${safeJson(filtered)},
+        statsByProduct: ${safeJson(statsByProduct)},
+        insight: ${safeJson(insight)},
         initialVisible: ${INITIAL_VISIBLE}
       };
     </script>
@@ -823,12 +836,12 @@ async function handleProductDetailPage(request, env, ctx, url) {
 
     <script>
       window.__LIYOG_PRODUCT_PAGE_CONTEXT__ = {
-        profile: ${JSON.stringify(profile)},
-        product: ${JSON.stringify(product)},
-        stats: ${JSON.stringify(stats)},
-        insight: ${JSON.stringify(insight)},
-        brandSlug: ${JSON.stringify(brandSlug)},
-        hasOwnerSessionHint: ${JSON.stringify(hasOwnerSessionHint)}
+        profile: ${safeJson(profile)},
+        product: ${safeJson(product)},
+        stats: ${safeJson(stats)},
+        insight: ${safeJson(insight)},
+        brandSlug: ${safeJson(brandSlug)},
+        hasOwnerSessionHint: ${safeJson(hasOwnerSessionHint)}
       };
     </script>
   `;
