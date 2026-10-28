@@ -15,6 +15,13 @@ function jsonResponse(data, status = 200) {
   });
 }
 
+async function getImageOrigin(env, fallback) {
+  try {
+    const { results } = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'image_origin'").all();
+    return results.length && results[0].value ? results[0].value : fallback;
+  } catch (e) { return fallback; }
+}
+
 // ---------------------------------------------------------------------
 // Product slug generation (2026-08-15).
 //
@@ -324,7 +331,7 @@ export async function handleUploadProductImage(request, env, userId, url) {
 
   await env.ASSETS.put(key, arrayBuffer, { httpMetadata: { contentType: "image/webp" } });
 
-  const publicUrl = `${url.origin}/api/image/${key}`;
+  const publicUrl = `${await getImageOrigin(env, url.origin)}/api/image/${key}`;
   return jsonResponse({ success: true, url: publicUrl });
 }
 
