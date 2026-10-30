@@ -1,0 +1,208 @@
+/* =====================================================================
+   BIZIPLEX — site-js.txt
+   Small, dependency-free behaviour for the shared header:
+   theme switch, mobile search, account menu (signed-in state), and the
+   mobile bottom bar's "Join / My brand" tab.
+   Everything is defensive: if anything fails the page still works.
+   ===================================================================== */
+(function () {
+  "use strict";
+
+  var THEME_KEY = "liyog_shop_theme";   // same key the product pages already use
+  var USER_KEY = "bz_user";             // tiny hint so the header does not flash "Sign in"
+  var root = document.documentElement;
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "text") node.textContent = attrs[k];
+      else node.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) node.appendChild(c); });
+    return node;
+  }
+
+  // ---------------------------------------------------------------- theme
+  function systemDark() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+  function currentTheme() {
+    return root.getAttribute("data-theme") || (systemDark() ? "dark" : "light");
+  }
+  function syncThemeButton() {
+    var btn = $("bz-theme-toggle");
+    if (!btn) return;
+    var dark = currentTheme() === "dark";
+    btn.setAttribute("aria-pressed", dark ? "true" : "false");
+    btn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+  }
+  function wireTheme() {
+    var btn = $("bz-theme-toggle");
+    if (btn) {
+      btn.addEventListener("click", function () {
+        var next = currentTheme() === "dark" ? "light" : "dark";
+        root.setAttribute("data-theme", next);
+        try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* storage blocked: still switches for this visit */ }
+        syncThemeButton();
+      });
+    }
+    syncThemeButton();
+  }
+
+  // ------------------------------------------------- header scroll shadow
+  function wireScroll() {
+    var header = $("bz-header");
+    if (!header) return;
+    var tick = false;
+    function update() { header.classList.toggle("is-scrolled", window.scrollY > 4); tick = false; }
+    window.addEventListener("scroll", function () {
+      if (!tick) { tick = true; window.requestAnimationFrame(update); }
+    }, { passive: true });
+    update();
+  }
+
+  // ---------------------------------------------------------- mobile search
+  function wireSearch() {
+    var toggle = $("bz-search-toggle");
+    var panel = $("bz-search-mobile");
+    if (!toggle || !panel) return;
+    toggle.addEventListener("click", function () {
+      var open = panel.hasAttribute("hidden");
+      if (open) {
+        panel.removeAttribute("hidden");
+        var input = panel.querySelector("input");
+        if (input) input.focus();
+      } else {
+        panel.setAttribute("hidden", "");
+      }
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
+  // ---------------------------------------------------------------- account
+  var signedOutHtml = null;
+
+  function readHint() {
+    try {
+      var raw = localStorage.getItem(USER_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function writeHint(user) {
+    try {
+      if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
+      else localStorage.removeItem(USER_KEY);
+    } catch (e) { /* ignore */ }
+  }
+
+  function setAccountTab(user) {
+    var tab = $("bz-tab-account");
+    if (!tab) return;
+    var label = tab.querySelector("span");
+    if (user && user.p && user.p.length) {
+      tab.setAttribute("href", "/b/" + encodeURIComponent(user.p[0].s));
+      if (label) label.textContent = "My brand";
+    } else if (user) {
+      tab.setAttribute("href", "/join");
+      if (label) label.textContent = "Account";
+    } else {
+      tab.setAttribute("href", "/join");
+      if (label) label.textContent = "Join";
+    }
+  }
+
+  function renderSignedOut() {
+    var box = $("bz-auth");
+    if (box && signedOutHtml !== null) box.innerHTML = signedOutHtml;
+    setAccountTab(null);
+  }
+
+  function renderSignedIn(user) {
+    var box = $("bz-auth");
+    if (!box) return;
+    if (signedOutHtml === null) signedOutHtml = box.innerHTML;
+
+    var initial = (user.n || "?").trim().charAt(0).toUpperCase() || "?";
+    var avatarBtn = el("button", { type: "button", "class": "bz-avatar-btn", "aria-haspopup": "true", "aria-expanded": "false", "aria-label": "Account menu" });
+    if (user.a) {
+      var img = el("img", { src: user.a, alt: "", referrerpolicy: "no-referrer", width: "40", height: "40" });
+      img.addEventListener("error", function () { img.remove(); avatarBtn.textContent = initial; });
+      avatarBtn.appendChild(img);
+    } else {
+      avatarBtn.textContent = initial;
+    }
+
+    var menu = el("div", { "class": "bz-menu", role: "menu", hidden: "" });
+    menu.appendChild(el("div", { "class": "bz-menu-head", text: user.n || "Your account" }));
+    var profiles = user.p || [];
+    if (profiles.length) {
+      menu.appendChild(el("div", { "class": "bz-menu-label", text: profiles.length > 1 ? "Your brands" : "Your brand" }));
+      profiles.slice(0, 5).forEach(function (p) {
+        var a = el("a", { href: "/b/" + encodeURIComponent(p.s), role: "menuitem" }, [el("span", { text: p.n || p.s })]);
+        if (p.m && p.m !== "approved") a.appendChild(el("span", { "class": "bz-menu-tag", text: p.m }));
+        menu.appendChild(a);
+      });
+    }
+    menu.appendChild(el("a", { href: "/join", role: "menuitem" }, [el("span", { text: profiles.length ? "Create another profile" : "Create your profile" })]));
+    var out = el("button", { type: "button", role: "menuitem", "class": "bz-menu-danger" }, [el("span", { text: "Sign out" })]);
+    out.addEventListener("click", function () {
+      out.disabled = true;
+      fetch("/api/auth/logout", { method: "POST", credentials: "include" })
+        .catch(function () {})
+        .then(function () { writeHint(null); window.location.reload(); });
+    });
+    menu.appendChild(out);
+
+    var wrap = el("div", { "class": "bz-account" }, [avatarBtn, menu]);
+    box.innerHTML = "";
+    box.appendChild(wrap);
+
+    function closeMenu() { menu.setAttribute("hidden", ""); avatarBtn.setAttribute("aria-expanded", "false"); }
+    avatarBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var open = menu.hasAttribute("hidden");
+      if (open) { menu.removeAttribute("hidden"); avatarBtn.setAttribute("aria-expanded", "true"); }
+      else closeMenu();
+    });
+    document.addEventListener("click", function (e) { if (!wrap.contains(e.target)) closeMenu(); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeMenu(); });
+
+    setAccountTab(user);
+  }
+
+  function wireAccount() {
+    var box = $("bz-auth");
+    if (box) signedOutHtml = box.innerHTML;
+
+    var hint = readHint();
+    if (hint) renderSignedIn(hint);          // instant, no flash
+
+    fetch("/api/auth/me", { credentials: "include", cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.loggedIn && data.user) {
+          var user = {
+            n: data.user.name || "",
+            a: data.user.avatar || "",
+            p: (data.profiles || []).map(function (p) { return { s: p.slug, n: p.business_name, m: p.moderation_status }; })
+          };
+          writeHint(user);
+          renderSignedIn(user);
+        } else {
+          if (hint) { writeHint(null); renderSignedOut(); }
+        }
+      })
+      .catch(function () { /* offline: keep whatever is showing */ });
+  }
+
+  function init() {
+    wireTheme();
+    wireScroll();
+    wireSearch();
+    wireAccount();
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+
