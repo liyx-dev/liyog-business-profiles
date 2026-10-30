@@ -21,6 +21,7 @@
 // =====================================================================
 
 import * as productsEngagement from "./products-engagement.js";
+import { siteHeadHtml, siteCssLinkHtml, siteHeaderHtml, siteFooterHtml, siteBottomNavHtml } from "./layout.js";
 
 function escapeHtmlAttr(str) {
   return String(str || "")
@@ -247,7 +248,7 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${escapeHtmlAttr(title)}</title>
 <meta name="description" content="${escapeHtmlAttr(metaDescription)}">
 <link rel="canonical" href="${escapeHtmlAttr(canonicalUrl)}">
@@ -260,8 +261,10 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
 <meta name="twitter:title" content="${escapeHtmlAttr(title)}">
 <meta name="twitter:description" content="${escapeHtmlAttr(metaDescription)}">
 <meta name="twitter:image" content="${escapeHtmlAttr(ogImage)}">
+${siteHeadHtml(origin)}
 <link rel="stylesheet" href="${origin}/brands.css" id="lp-css-brands" onerror="window.__lpCssFailed=true">
 <link rel="stylesheet" href="${origin}/product-pages.css" id="lp-css-shop" onerror="window.__lpCssFailed=true">
+${siteCssLinkHtml(origin)}
 <script type="application/ld+json">${safeJson(jsonLd)}</script>
 <script>
 // Runs before first paint so a returning visitor's saved dark-mode
@@ -328,8 +331,10 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
 })();
 </script>
 </head>
-<body>
-<div class="lp-root" id="lp-root">
+<body class="bz-site bz-has-bottomnav">
+${siteHeaderHtml({ active: "" })}
+<main class="bz-main" id="bz-main">
+<div class="lp-root lp-root-wide" id="lp-root">
 ${bodyHtml}
 ${showFloatingInquiry ? `
 <button type="button" class="lp-shop-float-inquiry" id="lp-shop-float-inquiry-btn" aria-label="Send an inquiry">
@@ -337,10 +342,14 @@ ${showFloatingInquiry ? `
   <span>Send an Inquiry</span>
 </button>` : ""}
 </div>
+</main>
+${siteFooterHtml()}
+${siteBottomNavHtml({ active: "" })}
 <script src="${origin}/brands.js"></script>
 <script src="${origin}/sponsored-ui.js"></script>
 <script src="${origin}/product-pages-client.js"></script>
 ${inquiryContextJs || ""}
+<script src="${origin}/site.js" defer></script>
 </body>
 </html>`;
 }
