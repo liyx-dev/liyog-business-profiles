@@ -27,6 +27,10 @@ import { handleAdTrack, handleBoostInsights, handleBoostInsightDetail } from "./
 import { runBoostMaintenance, handleMaintenanceRequest } from "./lib/maintenance.js";
 import { handleGetPricing, handleCheckout, handlePaystackCallback, handlePaystackWebhook, handleActivateTier, handleTierStatus } from "./lib/tiers.js";
 import { parseRichText, stripRichTextSyntax, RICHTEXT_MAX_LENGTH } from "./lib/richtext.js";
+import SITE_CSS from "./assets/site-css.txt";
+import SITE_JS from "./assets/site-js.txt";
+import { serveBrandAsset, serveManifest, profileShellHtml } from "./lib/layout.js";
+import { renderHomePage, renderExplorePage } from "./lib/site-pages.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
 
@@ -206,6 +210,15 @@ if (url.pathname === "/reviews-ui.js") {
     if (url.pathname === "/auth-ui.css") {
       return new Response(AUTH_UI_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
+if (url.pathname === "/site.css") {
+      return new Response(SITE_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
+    }
+    if (url.pathname === "/site.js") {
+      return new Response(SITE_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+    }
+    if (url.pathname === "/manifest.webmanifest") return serveManifest(url.origin);
+    const brandFile = serveBrandAsset(url.pathname);
+    if (brandFile) return brandFile;
 
     if (url.pathname === "/api/config") {
       const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
@@ -469,8 +482,10 @@ if (url.pathname === "/reviews-ui.js") {
     }
 
     // Serves an uploaded image out of R2
-    if (url.pathname.startsWith("/api/image/")) {
+  if (url.pathname.startsWith("/api/image/")) {
       const key = url.pathname.replace("/api/image/", "");
+      // Only public images are served here; anything else in the bucket stays private.
+      if (!/^(profile-images|products)\//.test(key)) return new Response("Not found", { status: 404 });  
       const object = await env.ASSETS.get(key);
       if (!object) return new Response("Not found", { status: 404 });
       return new Response(object.body, {
@@ -1464,10 +1479,9 @@ if (url.pathname === "/api/boost/recap" && request.method === "GET") {
 
 // ---- Biziplex only: temporary root + signup page ----
     if (isNewSite(url)) {
-      // Temporary: the real landing page ships in patch set 3.
-      if (url.pathname === "/") return Response.redirect(`${url.origin}/join`, 302);
-      // Same shell with no slug -> profile.js shows the claim/signup screen.
-      if (url.pathname === "/join") return htmlResponse(appShellHtml(url));
+      if (url.pathname === "/") return renderHomePage(url);
+      if (url.pathname === "/explore") return renderExplorePage(url);
+      if (url.pathname === "/join") return htmlResponse(profileShellHtml(url));
     }
 
     // -----------------------------------------------------------------
@@ -1490,7 +1504,7 @@ if (url.pathname === "/api/boost/recap" && request.method === "GET") {
           ).bind(slug.toLowerCase()).all();
           if (shellRows.length && shellRows[0].moderation_status === "approved") shellProfile = shellRows[0];
         } catch (e) { console.error("Shell profile lookup failed:", e); }
-        return htmlResponse(appShellHtml(url, { slug, profile: shellProfile }), shellProfile ? 200 : 404);
+        return htmlResponse(profileShellHtml(url, { slug, profile: shellProfile }), shellProfile ? 200 : 404);
       }
       const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
       const redirectUrl = new URL(pagePath, url.origin);
