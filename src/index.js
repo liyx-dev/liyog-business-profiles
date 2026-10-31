@@ -661,7 +661,7 @@ if (url.pathname === "/site.css") {
       for (const field of editableFields) {
         if (body[field] !== undefined) {
           if (field === "bio_html") {
-            const rawSyntax = String(body[field]).slice(0, RICHTEXT_MAX_LENGTH);
+            const rawSyntax = String(body[field] ?? "").slice(0, RICHTEXT_MAX_LENGTH);
             const plainTextForModeration = stripRichTextSyntax(rawSyntax);
             const check = checkText(plainTextForModeration);
             if (!check.passed) {
