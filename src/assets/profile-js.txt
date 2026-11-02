@@ -127,6 +127,7 @@
     bindBio(p);
     bindGallery(safeParseArray(p.store_photos), p.business_name);
     bindProducts(p, isOwner); // <--- ADDED PRODUCT BINDING HERE
+if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
     bindReviews(p, isOwner);
     bindSponsoredProfilesSection(p);
     bindVideo(p.youtube_url, p.business_name);
@@ -3516,7 +3517,7 @@ function renderProductsManagePanel(panel, p, products, maxProducts) {
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="6" y1="20" x2="6" y2="12"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="18" y1="20" x2="18" y2="9"/></svg>
       <span>Boost insights</span>
     </button>
-
+<button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-open-collections-btn" style="width:100%;margin:0 0 12px;"><span>Collections</span></button>
     <div class="lp-products-tab-header">
       <button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-tab-share-btn-unlocked"><span>Share My Referral Link</span></button>
       <button type="button" class="lp-btn lp-btn-outline-subtle" id="lp-tab-referrals-btn"><span>Referrals</span></button>
@@ -3579,6 +3580,8 @@ if (window.LiyogBoostUI && window.LiyogBoostUI.mountEndedSummary) {   window.Liy
     navigator.clipboard.writeText(shareUrl).then(() => showToast("Referral link copied!", "success"));
   });
   document.getElementById("lp-tab-referrals-btn")?.addEventListener("click", () => openReferralsSheet(p));
+
+document.getElementById("lp-open-collections-btn")?.addEventListener("click", () => { if (window.LiyogStudio) window.LiyogStudio.openCollections(p, () => bindProducts(p, true)); });
 
 document.getElementById("lp-boost-insights-btn")?.addEventListener("click", () => {
     if (window.LiyogBoostUI && window.LiyogBoostUI.openInsights) window.LiyogBoostUI.openInsights(p);
@@ -4168,6 +4171,7 @@ function formatReferralDate(isoStr) {
    uploaded, a draft product already exists pointing at it.
    ------------------------------------------------------------------- */
 function openProductFormSheet(p, existingProduct) {
+if (window.LiyogStudio) { window.LiyogStudio.openProductForm(p, existingProduct, function () { refreshProductsManageModal(p); bindProducts(p, true); }); return; }
   const isEdit = !!existingProduct;
   const host = getOverlayHost();
   let overlay = document.getElementById("lp-product-form-overlay");
