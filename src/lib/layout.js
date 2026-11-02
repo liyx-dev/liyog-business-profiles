@@ -276,15 +276,16 @@ export function profileShellHtml(url, { slug = null, profile = null } = {}) {
     ? `<div class="bz-ssr"><h1>${esc(name)}</h1>${profile.tagline ? `<p>${esc(profile.tagline)}</p>` : ""}</div>`
     : (slug ? "" : `<div class="bz-ssr"><h1>Create your free brand profile</h1><p>Give your business a home online. Sign in with Google to get started.</p></div>`);
 
-  return buildSitePageHtml(url, {
+   return buildSitePageHtml(url, {
     title, description, ogImage: image,
     canonicalPath: slug ? `/b/${encodeURIComponent(slug)}` : "/join",
     ogType: slug ? "profile" : "website",
     noindex: !!(slug && !profile),
     active: slug ? "" : "join",
     extraHead: `<link rel="stylesheet" href="${url.origin}/auth-ui.css">
+<link rel="stylesheet" href="${url.origin}/shop.css">
 <script>window.__LIYOG_SLUG__ = ${slugJs};</script>`,
     bodyHtml: `<div id="liyog-profile-root">${ssr}</div>`,
-    scripts: ["/auth-ui.js", "/reviews-ui.js", "/tiers-ui.js", "/boost-ui.js", "/sponsored-ui.js", "/brands.js"]
+    scripts: ["/auth-ui.js", "/reviews-ui.js", "/tiers-ui.js", "/boost-ui.js", "/sponsored-ui.js", "/shop-ui.js", "/studio-ui.js", "/brands.js"]
   });
 }
