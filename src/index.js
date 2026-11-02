@@ -31,6 +31,10 @@ import SITE_CSS from "./assets/site-css.txt";
 import SITE_JS from "./assets/site-js.txt";
 import { serveBrandAsset, serveManifest, profileShellHtml } from "./lib/layout.js";
 import { renderHomePage, renderExplorePage } from "./lib/site-pages.js";
+import SHOP_CSS from "./assets/shop-css.txt";
+import SHOP_UI_JS from "./assets/shop-ui.txt";
+import STUDIO_UI_JS from "./assets/studio-ui.txt";
+import { routeShopApi, runShopMaintenance } from "./lib/shop-api.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
 
@@ -216,6 +220,11 @@ if (url.pathname === "/site.css") {
     if (url.pathname === "/site.js") {
       return new Response(SITE_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     }
+
+if (url.pathname === "/shop.css") return new Response(SHOP_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
+    if (url.pathname === "/shop-ui.js") return new Response(SHOP_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+    if (url.pathname === "/studio-ui.js") return new Response(STUDIO_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+
     if (url.pathname === "/manifest.webmanifest") return serveManifest(url.origin);
     const brandFile = serveBrandAsset(url.pathname);
     if (brandFile) return brandFile;
@@ -891,6 +900,8 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       return handleUploadProductImage(request, env, userId, url);
     }
 
+
+
     // -----------------------------------------------------------------
     // Product engagement — views, likes, star ratings (preset-text,
     // no free-text reviews), shares, reports, LiyX AI summaries.
@@ -1542,6 +1553,7 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
     ctx.waitUntil(reviews.runScheduledInsights(env)); // LiyX AI — regenerates insights for profiles with 3+ new reviews since last generation
     ctx.waitUntil(productsEngagement.runScheduledProductInsights(env)); // LiyX AI — same rule, per product
     ctx.waitUntil(productsEngagement.runScheduledCatalogueInsights(env)); // LiyX AI — catalogue-wide, ~monthly or signal-threshold
+ctx.waitUntil(runShopMaintenance(env)); // exchange rates + YouTube health checks
   }
 };
 
