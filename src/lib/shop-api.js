@@ -1,0 +1,410 @@
+// =====================================================================
+// BIZIPLEX — src/lib/shop-api.js
+// ONE router for every new Round 1 endpoint, so index.js needs a single
+// call. Returns a Response, or null when the path is not one of ours.
+//   Public (cached at the edge for a short time, no cookies involved):
+//     GET /api/profiles/:id/collections   /catalogue   /search-index
+//     GET /api/collections/:id/items      GET /api/fx
+//   Owner only (session + ownership + same-origin check on every write):
+//     collections create/edit/delete/items/order, product photos, video, plan limits
+//   Admin only (x-admin-secret): /api/admin/fx-refresh, /api/admin/backfill-prices
+// =====================================================================
+import { verifySessionToken } from "./auth.js";
+import { checkText } from "./moderation.js";
+import { getProfileLimits, hasRoom } from "./plans.js";
+import { extractYouTubeId, checkYouTube, runVideoChecks } from "./media.js";
+import { getRates, refreshFxRates, viewerCurrencyFromCountry, parseLegacyPriceDisplay, normalizeCurrency, currencyFromCountryName } from "./money.js";
+import { isAdminRequest } from "./security.js";
+import * as data from "./shop-data.js";
+import { cardsHtml, cardHtml, toCard, esc } from "./shop-render.js";
+
+const ID = "([A-Za-z0-9-]{8,64})";
+const R = {
+  profCollections: new RegExp(`^/api/profiles/${ID}/collections$`),
+  profCatalogue: new RegExp(`^/api/profiles/${ID}/catalogue$`),
+  profIndex: new RegExp(`^/api/profiles/${ID}/search-index$`),
+  profLimits: new RegExp(`^/api/profiles/${ID}/plan-limits$`),
+  profColOrder: new RegExp(`^/api/profiles/${ID}/collections-order$`),
+  colItems: new RegExp(`^/api/collections/${ID}/items$`),
+  colOrder: new RegExp(`^/api/collections/${ID}/order$`),
+  colMembers: new RegExp(`^/api/collections/${ID}/members$`),
+  col: new RegExp(`^/api/collections/${ID}$`),
+  prodMedia: new RegExp(`^/api/products/${ID}/media$`),
+  prodImages: new RegExp(`^/api/products/${ID}/images$`),
+  prodImage: new RegExp(`^/api/products/${ID}/images/${ID}$`),
+  prodImgOrder: new RegExp(`^/api/products/${ID}/images-order$`),
+  prodVideo: new RegExp(`^/api/products/${ID}/video$`),
+  prodVideoReport: new RegExp(`^/api/products/${ID}/video-report$`)
+};
+
+function json(data, status = 200, headers = {}) {
+  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", ...headers } });
+}
+const fail = (msg, status = 400) => json({ error: msg }, status);
+
+function getCookie(request, name) {
+  const m = (request.headers.get("Cookie") || "").match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return m ? m[1] : null;
+}
+async function sessionUser(request, env) {
+  const t = getCookie(request, "liyog_session");
+  return t ? await verifySessionToken(env, t) : null;
+}
+/** Browsers always send Origin on cross-site writes: refuse any that is not one of our own sites. */
+function sameOrigin(request) {
+  const origin = request.headers.get("Origin");
+  if (!origin) return true;
+  try { const h = new URL(origin).hostname; return h === new URL(request.url).hostname || data.ALLOWED_IMAGE_HOSTS.has(h); } catch (e) { return false; }
+}
+async function readJson(request, max = 40000) {
+  try {
+    const text = await request.text();
+    if (text.length > max) return {};
+    return JSON.parse(text || "{}");
+  } catch (e) { return {}; }
+}
+const asIds = (arr, max) => Array.isArray(arr) ? [...new Set(arr.filter((x) => typeof x === "string" && /^[A-Za-z0-9-]{8,64}$/.test(x)))].slice(0, max) : [];
+
+/** Short edge cache for public reads: protects D1 on busy brands. Never used when a cookie changes the answer. */
+async function cachedPublic(request, ctx, ttl, produce) {
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  const key = new Request(request.url, { method: "GET" });
+  if (cache) { const hit = await cache.match(key); if (hit) return hit; }
+  const payload = await produce();
+  const res = json(payload, 200, { "cache-control": `public, max-age=${ttl}` });
+  if (cache) ctx.waitUntil(cache.put(key, res.clone()));
+  return res;
+}
+
+function brandOf(profile) {
+  return { slug: profile.slug, business_name: profile.business_name, whatsapp_number: profile.whatsapp_number };
+}
+
+async function ownedProfile(env, profileId, userId) {
+  const { results } = await env.DB.prepare("SELECT * FROM profiles WHERE id = ? AND owner_id = ?").bind(profileId, userId).all();
+  return results.length ? results[0] : null;
+}
+async function ownedCollection(env, id, userId) {
+  const { results } = await env.DB.prepare(
+    "SELECT c.*, p.tier_id AS p_tier, p.max_products AS p_max FROM collections c JOIN profiles p ON p.id = c.profile_id WHERE c.id = ? AND p.owner_id = ?"
+  ).bind(id, userId).all();
+  return results.length ? results[0] : null;
+}
+async function ownedProduct(env, id, userId) {
+  const { results } = await env.DB.prepare(
+    `SELECT pr.id, pr.profile_id, pr.video_id, pr.video_status, p.tier_id AS p_tier, p.max_products AS p_max
+     FROM products pr JOIN profiles p ON p.id = pr.profile_id WHERE pr.id = ? AND pr.is_active = 1 AND p.owner_id = ?`
+  ).bind(id, userId).all();
+  return results.length ? results[0] : null;
+}
+
+export async function routeShopApi(request, env, ctx, url) {
+  const path = url.pathname;
+  if (!path.startsWith("/api/")) return null;
+  const method = request.method;
+  let m;
+
+  // ------------------------------ public reads ------------------------------
+  if (method === "GET" && (m = path.match(R.profCollections))) {
+    const mine = url.searchParams.get("mine") === "1";
+    const profile = mine ? null : await data.getPublicProfile(env, m[1]);
+    if (!mine && !profile) return fail("Not found", 404);
+    const surface = url.searchParams.get("surface") === "profile" ? "profile" : "catalogue";
+    const preview = Math.min(Math.max(parseInt(url.searchParams.get("preview") || "0", 10) || 0, 0), 12);
+    const wantHtml = url.searchParams.get("format") === "html";
+
+    const build = async () => {
+      let owner = null;
+      if (mine) {
+        const uid = await sessionUser(request, env);
+        owner = uid ? await ownedProfile(env, m[1], uid) : null;
+        if (!owner) return null;
+      }
+      const prof = owner || profile;
+      const cols = await data.listCollections(env, m[1], { surface, mine: !!owner });
+      let previews = {};
+      if (preview > 0) previews = await data.getCollectionPreviews(env, cols.slice(0, 8).map((c) => c.id), preview);
+      return {
+        collections: cols.map((c) => ({
+          ...c, ...(preview > 0 && wantHtml && previews[c.id] ? { html: cardsHtml(previews[c.id], brandOf(prof), { origin: url.origin }) } : {})
+        }))
+      };
+    };
+    if (mine) { const out = await build(); return out ? json(out) : fail("Not authenticated", 401); }
+    return cachedPublic(request, ctx, 30, async () => (await build()) || { collections: [] });
+  }
+
+  if (method === "GET" && (m = path.match(R.profCatalogue))) {
+    const profile = await data.getPublicProfile(env, m[1]);
+    if (!profile) return fail("Not found", 404);
+    const sp = url.searchParams;
+    const offset = parseInt(sp.get("offset") || "0", 10) || 0;
+    return cachedPublic(request, ctx, 30, async () => {
+      const r = await data.queryCatalogue(env, profile.id, {
+        collectionSlug: (sp.get("c") || "").slice(0, 60), q: (sp.get("q") || "").slice(0, 80), sort: sp.get("sort") || "", kind: sp.get("kind") || "",
+        offset, limit: parseInt(sp.get("limit") || "24", 10) || 24, withTotal: offset === 0
+      });
+      const limit = Math.min(Math.max(parseInt(sp.get("limit") || "24", 10) || 24, 1), 48);
+      return { html: cardsHtml(r.rows, brandOf(profile), { origin: url.origin }), next: r.hasMore ? offset + limit : null, total: r.total, count: r.rows.length };
+    });
+  }
+
+  if (method === "GET" && (m = path.match(R.profIndex))) {
+    const profile = await data.getPublicProfile(env, m[1]);
+    if (!profile) return fail("Not found", 404);
+    return cachedPublic(request, ctx, 300, () => data.getSearchIndex(env, profile.id));
+  }
+
+  if (method === "GET" && (m = path.match(R.colItems))) {
+    const { results } = await env.DB.prepare(
+      `SELECT c.id, c.profile_id FROM collections c WHERE c.id = ? AND c.status = 'live'`
+    ).bind(m[1]).all();
+    if (!results.length) return fail("Not found", 404);
+    const profile = await data.getPublicProfile(env, results[0].profile_id);
+    if (!profile) return fail("Not found", 404);
+    const offset = parseInt(url.searchParams.get("offset") || "0", 10) || 0;
+    return cachedPublic(request, ctx, 30, async () => {
+      const r = await data.getCollectionItems(env, m[1], { offset, limit: 12, excludeProductId: url.searchParams.get("exclude") || null });
+      return { html: cardsHtml(r.rows, brandOf(profile), { origin: url.origin }), next: r.hasMore ? offset + 12 : null };
+    });
+  }
+
+  if (method === "GET" && path === "/api/fx") {
+    const { perUsd, updatedAt } = await getRates(env);
+    const cc = request.cf && request.cf.country;
+    return json({ currency: viewerCurrencyFromCountry(cc), rates: perUsd, updatedAt }, 200, { "cache-control": "private, max-age=600" });
+  }
+
+  // ------------------------------ video report (public, can never hide a video by itself) ------------------------------
+  if (method === "POST" && (m = path.match(R.prodVideoReport))) {
+    if (!sameOrigin(request)) return fail("Not allowed", 403);
+    await env.DB.prepare("UPDATE products SET video_status = 'suspect' WHERE id = ? AND video_id IS NOT NULL AND video_status IN ('ok','unknown')").bind(m[1]).run();
+    return json({ success: true });
+  }
+
+  // ------------------------------ admin ------------------------------
+  if (method === "POST" && path === "/api/admin/fx-refresh") {
+    if (!isAdminRequest(request, env)) return fail("Not authorized", 403);
+    try { return json({ success: true, ...(await refreshFxRates(env, { force: true })) }); } catch (e) { return fail(String(e.message || e), 502); }
+  }
+  if (method === "POST" && path === "/api/admin/backfill-prices") {
+    if (!isAdminRequest(request, env)) return fail("Not authorized", 403);
+    const dry = url.searchParams.get("dry") !== "0";
+    const { results } = await env.DB.prepare(
+      `SELECT p.id, p.price_display, pr.default_currency, pr.store_country FROM products p JOIN profiles pr ON pr.id = p.profile_id
+       WHERE p.price_source IS NULL AND p.price_display IS NOT NULL AND TRIM(p.price_display) != '' LIMIT 500`
+    ).all();
+    const plan = results.map((r) => {
+      const fb = normalizeCurrency(r.default_currency) || currencyFromCountryName(r.store_country) || "NGN";
+      return { id: r.id, text: r.price_display, ...parseLegacyPriceDisplay(r.price_display, fb) };
+    });
+    if (!dry) {
+      for (let i = 0; i < plan.length; i += 50) {
+        await env.DB.batch(plan.slice(i, i + 50).map((x) =>
+          env.DB.prepare("UPDATE products SET price_minor = ?, currency = ?, price_type = ?, price_source = ? WHERE id = ? AND price_source IS NULL")
+            .bind(x.price_minor, x.currency, x.price_type, x.price_source, x.id)));
+      }
+    }
+    return json({ dryRun: dry, processed: plan.length, unparsed: plan.filter((x) => x.price_source === "unparsed").length, sample: plan.slice(0, 15) });
+  }
+
+  // ------------------------------ everything below needs a signed-in owner ------------------------------
+  const owned = R.profLimits.test(path) || R.profColOrder.test(path) || R.colItems.test(path) || R.colOrder.test(path) || R.colMembers.test(path) || R.col.test(path) ||
+    R.prodMedia.test(path) || R.prodImages.test(path) || R.prodImage.test(path) || R.prodImgOrder.test(path) || R.prodVideo.test(path) ||
+    (R.profCollections.test(path) && method === "POST");
+  if (!owned) return null;
+
+  if (method !== "GET" && !sameOrigin(request)) return fail("Not allowed", 403);
+  const userId = await sessionUser(request, env);
+  if (!userId) return fail("Not authenticated", 401);
+
+  // plan limits + usage
+  if (method === "GET" && (m = path.match(R.profLimits))) {
+    const profile = await ownedProfile(env, m[1], userId);
+    if (!profile) return fail("Not your profile", 403);
+    const { planId, limits } = await getProfileLimits(env, profile);
+    const { results: c } = await env.DB.prepare("SELECT COUNT(*) AS n FROM collections WHERE profile_id = ?").bind(profile.id).all();
+    return json({ planId, limits, usage: { collections: c[0].n }, defaultCurrency: normalizeCurrency(profile.default_currency) || currencyFromCountryName(profile.store_country) || "NGN" });
+  }
+
+  // create collection
+  if (method === "POST" && (m = path.match(R.profCollections))) {
+    const profile = await ownedProfile(env, m[1], userId);
+    if (!profile) return fail("Not your profile", 403);
+    const body = await readJson(request);
+    const title = String(body.title || "").trim().slice(0, 60);
+    const description = String(body.description || "").trim().slice(0, 200);
+    if (!title) return fail("Please give your collection a title.");
+    if (!checkText(`${title} ${description}`).passed) return fail("That text isn't allowed. Please rephrase it.", 422);
+    const { limits } = await getProfileLimits(env, profile);
+    const { results: cnt } = await env.DB.prepare("SELECT COUNT(*) AS n FROM collections WHERE profile_id = ?").bind(profile.id).all();
+    if (!hasRoom(cnt[0].n, limits.max_collections)) return fail(`Your plan allows ${limits.max_collections} collections. Upgrade to add more.`, 403);
+    let base = data.slugify(title) || "collection", slug = base, n = 2;
+    for (;;) {
+      const { results } = await env.DB.prepare("SELECT 1 FROM collections WHERE profile_id = ? AND slug = ?").bind(profile.id, slug).all();
+      if (!results.length) break;
+      slug = `${base}-${n++}`;
+    }
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO collections (id, profile_id, slug, title, description, status, reach, show_on_profile, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1024 FROM collections WHERE profile_id = ?))`
+    ).bind(id, profile.id, slug, title, description || null, body.status === "draft" ? "draft" : "live", body.reach === "public" ? "public" : "brand", body.show_on_profile === 0 || body.show_on_profile === false ? 0 : 1, profile.id).run();
+    return json({ success: true, id, slug });
+  }
+
+  // order collections
+  if (method === "PUT" && (m = path.match(R.profColOrder))) {
+    const profile = await ownedProfile(env, m[1], userId);
+    if (!profile) return fail("Not your profile", 403);
+    const ids = asIds((await readJson(request)).collection_ids, 200);
+    for (let i = 0; i < ids.length; i += 50) {
+      await env.DB.batch(ids.slice(i, i + 50).map((id, k) =>
+        env.DB.prepare("UPDATE collections SET position = ? WHERE id = ? AND profile_id = ?").bind((i + k + 1) * 1024, id, profile.id)));
+    }
+    return json({ success: true });
+  }
+
+  // edit / delete one collection
+  if (method === "PATCH" && (m = path.match(R.col))) {
+    const col = await ownedCollection(env, m[1], userId);
+    if (!col) return fail("Not found", 404);
+    const body = await readJson(request);
+    const u = {};
+    if (body.title !== undefined) { u.title = String(body.title).trim().slice(0, 60); if (!u.title) return fail("Title can't be empty."); }
+    if (body.description !== undefined) u.description = String(body.description || "").trim().slice(0, 200) || null;
+    if (u.title || u.description) if (!checkText(`${u.title || ""} ${u.description || ""}`).passed) return fail("That text isn't allowed. Please rephrase it.", 422);
+    if (body.reach !== undefined) u.reach = body.reach === "public" ? "public" : "brand";
+    if (body.status !== undefined) u.status = body.status === "draft" ? "draft" : "live";
+    if (body.show_on_profile !== undefined) u.show_on_profile = body.show_on_profile ? 1 : 0;
+    const keys = Object.keys(u);
+    if (!keys.length) return fail("Nothing to update.");
+    await env.DB.prepare(`UPDATE collections SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = datetime('now') WHERE id = ?`).bind(...keys.map((k) => u[k]), col.id).run();
+    return json({ success: true });
+  }
+  if (method === "DELETE" && (m = path.match(R.col))) {
+    const col = await ownedCollection(env, m[1], userId);
+    if (!col) return fail("Not found", 404);
+    await env.DB.batch([env.DB.prepare("DELETE FROM collection_items WHERE collection_id = ?").bind(col.id), env.DB.prepare("DELETE FROM collections WHERE id = ?").bind(col.id)]);
+    return json({ success: true });
+  }
+
+  // which products are in this collection (owner only; used by the item picker)
+  if (method === "GET" && (m = path.match(R.colMembers))) {
+    const col = await ownedCollection(env, m[1], userId);
+    if (!col) return fail("Not found", 404);
+    const { results } = await env.DB.prepare("SELECT product_id FROM collection_items WHERE collection_id = ?").bind(col.id).all();
+    return json({ ids: results.map((r) => r.product_id) });
+  }
+
+  // add / remove items
+  if (method === "PUT" && (m = path.match(R.colItems))) {
+    const col = await ownedCollection(env, m[1], userId);
+    if (!col) return fail("Not found", 404);
+    const body = await readJson(request);
+    const add = asIds(body.add, 200), remove = asIds(body.remove, 200);
+    if (add.length) {
+      const { limits } = await getProfileLimits(env, { tier_id: col.p_tier, max_products: col.p_max });
+      const ph = add.map(() => "?").join(",");
+      const { results: valid } = await env.DB.prepare(`SELECT id FROM products WHERE id IN (${ph}) AND profile_id = ? AND is_active = 1 AND is_draft = 0`).bind(...add, col.profile_id).all();
+      const { results: have } = await env.DB.prepare("SELECT product_id FROM collection_items WHERE collection_id = ?").bind(col.id).all();
+      const haveSet = new Set(have.map((h) => h.product_id));
+      const fresh = valid.map((v) => v.id).filter((id) => !haveSet.has(id));
+      if (limits.max_items_per_collection >= 0 && haveSet.size + fresh.length > limits.max_items_per_collection) return fail(`A collection on your plan can hold ${limits.max_items_per_collection} items.`, 403);
+      const { results: mx } = await env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS p FROM collection_items WHERE collection_id = ?").bind(col.id).all();
+      let pos = mx[0].p;
+      for (let i = 0; i < fresh.length; i += 50) {
+        await env.DB.batch(fresh.slice(i, i + 50).map((pid) => env.DB.prepare("INSERT OR IGNORE INTO collection_items (collection_id, product_id, position) VALUES (?, ?, ?)").bind(col.id, pid, (pos += 1024))));
+      }
+    }
+    if (remove.length) await env.DB.prepare(`DELETE FROM collection_items WHERE collection_id = ? AND product_id IN (${remove.map(() => "?").join(",")})`).bind(col.id, ...remove).run();
+    await data.recomputeCollection(env, col.id);
+    return json({ success: true });
+  }
+  if (method === "PUT" && (m = path.match(R.colOrder))) {
+    const col = await ownedCollection(env, m[1], userId);
+    if (!col) return fail("Not found", 404);
+    const ids = asIds((await readJson(request)).product_ids, 500);
+    for (let i = 0; i < ids.length; i += 50) {
+      await env.DB.batch(ids.slice(i, i + 50).map((pid, k) => env.DB.prepare("UPDATE collection_items SET position = ? WHERE collection_id = ? AND product_id = ?").bind((i + k + 1) * 1024, col.id, pid)));
+    }
+    await data.recomputeCollection(env, col.id);
+    return json({ success: true });
+  }
+
+  // ------------------------------ product media ------------------------------
+  if (method === "GET" && (m = path.match(R.prodMedia))) {
+    const prod = await ownedProduct(env, m[1], userId);
+    if (!prod) return fail("Not found", 404);
+    const images = await data.getProductImages(env, prod.id);
+    const { results: cols } = await env.DB.prepare("SELECT collection_id FROM collection_items WHERE product_id = ?").bind(prod.id).all();
+    return json({ images, video: prod.video_id ? { id: prod.video_id, status: prod.video_status } : null, collections: cols.map((c) => c.collection_id) });
+  }
+
+  if (method === "POST" && (m = path.match(R.prodImages))) {
+    const prod = await ownedProduct(env, m[1], userId);
+    if (!prod) return fail("Not found", 404);
+    const body = await readJson(request);
+    const img = data.parseOwnProductImage(body.url, userId, new URL(request.url).hostname);
+    if (!img) return fail("That image can't be used. Please upload it again.");
+    const { limits } = await getProfileLimits(env, { tier_id: prod.p_tier, max_products: prod.p_max });
+    const { results: cnt } = await env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(MAX(position), -1) AS mx FROM product_images WHERE product_id = ?").bind(prod.id).all();
+    if (!hasRoom(cnt[0].n, limits.max_images_per_product)) return fail(`Your plan allows ${limits.max_images_per_product} photo${limits.max_images_per_product === 1 ? "" : "s"} per item. Upgrade to add more.`, 403);
+    const id = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO product_images (id, product_id, url, position, width, height, color) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind(id, prod.id, img.url, cnt[0].mx + 1, data.cleanDim(body.w), data.cleanDim(body.h), data.cleanColor(body.color)).run();
+    await data.syncProductCover(env, prod.id);
+    return json({ success: true, id });
+  }
+
+  if (method === "DELETE" && (m = path.match(R.prodImage))) {
+    const prod = await ownedProduct(env, m[1], userId);
+    if (!prod) return fail("Not found", 404);
+    const { results } = await env.DB.prepare("SELECT id, url FROM product_images WHERE id = ? AND product_id = ?").bind(m[2], prod.id).all();
+    if (!results.length) return fail("Not found", 404);
+    await env.DB.prepare("DELETE FROM product_images WHERE id = ?").bind(results[0].id).run();
+    await data.syncProductCover(env, prod.id);
+    // Remove the file too, but only if it is THIS user's file and nothing else still points at it.
+    const own = data.parseOwnProductImage(results[0].url, userId, new URL(request.url).hostname);
+    if (own) {
+      const { results: still } = await env.DB.prepare("SELECT 1 FROM product_images WHERE url = ? LIMIT 1").bind(results[0].url).all();
+      if (!still.length) ctx.waitUntil(env.ASSETS.delete(own.key));
+    }
+    return json({ success: true });
+  }
+
+  if (method === "PUT" && (m = path.match(R.prodImgOrder))) {
+    const prod = await ownedProduct(env, m[1], userId);
+    if (!prod) return fail("Not found", 404);
+    const ids = asIds((await readJson(request)).image_ids, 30);
+    await env.DB.batch(ids.map((id, i) => env.DB.prepare("UPDATE product_images SET position = ? WHERE id = ? AND product_id = ?").bind(i, id, prod.id)));
+    await data.syncProductCover(env, prod.id);
+    return json({ success: true });
+  }
+
+  if (method === "PUT" && (m = path.match(R.prodVideo))) {
+    const prod = await ownedProduct(env, m[1], userId);
+    if (!prod) return fail("Not found", 404);
+    const raw = String((await readJson(request)).video_url || "").trim();
+    if (!raw) {
+      await env.DB.prepare("UPDATE products SET video_id = NULL, video_status = 'none', video_checked_at = NULL WHERE id = ?").bind(prod.id).run();
+      return json({ success: true, video: null });
+    }
+    const { limits } = await getProfileLimits(env, { tier_id: prod.p_tier, max_products: prod.p_max });
+    if (!limits.video_allowed) return fail("Video is available on paid plans. Upgrade to add one.", 403);
+    const vid = extractYouTubeId(raw);
+    if (!vid) return fail("Please paste a YouTube link (for example https://youtu.be/...).");
+    const check = await checkYouTube(vid);
+    if (check.status === "broken") return fail("YouTube says this video is private, removed, or not allowed to be embedded. Please choose another.");
+    await env.DB.prepare("UPDATE products SET video_id = ?, video_status = ?, video_checked_at = datetime('now') WHERE id = ?").bind(vid, check.status === "ok" ? "ok" : "unknown", prod.id).run();
+    return json({ success: true, video: { id: vid, status: check.status } });
+  }
+
+  return null;
+}
+
+/** Called from the nightly cron (index.js scheduled()). */
+export async function runShopMaintenance(env) {
+  try { await refreshFxRates(env); } catch (e) { console.error("FX refresh failed (non-fatal):", e); }
+  try { await runVideoChecks(env, 25); } catch (e) { console.error("Video checks failed (non-fatal):", e); }
+}
