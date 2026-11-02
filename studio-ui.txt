@@ -1,0 +1,211 @@
+/* =====================================================================
+   BIZIPLEX — studio-ui.js : the owner's tools, kept in ONE self-contained file
+   so the old forms keep working if this script is ever removed.
+     LiyogStudio.openProductForm(profile, product|null, onDone)
+     LiyogStudio.openCollections(profile, onChange)
+   Everything the owner can do is limited by the SERVER (plan limits, ownership,
+   same-origin checks). The checks in this file only make the screen friendlier.
+   ===================================================================== */
+(function () {
+  "use strict";
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  var ui = function () { return window.LiyogProductUI || {}; };
+  function toast(m, t) { if (ui().showToast) ui().showToast(m, t || "success"); }
+  function host() { return document.querySelector(".lp-root") || document.body; }
+
+  function api(method, url, body) {
+    return fetch(url, { method: method, credentials: "include", headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { if (!r.ok) { var e = new Error(d.error || "Something went wrong. Please try again."); e.status = r.status; throw e; } return d; }); });
+  }
+
+  // a bottom sheet that reuses the site's existing sheet styles
+  function sheet(title, html) {
+    var ov = document.createElement("div"); ov.className = "lp-sheet-overlay lp-open"; ov.style.zIndex = 1700;
+    ov.innerHTML = '<div class="lp-sheet lp-sheet-tall"><div class="lp-sheet-top-bar"><div class="lp-sheet-handle"></div><button class="lp-sheet-close" type="button" aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><h3 class="lp-sheet-title-only">' + esc(title) + '</h3><div class="bz-st-body">' + html + "</div></div>";
+    host().appendChild(ov); if (ui().lockBodyScroll) ui().lockBodyScroll();
+    var closed = false;
+    function close() { if (closed) return; closed = true; ov.remove(); if (ui().unlockBodyScroll) ui().unlockBodyScroll(); }
+    $(".lp-sheet-close", ov).addEventListener("click", close); ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
+    return { ov: ov, body: $(".bz-st-body", ov), close: close };
+  }
+
+  // ------------------------------------------------------------------
+  // photo helpers: shrink to WebP, read size + average colour (layout hints)
+  // ------------------------------------------------------------------
+  function prepImage(file, max) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image(), fr = new FileReader();
+      fr.onerror = function () { reject(new Error("Couldn't read that file")); };
+      fr.onload = function (e) { img.src = e.target.result; };
+      img.onerror = function () { reject(new Error("That doesn't look like an image")); };
+      img.onload = function () {
+        var w = img.width, h = img.height, r = Math.min(1, max / Math.max(w, h)); w = Math.round(w * r); h = Math.round(h * r);
+        var c = document.createElement("canvas"); c.width = w; c.height = h; c.getContext("2d").drawImage(img, 0, 0, w, h);
+        var color = null; try { var t = document.createElement("canvas"); t.width = 1; t.height = 1; var x = t.getContext("2d"); x.drawImage(img, 0, 0, 1, 1); var d = x.getImageData(0, 0, 1, 1).data; color = "#" + [d[0], d[1], d[2]].map(function (v) { return ("0" + v.toString(16)).slice(-2); }).join(""); } catch (err) {}
+        c.toBlob(function (b) { b ? resolve({ blob: b, w: w, h: h, color: color }) : reject(new Error("Compression failed")); }, "image/webp", 0.82);
+      };
+      fr.readAsDataURL(file);
+    });
+  }
+  function slugName(s) { return (s || "item").toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").slice(0, 40); }
+  function uploadBlob(p, prep) {
+    return fetch("/api/upload-product-image?name=" + encodeURIComponent(slugName(p.business_name) + "-product"), { method: "POST", credentials: "include", headers: { "content-type": "image/webp" }, body: prep.blob })
+      .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || "Upload failed"); return d.url; }); });
+  }
+
+  // ------------------------------------------------------------------
+  // PRODUCT / SERVICE FORM
+  // ------------------------------------------------------------------
+  var CURRENCIES = ["NGN", "USD", "GBP", "EUR", "GHS", "KES", "ZAR", "UGX", "TZS", "RWF", "XOF", "XAF", "EGP", "CAD", "AUD", "INR", "AED", "SAR", "BRL", "CNY", "JPY"];
+  function ytId(s) { var m = String(s || "").trim().match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/) || String(s || "").trim().match(/^([A-Za-z0-9_-]{11})$/); return m ? m[1] : null; }
+
+  function openProductForm(p, product, onDone) {
+    Promise.all([
+      api("GET", "/api/profiles/" + p.id + "/plan-limits"),
+      product ? api("GET", "/api/products/" + product.id + "/media") : Promise.resolve({ images: [], video: null, collections: [] }),
+      api("GET", "/api/profiles/" + p.id + "/collections?mine=1")
+    ]).then(function (res) {
+      var lim = res[0], media = res[1], cols = res[2].collections || [];
+      var maxImg = lim.limits.max_images_per_product < 0 ? 12 : Math.max(1, lim.limits.max_images_per_product);
+      var videoOk = !!lim.limits.video_allowed;
+      var s = { id: product ? product.id : null, kind: product && product.kind === "service" ? "service" : "product", images: media.images.slice(), video: media.video ? media.video.id : "", cols: new Set(media.collections), origCols: new Set(media.collections) };
+      var curVal = product && product.currency ? product.currency : lim.defaultCurrency;
+      var priceVal = product && product.price_minor != null ? (product.price_minor / Math.pow(10, ["JPY", "KRW", "VND", "UGX", "RWF", "XAF", "XOF"].indexOf(curVal) >= 0 ? 0 : 2)).toString() : "";
+      var type = product ? (product.price_type || "fixed") : "fixed";
+
+      var sh = sheet(product ? "Edit listing" : "Add a listing", "");
+      function render() {
+        var slots = "";
+        for (var i = 0; i < maxImg; i++) {
+          var im = s.images[i];
+          slots += '<div class="bz-st-slot" data-i="' + i + '">' + (im ? '<img src="' + esc(im.url) + '" alt="">' + (i === 0 ? "<em>Cover</em>" : "") + '<b data-del="' + esc(im.id) + '" aria-label="Remove">×</b>' : "+ Photo") + "</div>";
+        }
+        var vid = ytId(s.video);
+        sh.body.innerHTML =
+          '<div class="bz-st-seg" id="st-kind"><button type="button" data-k="product" class="' + (s.kind === "product" ? "is-active" : "") + '">Product</button><button type="button" data-k="service" class="' + (s.kind === "service" ? "is-active" : "") + '">Service</button></div>' +
+          '<div class="lp-edit-field"><label class="lp-field-label">Name</label><input id="st-name" class="lp-field-input" maxlength="80" value="' + esc(product && !product.is_draft ? product.name : "") + '" placeholder="' + (s.kind === "service" ? "e.g. Logo design" : "e.g. Ankara fabric bundle") + '"></div>' +
+          '<div class="lp-edit-field"><label class="lp-field-label">Price</label><div class="bz-st-row"><select id="st-cur" class="lp-field-input">' + CURRENCIES.map(function (c) { return "<option" + (c === curVal ? " selected" : "") + ">" + c + "</option>"; }).join("") + '</select><input id="st-price" class="lp-field-input" inputmode="decimal" placeholder="15000" value="' + esc(priceVal) + '"></div>' +
+          '<div class="bz-st-row3"><select id="st-ptype" class="lp-field-input"><option value="fixed"' + (type === "fixed" ? " selected" : "") + '>Fixed price</option><option value="from"' + (type === "from" ? " selected" : "") + '>Starting from</option><option value="contact"' + (type === "contact" ? " selected" : "") + '>Contact for price</option></select><span></span></div><p class="bz-st-note">Visitors see this converted to their own currency automatically.</p></div>' +
+          '<div class="lp-edit-field"><label class="lp-field-label">Description</label><textarea id="st-desc" class="lp-field-input lp-field-textarea" maxlength="500">' + esc(product ? product.description || "" : "") + "</textarea></div>" +
+          '<div class="lp-edit-field"><label class="lp-field-label">Photos (' + s.images.length + "/" + maxImg + ')</label><div class="bz-st-media" id="st-media">' + slots + '</div><input type="file" accept="image/*" id="st-file" style="display:none"><p class="bz-st-note">The first photo is the cover. Flyers and tall images are shown whole, never cropped.</p></div>' +
+          '<div class="lp-edit-field"><label class="lp-field-label">YouTube video</label><input id="st-video" class="lp-field-input" ' + (videoOk ? "" : "disabled ") + 'placeholder="' + (videoOk ? "Paste a YouTube link" : "Available on paid plans") + '" value="' + esc(s.video ? "https://youtu.be/" + s.video : "") + '">' +
+          (vid ? '<div class="bz-st-vidprev"><img src="https://i.ytimg.com/vi/' + vid + '/default.jpg" alt=""><span>Video found</span></div>' : "") + "</div>" +
+          (cols.length ? '<div class="lp-edit-field"><label class="lp-field-label">Collections</label><div class="bz-st-chips" id="st-cols">' + cols.map(function (c) { return '<button type="button" class="bz-chip' + (s.cols.has(c.id) ? " is-active" : "") + '" data-c="' + esc(c.id) + '">' + esc(c.title) + "</button>"; }).join("") + "</div></div>" : "") +
+          '<div class="lp-edit-form-status" id="st-status"></div><button type="button" class="lp-btn lp-btn-primary lp-submit-btn" id="st-save"><span>' + (product ? "Save changes" : "Add listing") + "</span></button>";
+        wire();
+      }
+      function keep() { return { name: $("#st-name").value, price: $("#st-price").value, cur: $("#st-cur").value, ptype: $("#st-ptype").value, desc: $("#st-desc").value, video: $("#st-video").value }; }
+      function status(m, bad) { var e = $("#st-status"); if (e) { e.textContent = m; e.className = "lp-edit-form-status " + (bad ? "lp-edit-error" : "lp-edit-success"); } }
+      function wire() {
+        $$("#st-kind button").forEach(function (b) { b.addEventListener("click", function () { var k = keep(); s.kind = b.dataset.k; product = Object.assign({}, product || {}, { name: k.name, description: k.desc, currency: k.cur, price_type: k.ptype }); priceVal = k.price; curVal = k.cur; type = k.ptype; s.video = k.video; render(); }); });
+        $$("#st-cols .bz-chip").forEach(function (b) { b.addEventListener("click", function () { var id = b.dataset.c; if (s.cols.has(id)) s.cols.delete(id); else s.cols.add(id); b.classList.toggle("is-active"); }); });
+        var file = $("#st-file"), pending = -1;
+        $$("#st-media .bz-st-slot").forEach(function (slot) {
+          slot.addEventListener("click", function (e) {
+            var del = e.target.closest("[data-del]");
+            if (del) { del.parentNode.classList.add("is-busy"); api("DELETE", "/api/products/" + s.id + "/images/" + del.dataset.del).then(function () { s.images = s.images.filter(function (x) { return x.id !== del.dataset.del; }); var k = keep(); priceVal = k.price; render(); }).catch(function (er) { toast(er.message, "error"); render(); }); return; }
+            if (s.images[Number(slot.dataset.i)]) return; pending = Number(slot.dataset.i); file.click();
+          });
+        });
+        file.onchange = function () {
+          var f = file.files[0]; file.value = ""; if (!f) return;
+          var slot = $('#st-media .bz-st-slot[data-i="' + pending + '"]'); if (slot) slot.classList.add("is-busy");
+          prepImage(f, 1000).then(function (prep) {
+            return uploadBlob(p, prep).then(function (url) {
+              if (!s.id) return api("POST", "/api/products", { profile_id: p.id, is_draft: true, kind: s.kind, image_url: url, img_w: prep.w, img_h: prep.h, img_color: prep.color }).then(function (d) { s.id = d.productId; s.images.push({ id: d.imageId, url: url }); });
+              return api("POST", "/api/products/" + s.id + "/images", { url: url, w: prep.w, h: prep.h, color: prep.color }).then(function (d) { s.images.push({ id: d.id, url: url }); });
+            });
+          }).then(function () { var k = keep(); priceVal = k.price; curVal = k.cur; type = k.ptype; s.video = k.video; product = Object.assign({}, product || {}, { name: k.name, description: k.desc }); render(); })
+            .catch(function (er) { toast(er.message, "error"); if (slot) slot.classList.remove("is-busy"); });
+        };
+        $("#st-save").addEventListener("click", save);
+      }
+      function save() {
+        var k = keep(), name = k.name.trim(); if (!name) return status("Please give it a name.", true);
+        var btn = $("#st-save"); btn.disabled = true; status("Saving…");
+        var fields = { name: name, description: k.desc.trim(), kind: s.kind, currency: k.cur, price_type: k.ptype, price: k.ptype === "contact" ? "" : k.price.trim() };
+        (s.id ? api("PATCH", "/api/products/" + s.id, fields) : api("POST", "/api/products", Object.assign({ profile_id: p.id }, fields)).then(function (d) { s.id = d.productId; }))
+          .then(function () { var v = k.video.trim(); if (videoOk && (v || media.video || s.video)) return api("PUT", "/api/products/" + s.id + "/video", { video_url: v }); })
+          .then(function () {
+            var jobs = [];
+            s.cols.forEach(function (id) { if (!s.origCols.has(id)) jobs.push(api("PUT", "/api/collections/" + id + "/items", { add: [s.id] })); });
+            s.origCols.forEach(function (id) { if (!s.cols.has(id)) jobs.push(api("PUT", "/api/collections/" + id + "/items", { remove: [s.id] })); });
+            return Promise.all(jobs);
+          })
+          .then(function () { sh.close(); toast("Saved!"); if (onDone) onDone(); })
+          .catch(function (er) { btn.disabled = false; status(er.message, true); });
+      }
+      render();
+    }).catch(function (er) { toast(er.message || "Couldn't open the form", "error"); });
+  }
+
+  // ------------------------------------------------------------------
+  // COLLECTIONS MANAGER
+  // ------------------------------------------------------------------
+  function openCollections(p, onChange) {
+    var sh = sheet("Collections", "");
+    var cols = [];
+    function changed() { if (onChange) onChange(); }
+    function load() { return api("GET", "/api/profiles/" + p.id + "/collections?mine=1").then(function (d) { cols = d.collections || []; draw(); }); }
+    function draw() {
+      sh.body.innerHTML = '<p class="bz-st-note" style="margin:0 0 12px">Group your products and services into collections, like playlists. Public collections can also appear in Explore.</p>' +
+        '<div class="bz-st-list">' + (cols.length ? cols.map(function (c, i) {
+          return '<div class="bz-st-item" data-id="' + esc(c.id) + '">' + (c.cover_url ? '<img src="' + esc(c.cover_url) + '" alt="">' : '<span class="bz-st-ph"></span>') +
+            '<div class="bz-st-t"><strong>' + esc(c.title) + "</strong><small>" + c.item_count + " items · " + (c.reach === "public" ? "Public" : "My pages only") + (c.status === "draft" ? " · Hidden" : "") + "</small></div>" +
+            '<button class="bz-st-mini" data-a="up" ' + (i === 0 ? "disabled" : "") + ' aria-label="Move up">↑</button><button class="bz-st-mini" data-a="down" ' + (i === cols.length - 1 ? "disabled" : "") + ' aria-label="Move down">↓</button>' +
+            '<button class="bz-st-mini" data-a="items">Items</button><button class="bz-st-mini" data-a="edit">Edit</button></div>';
+        }).join("") : '<p class="bz-st-note">No collections yet.</p>') + '</div><button type="button" class="lp-btn lp-btn-primary lp-submit-btn" id="co-new" style="margin-top:14px"><span>New collection</span></button>';
+      $("#co-new").addEventListener("click", function () { edit(null); });
+      $$(".bz-st-item", sh.body).forEach(function (row) {
+        row.addEventListener("click", function (e) {
+          var b = e.target.closest("[data-a]"); if (!b) return; var id = row.dataset.id, a = b.dataset.a, c = cols.find(function (x) { return x.id === id; });
+          if (a === "edit") edit(c); else if (a === "items") items(c);
+          else { var ids = cols.map(function (x) { return x.id; }), i = ids.indexOf(id), j = a === "up" ? i - 1 : i + 1; ids.splice(j, 0, ids.splice(i, 1)[0]); api("PUT", "/api/profiles/" + p.id + "/collections-order", { collection_ids: ids }).then(load).then(changed).catch(function (er) { toast(er.message, "error"); }); }
+        });
+      });
+    }
+    function edit(c) {
+      sh.body.innerHTML = '<button type="button" class="bz-linkbtn" id="co-back">‹ Back</button>' +
+        '<div class="lp-edit-field" style="margin-top:10px"><label class="lp-field-label">Title</label><input id="co-title" class="lp-field-input" maxlength="60" value="' + esc(c ? c.title : "") + '" placeholder="e.g. New arrivals"></div>' +
+        '<div class="lp-edit-field"><label class="lp-field-label">Description (optional)</label><textarea id="co-desc" class="lp-field-input lp-field-textarea" maxlength="200">' + esc(c ? c.description || "" : "") + "</textarea></div>" +
+        '<div class="lp-edit-field"><label class="lp-field-label">Who can discover it</label><select id="co-reach" class="lp-field-input"><option value="brand"' + (c && c.reach === "public" ? "" : " selected") + '>My pages only</option><option value="public"' + (c && c.reach === "public" ? " selected" : "") + '>Public (may appear in Explore and related spots)</option></select></div>' +
+        '<label class="lp-review-recommend-toggle"><input type="checkbox" id="co-prof"' + (!c || c.show_on_profile ? " checked" : "") + '> Show as a row on my profile</label>' +
+        '<label class="lp-review-recommend-toggle"><input type="checkbox" id="co-live"' + (!c || c.status === "live" ? " checked" : "") + '> Visible to visitors</label>' +
+        '<div class="lp-edit-form-status" id="co-status"></div><button type="button" class="lp-btn lp-btn-primary lp-submit-btn" id="co-save"><span>Save</span></button>' +
+        (c ? '<button type="button" class="bz-pill bz-pill-quiet" id="co-del" style="margin-top:12px">Delete this collection</button>' : "");
+      $("#co-back").addEventListener("click", draw);
+      $("#co-save").addEventListener("click", function () {
+        var body = { title: $("#co-title").value, description: $("#co-desc").value, reach: $("#co-reach").value, show_on_profile: $("#co-prof").checked ? 1 : 0, status: $("#co-live").checked ? "live" : "draft" };
+        $("#co-save").disabled = true;
+        (c ? api("PATCH", "/api/collections/" + c.id, body) : api("POST", "/api/profiles/" + p.id + "/collections", body)).then(function (d) { changed(); if (!c && d.id) return load().then(function () { items(cols.find(function (x) { return x.id === d.id; })); }); return load(); })
+          .catch(function (er) { $("#co-save").disabled = false; var e = $("#co-status"); e.textContent = er.message; e.className = "lp-edit-form-status lp-edit-error"; });
+      });
+      var del = $("#co-del"); if (del) del.addEventListener("click", function () { if (!confirm("Delete this collection? Your products stay.")) return; api("DELETE", "/api/collections/" + c.id).then(load).then(changed).catch(function (er) { toast(er.message, "error"); }); });
+    }
+    function items(c) {
+      sh.body.innerHTML = '<p class="bz-st-note">Loading your products…</p>';
+      Promise.all([api("GET", "/api/profiles/" + p.id + "/products"), api("GET", "/api/collections/" + c.id + "/members")]).then(function (r) {
+        var all = (r[0].products || []).filter(function (x) { return !x.is_draft; });
+        var orig = new Set(r[1].ids), now = new Set(r[1].ids), q = "";
+        function list() {
+          var shown = all.filter(function (x) { return !q || x.name.toLowerCase().indexOf(q) >= 0; });
+          $("#it-list").innerHTML = shown.map(function (x) { return '<label class="bz-st-item"><input type="checkbox" data-id="' + esc(x.id) + '"' + (now.has(x.id) ? " checked" : "") + ">" + (x.image_url ? '<img src="' + esc(x.image_url) + '" alt="">' : '<span class="bz-st-ph"></span>') + '<div class="bz-st-t"><strong>' + esc(x.name) + "</strong></div></label>"; }).join("") || '<p class="bz-st-note">No products found.</p>';
+          $$("#it-list input").forEach(function (cb) { cb.addEventListener("change", function () { cb.checked ? now.add(cb.dataset.id) : now.delete(cb.dataset.id); }); });
+        }
+        sh.body.innerHTML = '<button type="button" class="bz-linkbtn" id="it-back">‹ Back</button><h4 style="margin:10px 0">' + esc(c.title) + '</h4><input id="it-q" class="lp-field-input" placeholder="Search your products" style="margin-bottom:10px"><div class="bz-st-list" id="it-list"></div><div class="lp-edit-form-status" id="it-status"></div><button type="button" class="lp-btn lp-btn-primary lp-submit-btn" id="it-save" style="margin-top:12px"><span>Save items</span></button>';
+        list(); $("#it-back").addEventListener("click", draw); $("#it-q").addEventListener("input", function (e) { q = e.target.value.toLowerCase(); list(); });
+        $("#it-save").addEventListener("click", function () {
+          var add = [], remove = []; now.forEach(function (id) { if (!orig.has(id)) add.push(id); }); orig.forEach(function (id) { if (!now.has(id)) remove.push(id); });
+          if (!add.length && !remove.length) return draw();
+          $("#it-save").disabled = true;
+          api("PUT", "/api/collections/" + c.id + "/items", { add: add, remove: remove }).then(load).then(changed).catch(function (er) { $("#it-save").disabled = false; var e = $("#it-status"); e.textContent = er.message; e.className = "lp-edit-form-status lp-edit-error"; });
+        });
+      }).catch(function (er) { toast(er.message || "Couldn't load products", "error"); draw(); });
+    }
+    load().catch(function (er) { toast(er.message, "error"); sh.close(); });
+  }
+
+  window.LiyogStudio = { openProductForm: openProductForm, openCollections: openCollections };
+})();
