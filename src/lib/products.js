@@ -13,7 +13,7 @@ import {
   majorToMinor, formatMoney, normalizeCurrency, parseLegacyPriceDisplay, currencyFromCountryName
 } from "./money.js";
 import {
-  buildSearchText, parseOwnProductImage, cleanColor, cleanDim, recomputeCollectionsForProduct
+  buildSearchText, parseOwnProductImage, allowImageHost, cleanColor, cleanDim, recomputeCollectionsForProduct
 } from "./shop-data.js";
 
 const MAX_DRAFTS = 10;
@@ -89,6 +89,7 @@ export async function handleCreateProduct(request, env, userId) {
 
     let image = null;
     if (image_url) {
+      try { allowImageHost(new URL(await getImageOrigin(env, "https://invalid.invalid")).hostname); } catch (e) {}
       image = parseOwnProductImage(image_url, userId, host);
       if (!image) return jsonResponse({ error: "That image can't be used. Please upload it again." }, 400);
     }
@@ -157,6 +158,7 @@ export async function handleUpdateProduct(request, env, userId, productId) {
     if (price) Object.assign(updates, price);
     if (body.image_url !== undefined) {
       if (body.image_url) {
+        try { allowImageHost(new URL(await getImageOrigin(env, "https://invalid.invalid")).hostname); } catch (e) {}
         const image = parseOwnProductImage(body.image_url, userId, host);
         if (!image) return jsonResponse({ error: "That image can't be used. Please upload it again." }, 400);
         updates.image_url = image.url;
