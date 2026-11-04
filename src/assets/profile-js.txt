@@ -4403,6 +4403,8 @@ window.LiyogProductUI = {
   openInquirySheet,
   escHtml,
   escAttr,
+compressImageToWebp,
+  buildSeoFilename,
   initShopThemeToggle,
   lockBodyScroll,
   unlockBodyScroll
