@@ -16,13 +16,11 @@ import { extractYouTubeId, checkYouTube, runVideoChecks } from "./media.js";
 import { getRates, refreshFxRates, viewerCurrencyFromCountry, parseLegacyPriceDisplay, normalizeCurrency, currencyFromCountryName } from "./money.js";
 import { isAdminRequest } from "./security.js";
 import * as data from "./shop-data.js";
-import { cardsHtml, cardHtml, toCard, esc } from "./shop-render.js";
 
 const ID = "([A-Za-z0-9-]{8,64})";
 const R = {
   profCollections: new RegExp(`^/api/profiles/${ID}/collections$`),
-  profCatalogue: new RegExp(`^/api/profiles/${ID}/catalogue$`),
-  profIndex: new RegExp(`^/api/profiles/${ID}/search-index$`),
+  profSearch: new RegExp(`^/api/profiles/${ID}/search$`),
   profLimits: new RegExp(`^/api/profiles/${ID}/plan-limits$`),
   profColOrder: new RegExp(`^/api/profiles/${ID}/collections-order$`),
   colItems: new RegExp(`^/api/collections/${ID}/items$`),
@@ -76,9 +74,18 @@ async function cachedPublic(request, ctx, ttl, produce) {
   return res;
 }
 
-function brandOf(profile) {
-  return { slug: profile.slug, business_name: profile.business_name, whatsapp_number: profile.whatsapp_number };
+/** One compact, safe JSON shape for every product list (search, collections, profile rows). */
+function row(r) {
+  return {
+    id: r.id, slug: r.slug || null, name: r.name, kind: r.kind === "service" ? "service" : "product",
+    description: r.description || "", price_display: r.price_display || null, price_minor: r.price_minor ?? null,
+    currency: r.currency || null, price_type: r.price_type || "fixed", image_url: r.image_url || null,
+    img_w: r.img_w || null, img_h: r.img_h || null, img_color: r.img_color || null,
+    has_video: !!(r.video_id && r.video_status !== "broken"), view_count: r.view_count || 0,
+    avg_rating: r.avg_rating || 0, rating_count: r.rating_count || 0, like_count: r.like_count || 0
+  };
 }
+const likeEsc = (s) => s.replace(/[\\%_]/g, (c) => "\\" + c);
 
 async function ownedProfile(env, profileId, userId) {
   const { results } = await env.DB.prepare("SELECT * FROM profiles WHERE id = ? AND owner_id = ?").bind(profileId, userId).all();
@@ -105,67 +112,75 @@ export async function routeShopApi(request, env, ctx, url) {
   let m;
 
   // ------------------------------ public reads ------------------------------
+  // Quick self-check the owner screens call when something fails: it only says which parts of the
+  // database upgrade are missing. No private data.
+  if (method === "GET" && path === "/api/shop/health") {
+    const need = { products: ["kind", "price_minor", "currency", "price_type", "search_text", "img_w", "img_h", "img_color", "video_id", "video_status"],
+      product_images: ["url", "position"], collections: ["slug", "status", "item_count"], collection_items: ["collection_id", "product_id"], plans: ["plan_id"], plan_limits: ["limit_key"] };
+    const missing = [];
+    for (const [table, cols] of Object.entries(need)) {
+      try {
+        const { results } = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+        const have = new Set(results.map((r) => r.name));
+        if (!have.size) { missing.push(table); continue; }
+        cols.forEach((c) => { if (!have.has(c)) missing.push(`${table}.${c}`); });
+      } catch (e) { missing.push(table); }
+    }
+    return json({ ok: missing.length === 0, missing });
+  }
+
+  // Profile page rows: the first items of every public collection, as plain data (the page draws them with the
+  // normal product card, so nothing new is invented).
   if (method === "GET" && (m = path.match(R.profCollections))) {
     const mine = url.searchParams.get("mine") === "1";
-    const profile = mine ? null : await data.getPublicProfile(env, m[1]);
-    if (!mine && !profile) return fail("Not found", 404);
     const surface = url.searchParams.get("surface") === "profile" ? "profile" : "catalogue";
     const preview = Math.min(Math.max(parseInt(url.searchParams.get("preview") || "0", 10) || 0, 0), 12);
-    const wantHtml = url.searchParams.get("format") === "html";
-
     const build = async () => {
-      let owner = null;
       if (mine) {
         const uid = await sessionUser(request, env);
-        owner = uid ? await ownedProfile(env, m[1], uid) : null;
+        const owner = uid ? await ownedProfile(env, m[1], uid) : null;
         if (!owner) return null;
+        return { collections: await data.listCollections(env, m[1], { surface, mine: true }) };
       }
-      const prof = owner || profile;
-      const cols = await data.listCollections(env, m[1], { surface, mine: !!owner });
-      let previews = {};
-      if (preview > 0) previews = await data.getCollectionPreviews(env, cols.slice(0, 8).map((c) => c.id), preview);
-      return {
-        collections: cols.map((c) => ({
-          ...c, ...(preview > 0 && wantHtml && previews[c.id] ? { html: cardsHtml(previews[c.id], brandOf(prof), { origin: url.origin }) } : {})
-        }))
-      };
+      const profile = await data.getPublicProfile(env, m[1]);
+      if (!profile) return { collections: [] };
+      const cols = await data.listCollections(env, m[1], { surface });
+      const previews = preview > 0 ? await data.getCollectionPreviews(env, cols.slice(0, 8).map((c) => c.id), preview) : {};
+      return { collections: cols.map((c) => ({ ...c, items: (previews[c.id] || []).map(row) })) };
     };
     if (mine) { const out = await build(); return out ? json(out) : fail("Not authenticated", 401); }
     return cachedPublic(request, ctx, 30, async () => (await build()) || { collections: [] });
   }
 
-  if (method === "GET" && (m = path.match(R.profCatalogue))) {
+  // Brand-only search: products, services and collections of ONE brand, paginated, edge-cached.
+  if (method === "GET" && (m = path.match(R.profSearch))) {
     const profile = await data.getPublicProfile(env, m[1]);
     if (!profile) return fail("Not found", 404);
-    const sp = url.searchParams;
-    const offset = parseInt(sp.get("offset") || "0", 10) || 0;
+    const q = (url.searchParams.get("q") || "").trim().slice(0, 60);
+    const page = Math.min(Math.max(parseInt(url.searchParams.get("page") || "1", 10) || 1, 1), 60);
+    const per = 8;
     return cachedPublic(request, ctx, 30, async () => {
-      const r = await data.queryCatalogue(env, profile.id, {
-        collectionSlug: (sp.get("c") || "").slice(0, 60), q: (sp.get("q") || "").slice(0, 80), sort: sp.get("sort") || "", kind: sp.get("kind") || "",
-        offset, limit: parseInt(sp.get("limit") || "24", 10) || 24, withTotal: offset === 0
-      });
-      const limit = Math.min(Math.max(parseInt(sp.get("limit") || "24", 10) || 24, 1), 48);
-      return { html: cardsHtml(r.rows, brandOf(profile), { origin: url.origin }), next: r.hasMore ? offset + limit : null, total: r.total, count: r.rows.length };
+      const r = await data.queryCatalogue(env, profile.id, { q, sort: q ? "" : "views", offset: (page - 1) * per, limit: per, withTotal: true });
+      let collections = [];
+      if (page === 1) {
+        const binds = [profile.id];
+        let where = "profile_id = ? AND status = 'live' AND item_count > 0";
+        if (q) { where += " AND lower(title) LIKE ? ESCAPE '\\'"; binds.push(`%${likeEsc(q.toLowerCase())}%`); }
+        const { results } = await env.DB.prepare(`SELECT id, slug, title, item_count, cover_url, cover_color FROM collections WHERE ${where} ORDER BY position ASC LIMIT 6`).bind(...binds).all();
+        collections = results;
+      }
+      return { products: r.rows.map(row), collections, total: r.total, page, pages: Math.max(1, Math.ceil(r.total / per)),
+        brandVideo: page === 1 && !q ? extractYouTubeId(profile.youtube_url) : null };
     });
   }
 
-  if (method === "GET" && (m = path.match(R.profIndex))) {
-    const profile = await data.getPublicProfile(env, m[1]);
-    if (!profile) return fail("Not found", 404);
-    return cachedPublic(request, ctx, 300, () => data.getSearchIndex(env, profile.id));
-  }
-
   if (method === "GET" && (m = path.match(R.colItems))) {
-    const { results } = await env.DB.prepare(
-      `SELECT c.id, c.profile_id FROM collections c WHERE c.id = ? AND c.status = 'live'`
-    ).bind(m[1]).all();
+    const { results } = await env.DB.prepare(`SELECT id, profile_id FROM collections WHERE id = ? AND status = 'live'`).bind(m[1]).all();
     if (!results.length) return fail("Not found", 404);
-    const profile = await data.getPublicProfile(env, results[0].profile_id);
-    if (!profile) return fail("Not found", 404);
-    const offset = parseInt(url.searchParams.get("offset") || "0", 10) || 0;
+    const offset = Math.max(parseInt(url.searchParams.get("offset") || "0", 10) || 0, 0);
     return cachedPublic(request, ctx, 30, async () => {
       const r = await data.getCollectionItems(env, m[1], { offset, limit: 12, excludeProductId: url.searchParams.get("exclude") || null });
-      return { html: cardsHtml(r.rows, brandOf(profile), { origin: url.origin }), next: r.hasMore ? offset + 12 : null };
+      return { items: r.rows.map(row), next: r.hasMore ? offset + 12 : null };
     });
   }
 
@@ -336,15 +351,17 @@ export async function routeShopApi(request, env, ctx, url) {
   if (method === "GET" && (m = path.match(R.prodMedia))) {
     const prod = await ownedProduct(env, m[1], userId);
     if (!prod) return fail("Not found", 404);
+    const { results: det } = await env.DB.prepare("SELECT kind, price_minor, currency, price_type FROM products WHERE id = ?").bind(prod.id).all();
     const images = await data.getProductImages(env, prod.id);
     const { results: cols } = await env.DB.prepare("SELECT collection_id FROM collection_items WHERE product_id = ?").bind(prod.id).all();
-    return json({ images, video: prod.video_id ? { id: prod.video_id, status: prod.video_status } : null, collections: cols.map((c) => c.collection_id) });
+    return json({ images, video: prod.video_id ? { id: prod.video_id, status: prod.video_status } : null, collections: cols.map((c) => c.collection_id), fields: det[0] || {} });
   }
 
   if (method === "POST" && (m = path.match(R.prodImages))) {
     const prod = await ownedProduct(env, m[1], userId);
     if (!prod) return fail("Not found", 404);
     const body = await readJson(request);
+    try { const io = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'image_origin'").all(); if (io.results.length) data.allowImageHost(new URL(io.results[0].value).hostname); } catch (e) {}
     const img = data.parseOwnProductImage(body.url, userId, new URL(request.url).hostname);
     if (!img) return fail("That image can't be used. Please upload it again.");
     const { limits } = await getProfileLimits(env, { tier_id: prod.p_tier, max_products: prod.p_max });
