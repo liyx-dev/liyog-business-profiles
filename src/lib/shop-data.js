@@ -9,6 +9,8 @@
 // =====================================================================
 
 export const ALLOWED_IMAGE_HOSTS = new Set(["biziplex.com", "www.biziplex.com", "liyogworld.com.ng", "www.liyogworld.com.ng"]);
+/** The site's configured image origin (app_settings.image_origin) is trusted too. */
+export function allowImageHost(h) { if (h) ALLOWED_IMAGE_HOSTS.add(h); }
 
 const CARD_COLS = `p.id, p.slug, p.name, p.kind, substr(p.description, 1, 160) AS description,
   p.price_minor, p.currency, p.price_type, p.price_display, p.image_url, p.img_w, p.img_h, p.img_color,
@@ -42,7 +44,7 @@ export function cleanDim(n) { const v = Math.trunc(Number(n)); return v >= 1 && 
 export async function getPublicProfile(env, profileId) {
   const { results } = await env.DB.prepare(
     `SELECT id, owner_id, slug, business_name, business_category, tagline, logo_url, cover_url, whatsapp_number, phone_number,
-            default_currency, store_city, store_country, response_time, tier_id, max_products
+            default_currency, store_city, store_country, response_time, youtube_url, tier_id, max_products
      FROM profiles WHERE id = ? AND is_active = 1 AND moderation_status = 'approved'`
   ).bind(profileId).all();
   return results.length ? results[0] : null;
