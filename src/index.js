@@ -900,7 +900,8 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
       return handleUploadProductImage(request, env, userId, url);
     }
 
-
+// Shop API
+{ const shopResponse = await routeShopApi(request, env, ctx, url); if (shopResponse) return shopResponse; }
 
     // -----------------------------------------------------------------
     // Product engagement — views, likes, star ratings (preset-text,
