@@ -388,8 +388,8 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
         productsContainer.id = "lp-sponsored-products-container";
         productsContainer.hidden = true;
         chartAnchor.insertAdjacentElement("afterend", productsContainer);
-        window.LiyogSponsoredUI.mountProductsStrip(productsContainer, { excludeProfileId: profile.id, title: "Sponsored Products", category: profile.business_category });
-
+        
+window.LiyogSponsoredUI.mountProductsStrip(productsContainer, { excludeProfileId: profile.id, title: "Sponsored Products", category: profile.business_category, format: "grid", limit: 6 });
         const cataloguesContainer = document.createElement("div");
         cataloguesContainer.className = "lp-section";
         cataloguesContainer.id = "lp-sponsored-catalogues-container";
