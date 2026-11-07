@@ -14,6 +14,7 @@ import * as productsEngagement from "./products-engagement.js";
 import { siteHeadHtml, siteCssLinkHtml, siteHeaderHtml, siteFooterHtml, siteBottomNavHtml } from "./layout.js";
 import { getProductImages, getCollectionForProduct, getCollectionItems } from "./shop-data.js"; // [R1]
 import { minorToMajorString } from "./money.js";                                                // [R1]
+import { getProfileLimits } from "./plans.js";                                                    // [R3]
 
 function escapeHtmlAttr(str) {
   return String(str || "")
@@ -47,7 +48,7 @@ function buildMetaDescription(description, priceDisplay, maxLen = 160) {
 
 async function getApprovedProfileBySlug(env, slug) {
   const { results } = await env.DB.prepare(
-    "SELECT id, slug, business_name, tagline, bio_html, logo_url, cover_url, business_category, is_active, moderation_status, referral_code, whatsapp_number, phone_number, store_city, store_country, response_time FROM profiles WHERE slug = ?"
+    "SELECT id, slug, business_name, tagline, bio_html, logo_url, cover_url, business_category, is_active, moderation_status, referral_code, whatsapp_number, phone_number, store_city, store_country, response_time, tier_id, max_products, youtube_url FROM profiles WHERE slug = ?"
   ).bind(slug).all();
   if (!results.length || !results[0].is_active || results[0].moderation_status !== "approved") return null;
   return results[0];
@@ -184,7 +185,7 @@ function serverFeedCardHtml(prod, profile, stats, isFeatured) {
       </a>
       <div class="lp-prodfeed-body">
         <a class="lp-prodfeed-name" href="/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(profile.slug)}" style="text-decoration:none;color:inherit;">${escapeHtmlAttr(prod.name)}</a>
-        ${prod.price_display ? `<div class="lp-prodfeed-price">${escapeHtmlAttr(prod.price_display)}</div>` : ""}
+        ${prod.price_display ? `<div class="lp-prodfeed-price"${fxAttrs(prod)}>${escapeHtmlAttr(prod.price_display)}</div>` : ""}
         ${prod.description ? `<div class="lp-prodfeed-desc">${escapeHtmlAttr(truncateLinesSSR(prod.description, 3))}</div>` : ""}
         ${serverEngagementBarHtml(prod, stats, true)}
         ${serverContactButtonsHtml(profile, prod, true)}
@@ -203,7 +204,7 @@ function serverCompactCardHtml(prod, profile, stats, isFeatured) {
       </a>
       <div class="lp-prodcard-body">
         <a class="lp-prodcard-name" href="/product/${encodeURIComponent(prod.slug || prod.id)}/${escapeHtmlAttr(profile.slug)}" style="text-decoration:none;color:inherit;">${escapeHtmlAttr(prod.name)}</a>
-        ${prod.price_display ? `<div class="lp-prodcard-price">${escapeHtmlAttr(prod.price_display)}</div>` : ""}
+        ${prod.price_display ? `<div class="lp-prodcard-price"${fxAttrs(prod)}>${escapeHtmlAttr(prod.price_display)}</div>` : ""}
         ${prod.description ? `<div class="lp-prodcard-desc">${escapeHtmlAttr(truncateLinesSSR(prod.description, 2))}</div>` : ""}
         ${serverEngagementBarHtml(prod, stats, false)}
         ${serverContactButtonsHtml(profile, prod, false)}
@@ -212,7 +213,7 @@ function serverCompactCardHtml(prod, profile, stats, isFeatured) {
 }
 
 // Shared page chrome (original) + [R1] shop.css / shop-ui.js and the optional bottom contact bar.
-function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, jsonLd, bodyHtml, origin, showFloatingInquiry, inquiryContextJs, ctaBarHtml }) {
+function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, jsonLd, bodyHtml, origin, showFloatingInquiry, inquiryContextJs, ctaBarHtml, robots }) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -221,6 +222,7 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
 <title>${escapeHtmlAttr(title)}</title>
 <meta name="description" content="${escapeHtmlAttr(metaDescription)}">
 <link rel="canonical" href="${escapeHtmlAttr(canonicalUrl)}">
+<meta name="robots" content="${robots || "index, follow, max-image-preview:large"}">
 <meta property="og:type" content="${escapeHtmlAttr(ogType)}">
 <meta property="og:title" content="${escapeHtmlAttr(title)}">
 <meta property="og:description" content="${escapeHtmlAttr(metaDescription)}">
@@ -231,6 +233,7 @@ function pageShell({ title, metaDescription, canonicalUrl, ogImage, ogType, json
 <meta name="twitter:description" content="${escapeHtmlAttr(metaDescription)}">
 <meta name="twitter:image" content="${escapeHtmlAttr(ogImage)}">
 ${siteHeadHtml(origin)}
+<style>img,video{max-width:100%;height:auto}.bz-fsearch,.bz-ffilter,.bz-ctabar,.bz-dial,.bz-ss{display:none}</style>
 <link rel="stylesheet" href="${origin}/brands.css" id="lp-css-brands" onerror="window.__lpCssFailed=true">
 <link rel="stylesheet" href="${origin}/product-pages.css" id="lp-css-shop" onerror="window.__lpCssFailed=true">
 ${siteCssLinkHtml(origin)}
@@ -322,116 +325,329 @@ function serverCatalogueInsightCardHtml(insight) {
 }
 
 // ---------------------------------------------------------------------
-// Route 1: GET /products/{brand-slug} — ORIGINAL catalogue (see header note for the only additions).
+// [R3] shared builders used by the catalogue, collection page and video page
+// ---------------------------------------------------------------------
+const STAY_SAFE_MSGS = [
+  "doesn't control chats or payments that happen outside the platform. Meet in safe places and never pay for something you haven't confirmed.",
+  "will never ask you for passwords or card PINs. Be careful with anyone who does, and confirm what you are buying before you pay.",
+  "can't protect deals made outside the platform. Check the seller's profile and reviews first, and keep proof of what you agree."
+];
+function staySafeHtml(url, seed) {
+  const m = STAY_SAFE_MSGS[Math.abs(Number(seed) || 0) % STAY_SAFE_MSGS.length];
+  return `<div class="bz-safe" role="note">${IC.shield}<p><strong>Stay safe.</strong> ${siteNameFor(url)} ${m}</p></div>`;
+}
+function fxAttrs(p) {
+  return (p && p.price_minor != null && p.currency)
+    ? ` data-fx-minor="${Number(p.price_minor) || 0}" data-fx-cur="${escapeHtmlAttr(p.currency)}"${p.price_type === "from" ? ' data-fx-from="1"' : ""}` : "";
+}
+function firstSentence(text, max = 110) {
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  const m = s.match(/^(.{20,}?[.!?])(\s|$)/);
+  const out = m ? m[1] : s;
+  return out.length > max ? out.slice(0, max - 1).trim() + "…" : out;
+}
+function safeColor(c) { return /^#[0-9a-f]{6}$/i.test(String(c || "")) ? c : ""; }
+function hrefWith(base, params) {
+  const u = new URLSearchParams();
+  Object.keys(params).forEach((k) => { if (params[k] !== "" && params[k] != null) u.set(k, params[k]); });
+  const s = u.toString();
+  return s ? `${base}?${s}` : base;
+}
+function ytIdFrom(raw) {
+  const m = String(raw || "").trim().match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+function productHref(p, brandSlug, colSlug) {
+  return `/product/${encodeURIComponent(p.slug || p.id)}/${encodeURIComponent(brandSlug)}${colSlug ? `?c=${encodeURIComponent(colSlug)}` : ""}`;
+}
+
+// Services show in their own shape (1:1, 4:5 or 16:9). Anything else sits in a 16:9 frame over a soft blur.
+const SVC_RATIOS = [0.8, 1, 16 / 9];
+function svcFrame(p) {
+  const w = Number(p.img_w), h = Number(p.img_h);
+  if (!w || !h) return { ar: 16 / 9, exact: false };
+  const r = w / h;
+  let best = SVC_RATIOS[0];
+  for (const x of SVC_RATIOS) if (Math.abs(Math.log(r / x)) < Math.abs(Math.log(r / best))) best = x;
+  return Math.abs(r / best - 1) <= 0.06 ? { ar: best, exact: true } : { ar: 16 / 9, exact: false };
+}
+
+function serverServiceCardHtml(prod, profile, stats, isFeatured, extraCls) {
+  const f = svcFrame(prod);
+  const style = `--bz-ar:${f.ar.toFixed(4)};${f.exact ? "" : bgStyle(prod.image_url)}`;
+  const href = productHref(prod, profile.slug);
+  return `
+    <div class="lp-prodcard lp-svccard${extraCls || ""}" data-product-id="${escapeHtmlAttr(prod.id)}">
+      ${serverBoostBadgeHtml(isFeatured, false)}
+      ${serverCardReportButtonHtml(prod)}
+      <a class="lp-prodcard-imgwrap lp-svc-media${f.exact ? "" : " lp-fit-blur"}" style="${escapeHtmlAttr(style)}" href="${href}">
+        ${serverProductImageBlock(prod)}${hasVideo(prod) ? VIDEO_BADGE : ""}<span class="bz-svc-tag">Service</span>
+      </a>
+      <div class="lp-prodcard-body">
+        <a class="lp-prodcard-name" href="${href}" style="text-decoration:none;color:inherit;">${escapeHtmlAttr(prod.name)}</a>
+        ${prod.price_display ? `<div class="lp-prodcard-price"${fxAttrs(prod)}>${escapeHtmlAttr(prod.price_display)}</div>` : ""}
+        ${prod.description ? `<div class="lp-prodcard-desc">${escapeHtmlAttr(truncateLinesSSR(prod.description, 2))}</div>` : ""}
+        ${serverEngagementBarHtml(prod, stats, false)}
+        ${serverContactButtonsHtml(profile, prod, false)}
+      </div>
+    </div>`;
+}
+
+const STACK_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M6 5h12M8.5 2h7"/></svg>`;
+
+// Collection cover: the first item's picture. 16:9 pictures fill the frame; other shapes sit whole on a blur.
+function collectionCoverHtml(c, cls) {
+  const cw = Number(c.cw), ch = Number(c.ch);
+  const exact = c.cover_url && cw && ch && Math.abs(cw / ch / (16 / 9) - 1) <= 0.06;
+  if (!c.cover_url) {
+    const col = safeColor(c.cover_color);
+    return `<div class="${cls} bz-cover-fallback" style="${col ? `--bz-fb:${col};` : ""}"><img class="bz-cover-logo" src="/brand/logo-mark.png" alt="" width="56" height="56" loading="lazy"></div>`;
+  }
+  return `<div class="${cls}${exact ? "" : " lp-fit-blur"}"${exact ? "" : ` style="${escapeHtmlAttr(bgStyle(c.cover_url))}"`}><img src="${escapeHtmlAttr(c.cover_url)}" alt="" loading="lazy" decoding="async"></div>`;
+}
+function serverCollectionCardHtml(c, brandSlug) {
+  const href = `/collection/${encodeURIComponent(brandSlug)}/${encodeURIComponent(c.slug)}`;
+  const blurb = firstSentence(c.description, 90);
+  return `<a class="bz-colcard" href="${href}" aria-label="Collection: ${escapeHtmlAttr(c.title)}, ${Number(c.item_count) || 0} items">
+    <div class="bz-colcard-frame">${collectionCoverHtml(c, "bz-colcard-media")}<span class="bz-colcard-count">${STACK_ICON}${Number(c.item_count) || 0} items</span></div>
+    <div class="bz-colcard-body"><strong>${escapeHtmlAttr(c.title)}</strong>${blurb ? `<p>${escapeHtmlAttr(blurb)}</p>` : ""}<span class="bz-colcard-view">View collection ›</span></div></a>`;
+}
+
+function serverVideoCardHtml(v, brandSlug) {
+  const href = `/video/${encodeURIComponent(brandSlug)}/${encodeURIComponent(v.ref)}`;
+  return `<a class="bz-vidcard" href="${href}" aria-label="Watch video: ${escapeHtmlAttr(v.title)}">
+    <div class="bz-vidcard-media"><img src="https://i.ytimg.com/vi/${escapeHtmlAttr(v.vid)}/hqdefault.jpg" alt="" loading="lazy" referrerpolicy="no-referrer"><span class="bz-vidcard-play"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg></span><span class="bz-vidcard-tag">${escapeHtmlAttr(v.tag)}</span></div>
+    <div class="bz-vidcard-body"><strong>${escapeHtmlAttr(v.title)}</strong>${v.price_display ? `<span${fxAttrs(v)}>${escapeHtmlAttr(v.price_display)}</span>` : ""}</div></a>`;
+}
+
+// Every video a brand has: its profile video plus the video of each listing. Broken ones never appear.
+function collectVideos(products, profile) {
+  const out = [];
+  const bv = ytIdFrom(profile.youtube_url);
+  if (bv) out.push({ ref: "brand", vid: bv, title: `${profile.business_name} — brand video`, tag: "Brand video", kind: "brand" });
+  for (const p of products) {
+    if (hasVideo(p)) out.push({ ref: p.slug || p.id, vid: p.video_id, title: p.name, tag: p.kind === "service" ? "Service" : "Product", kind: p.kind === "service" ? "service" : "product", price_display: p.price_display, price_minor: p.price_minor, currency: p.currency, price_type: p.price_type, description: p.description, productId: p.id });
+  }
+  return out;
+}
+
+function stripSection(title, seeAllHref, inner, cls) {
+  return `<section class="bz-strip${cls ? " " + cls : ""}" aria-label="${escapeHtmlAttr(title)}">
+    <div class="bz-strip-head"><h2>${escapeHtmlAttr(title)}</h2>${seeAllHref ? `<a class="bz-linkbtn" href="${seeAllHref}">See all ›</a>` : ""}</div>
+    <div class="bz-strip-scroll" tabindex="0">${inner}</div></section>`;
+}
+
+// Ad slots for views that have no scroll-reveal: sponsored-ui mounts these when they come near the screen.
+const AD_SEQUENCE = [["products", "strip"], ["products", "grid"], ["catalogues", "grid"], ["products", "grid"], ["catalogues", "strip"], ["profiles", "grid"]];
+function adSlotHtml(i, profile) {
+  const [surface, format] = AD_SEQUENCE[i % AD_SEQUENCE.length];
+  const title = surface === "products" ? "Sponsored Products" : surface === "catalogues" ? "Discover More Shops" : "You Might Also Like";
+  return `<div class="bz-ad-slot" data-liyog-ads="${surface}" data-format="${format}" data-title="${title}" data-limit="${format === "grid" ? 6 : 8}" data-exclude="${escapeHtmlAttr(profile.id)}" data-category="${escapeHtmlAttr(profile.business_category || "")}"></div>`;
+}
+
+// ---------------------------------------------------------------------
+// Route 1: GET /products/{brand-slug} — CATALOGUE.
+// Your original page (feed card, insight card, engagement cards, infinite reveal, ads) plus:
+//   Search sheet, scrollable filter tabs (Products / Services / Collections / Videos + sorts),
+//   rows for collections, services and videos, price in the visitor's currency, stay-safe note.
 // ---------------------------------------------------------------------
 async function handleProductsListingPage(request, env, ctx, url) {
   const brandSlug = url.pathname.split("/")[2];
   const profile = await getApprovedProfileBySlug(env, brandSlug);
   if (!profile) return new Response("Not found", { status: 404 });
 
-  // [R1] try the richer column list first; if a database upgrade step is missing, fall back to the original query.
+  const sp = url.searchParams;
+  const VIEWS = ["products", "services", "collections", "videos"];
+  const view = VIEWS.includes(sp.get("view")) ? sp.get("view") : "products";
+  const SORTS = ["newest", "rating", "views", "likes", "price_asc", "price_desc"];
+  const sortParam = SORTS.includes(sp.get("sort")) ? sp.get("sort") : "newest";
+  const queryRaw = (sp.get("q") || "").slice(0, 80);
+  const queryParam = queryRaw.toLowerCase();
+  const featuredOnly = sp.get("featured") === "1";
+
+  // [R3] the richer column list first; if a database upgrade step is missing, the original query.
   let products;
   try {
     ({ results: products } = await env.DB.prepare(
-      `SELECT id, name, description, price_display, image_url, slug, view_count, share_count, created_at, kind, img_w, img_h, img_color, video_id, video_status
-       FROM products WHERE profile_id = ? AND is_active = 1 AND is_draft = 0
-       ORDER BY created_at DESC`
+      `SELECT id, name, description, price_display, price_minor, currency, price_type, image_url, slug, view_count, share_count, created_at, kind, img_w, img_h, img_color, video_id, video_status
+       FROM products WHERE profile_id = ? AND is_active = 1 AND is_draft = 0 ORDER BY created_at DESC LIMIT 1500`
     ).bind(profile.id).all());
   } catch (e) {
     ({ results: products } = await env.DB.prepare(
       `SELECT id, name, description, price_display, image_url, slug, view_count, share_count, created_at
-       FROM products WHERE profile_id = ? AND is_active = 1 AND is_draft = 0
-       ORDER BY created_at DESC`
+       FROM products WHERE profile_id = ? AND is_active = 1 AND is_draft = 0 ORDER BY created_at DESC LIMIT 1500`
     ).bind(profile.id).all());
   }
 
+  // [R3] rating/like numbers for all cards in as few queries as possible (was one query per product).
   const statsByProduct = {};
-  for (const prod of products) {
-    statsByProduct[prod.id] = await productsEngagement.getProductStats(env, prod.id);
+  const ids = products.map((p) => p.id);
+  try {
+    for (let i = 0; i < ids.length; i += 80) {
+      const chunk = ids.slice(i, i + 80);
+      const { results } = await env.DB.prepare(`SELECT * FROM product_stats WHERE product_id IN (${chunk.map(() => "?").join(",")})`).bind(...chunk).all();
+      results.forEach((r) => { statsByProduct[r.product_id] = r; });
+    }
+  } catch (e) {
+    for (const prod of products.slice(0, 120)) statsByProduct[prod.id] = await productsEngagement.getProductStats(env, prod.id);
   }
+  const statsOf = (id) => statsByProduct[id] || { average_rating: 0, rating_count: 0, like_count: 0 };
 
-  const productIds = products.map((p) => p.id);
   const featuredSet = new Set();
-  if (productIds.length) {
-    const placeholders = productIds.map(() => "?").join(",");
-    const { results: boostRows } = await env.DB.prepare(
-      `SELECT DISTINCT product_id FROM boost_log
-       WHERE scope = 'product' AND product_id IN (${placeholders}) AND expires_at > datetime('now')`
-    ).bind(...productIds).all();
-    boostRows.forEach((r) => featuredSet.add(r.product_id));
-  }
+  try {
+    for (let i = 0; i < ids.length; i += 80) {
+      const chunk = ids.slice(i, i + 80);
+      const { results: boostRows } = await env.DB.prepare(
+        `SELECT DISTINCT product_id FROM boost_log WHERE scope = 'product' AND product_id IN (${chunk.map(() => "?").join(",")}) AND expires_at > datetime('now')`
+      ).bind(...chunk).all();
+      boostRows.forEach((r) => featuredSet.add(r.product_id));
+    }
+  } catch (e) { /* featured badges are cosmetic */ }
 
-  const sortParam = url.searchParams.get("sort") || "newest";
-  const queryParam = (url.searchParams.get("q") || "").toLowerCase();
-  const featuredOnly = url.searchParams.get("featured") === "1";
+  const productsAll = products.filter((p) => p.kind !== "service");
+  const servicesAll = products.filter((p) => p.kind === "service");
+  const videosAll = collectVideos(products, profile);
+  const planLimits = (await safe(getProfileLimits(env, { tier_id: profile.tier_id, max_products: profile.max_products }), { limits: {} })).limits || {};
+  const stripCollections = Math.max(0, Number(planLimits.catalogue_collections_strip ?? 5));
+  const stripVideos = Math.max(0, Number(planLimits.catalogue_videos_strip ?? 5));
+  const stripServices = Math.max(0, Number(planLimits.catalogue_services_strip ?? 6));
 
-  let filtered = products;
-  if (queryParam) {
-    filtered = filtered.filter((p) =>
-      (p.name || "").toLowerCase().includes(queryParam) ||
-      (p.description || "").toLowerCase().includes(queryParam)
-    );
-  }
-  if (featuredOnly) {
-    filtered = filtered.filter((p) => featuredSet.has(p.id));
-  }
+  const collections = await safe(env.DB.prepare(
+    `SELECT c.id, c.slug, c.title, c.description, c.item_count, c.reach, c.cover_url, c.cover_color,
+       (SELECT p.img_w FROM collection_items ci JOIN products p ON p.id = ci.product_id WHERE ci.collection_id = c.id AND p.is_active = 1 AND p.is_draft = 0 ORDER BY ci.position ASC LIMIT 1) AS cw,
+       (SELECT p.img_h FROM collection_items ci JOIN products p ON p.id = ci.product_id WHERE ci.collection_id = c.id AND p.is_active = 1 AND p.is_draft = 0 ORDER BY ci.position ASC LIMIT 1) AS ch
+     FROM collections c WHERE c.profile_id = ? AND c.status = 'live' AND c.item_count > 0 ORDER BY c.position ASC, c.created_at ASC LIMIT 60`
+  ).bind(profile.id).all().then((r) => r.results), []);
+
+  const matchQ = (text) => !queryParam || String(text || "").toLowerCase().includes(queryParam);
   const sorters = {
     newest: (a, b) => new Date(b.created_at) - new Date(a.created_at),
     views: (a, b) => (b.view_count || 0) - (a.view_count || 0),
-    rating: (a, b) => (statsByProduct[b.id]?.average_rating || 0) - (statsByProduct[a.id]?.average_rating || 0),
-    likes: (a, b) => (statsByProduct[b.id]?.like_count || 0) - (statsByProduct[a.id]?.like_count || 0)
+    rating: (a, b) => (statsOf(b.id).average_rating || 0) - (statsOf(a.id).average_rating || 0),
+    likes: (a, b) => (statsOf(b.id).like_count || 0) - (statsOf(a.id).like_count || 0),
+    price_asc: (a, b) => { const x = a.price_minor, y = b.price_minor; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1; return x - y; },
+    price_desc: (a, b) => { const x = a.price_minor, y = b.price_minor; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1; return y - x; }
   };
-  filtered = [...filtered].sort(sorters[sortParam] || sorters.newest);
+  const refine = (list) => {
+    let out = list.filter((p) => matchQ(p.name) || matchQ(p.description));
+    if (featuredOnly) out = out.filter((p) => featuredSet.has(p.id));
+    return [...out].sort(sorters[sortParam] || sorters.newest);
+  };
 
-  const insight = await productsEngagement.getCatalogueInsight(env, profile.id);
-
-  const canonicalUrl = `${url.origin}/products/${brandSlug}`;
-  const title = `Products & Services — ${profile.business_name} | ${siteNameFor(url)}`;
+  const base = `/products/${encodeURIComponent(brandSlug)}`;
+  const isFiltered = !!(queryParam || featuredOnly || sortParam !== "newest");
+  const isPlain = view === "products" && !isFiltered;
+  const viewLabel = { products: "Products", services: "Services", collections: "Collections", videos: "Videos" }[view];
+  const canonicalUrl = `${url.origin}${view === "products" ? base : hrefWith(base, { view })}`;
+  const title = `${view === "products" ? "Products & Services" : viewLabel} — ${profile.business_name} | ${siteNameFor(url)}`;
   const metaDescription = buildMetaDescription(
-    profile.tagline || `Browse everything ${profile.business_name} offers — quality products and services.`,
-    null,
-    160
-  );
+    profile.tagline || `Browse ${view === "products" ? "everything" : `the ${viewLabel.toLowerCase()}`} ${profile.business_name} offers on ${siteNameFor(url)}.`, null, 160);
   const ogImage = profile.cover_url || profile.logo_url || `${url.origin}/default-og-image.png`;
 
+  const insight = view === "products" ? await safe(productsEngagement.getCatalogueInsight(env, profile.id), null) : null;
+
+  // ---- the main area, per view ------------------------------------------------
+  const INITIAL_VISIBLE = 10;
+  const hidden = (i) => (i >= INITIAL_VISIBLE ? " lp-shop-card-hidden" : "");
+  let gridHtml = "", gridCls = "", listForLd = [], total = 0;
+  let adIndex = 0;
+  const withAds = (items, every) => items.map((h, i) => ((i + 1) % every === 0 && i + 1 < items.length ? h + adSlotHtml(adIndex++, profile) : h));
+
+  if (view === "products") {
+    const filtered = refine(productsAll);
+    total = filtered.length; listForLd = filtered;
+    const [firstProd, ...restProds] = filtered;
+    const firstCardHtml = firstProd ? serverFeedCardHtml(firstProd, profile, statsOf(firstProd.id), featuredSet.has(firstProd.id)) : "";
+    const insightHtml = insight && insight.summary_text ? serverCatalogueInsightCardHtml(insight) : "";
+    const servicesStrip = isPlain && servicesAll.length && stripServices
+      ? stripSection("Services", hrefWith(base, { view: "services" }),
+          servicesAll.slice(0, stripServices).map((s) => `<div class="bz-strip-item bz-strip-item-svc">${serverServiceCardHtml(s, profile, statsOf(s.id), featuredSet.has(s.id))}</div>`).join(""), "bz-strip-svc") : "";
+    const rest = restProds.map((prod, i) => {
+      const card = serverCompactCardHtml(prod, profile, statsOf(prod.id), featuredSet.has(prod.id));
+      return hidden(i) ? card.replace('class="lp-prodcard"', `class="lp-prodcard${hidden(i)}"`) : card;
+    }).join("");
+    gridHtml = `${firstCardHtml}${insightHtml}${servicesStrip}${rest}${!filtered.length ? `<p class="lp-shop-empty">${productsAll.length ? "No products match this filter." : "No products listed yet."}</p>` : ""}`;
+  } else if (view === "services") {
+    const filtered = refine(servicesAll);
+    total = filtered.length; listForLd = filtered;
+    const cards = filtered.map((s, i) => `<div class="bz-svc-cell${hidden(i)}">${serverServiceCardHtml(s, profile, statsOf(s.id), featuredSet.has(s.id))}</div>`);
+    gridHtml = filtered.length ? withAds(cards, 8).join("") : `<p class="lp-shop-empty">${servicesAll.length ? "No services match this filter." : "No services listed yet."}</p>`;
+    gridCls = " bz-grid-svc";
+  } else if (view === "collections") {
+    const filtered = collections.filter((c) => matchQ(c.title) || matchQ(c.description));
+    total = filtered.length;
+    const cards = filtered.map((c) => serverCollectionCardHtml(c, brandSlug));
+    gridHtml = filtered.length ? withAds(cards, 8).join("") : `<p class="lp-shop-empty">No collections yet.</p>`;
+    gridCls = " bz-grid-wide";
+  } else {
+    const filtered = videosAll.filter((v) => matchQ(v.title) || matchQ(v.description));
+    total = filtered.length;
+    const cards = filtered.map((v) => serverVideoCardHtml(v, brandSlug));
+    gridHtml = filtered.length ? withAds(cards, 8).join("") : `<p class="lp-shop-empty">No videos yet.</p>`;
+    gridCls = " bz-grid-wide";
+  }
+  const revealable = view === "products" ? Math.max(0, total - 1) : view === "services" ? total : 0;
+  const hasMoreThanInitial = revealable > INITIAL_VISIBLE;
+
+  // ---- rows above the grid (default view only): collections + videos ----------
+  const rowsHtml = isPlain ? [
+    collections.length && stripCollections
+      ? stripSection("Collections", hrefWith(base, { view: "collections" }), collections.slice(0, stripCollections).map((c) => `<div class="bz-strip-item bz-strip-item-col">${serverCollectionCardHtml(c, brandSlug)}</div>`).join(""), "bz-strip-col") : "",
+    videosAll.length && stripVideos
+      ? stripSection("Videos", hrefWith(base, { view: "videos" }), videosAll.slice(0, stripVideos).map((v) => `<div class="bz-strip-item bz-strip-item-vid">${serverVideoCardHtml(v, brandSlug)}</div>`).join(""), "bz-strip-vid") : ""
+  ].join("") : "";
+
+  // ---- tabs --------------------------------------------------------------------
+  const counts = { products: productsAll.length, services: servicesAll.length, collections: collections.length, videos: videosAll.length };
+  const typeTab = (v, label) => `<a class="bz-tab${view === v ? " is-active" : ""}" href="${hrefWith(base, { view: v === "products" ? "" : v, q: queryRaw })}"${view === v ? ' aria-current="page"' : ""}>${label}<i>${counts[v]}</i></a>`;
+  const sortBtn = (key, label) => `<button type="button" class="lp-shop-filter-btn bz-tab ${sortParam === key ? "lp-shop-filter-btn-active is-active" : ""}" data-sort="${key}">${label}</button>`;
+  const showSorts = view === "products" || view === "services";
+  const tabsHtml = `
+    <nav class="bz-tabs" id="bz-tabs" aria-label="Browse and filter ${escapeHtmlAttr(profile.business_name)}">
+      ${typeTab("products", "Products")}${typeTab("services", "Services")}${typeTab("collections", "Collections")}${typeTab("videos", "Videos")}
+      ${showSorts ? `<span class="bz-tabs-sep" aria-hidden="true"></span>
+      <div class="lp-shop-filter-group bz-sortgroup" id="lp-shop-sort-group" role="group" aria-label="Sort">
+        ${sortBtn("newest", "Newest")}${sortBtn("rating", "Top Rated")}${sortBtn("views", "Most Viewed")}${sortBtn("likes", "Most Liked")}${sortBtn("price_asc", "Price ↑")}${sortBtn("price_desc", "Price ↓")}
+        ${featuredSet.size > 0 ? `<button type="button" class="lp-shop-filter-btn bz-tab lp-shop-filter-btn-featured ${featuredOnly ? "lp-shop-filter-btn-active is-active" : ""}" id="lp-shop-featured-toggle" data-featured-toggle="${featuredOnly ? "0" : "1"}" aria-pressed="${featuredOnly}">⭐ Featured</button>` : ""}
+      </div>` : `<div id="lp-shop-sort-group" hidden></div>`}
+    </nav>
+    ${queryRaw ? `<p class="bz-qchip">Results for “${escapeHtmlAttr(queryRaw)}” <a href="${hrefWith(base, { view: view === "products" ? "" : view })}" aria-label="Clear search">✕ Clear</a></p>` : ""}`;
+
+  const robots = isFiltered || queryRaw ? "noindex, follow" : undefined;
+  const ldList = view === "collections"
+    ? collections.slice(0, 50).map((c, i) => ({ "@type": "ListItem", position: i + 1, url: `${url.origin}/collection/${encodeURIComponent(brandSlug)}/${encodeURIComponent(c.slug)}` }))
+    : view === "videos"
+      ? videosAll.slice(0, 50).map((v, i) => ({ "@type": "ListItem", position: i + 1, url: `${url.origin}/video/${encodeURIComponent(brandSlug)}/${encodeURIComponent(v.ref)}` }))
+      : listForLd.slice(0, 50).map((p, i) => ({ "@type": "ListItem", position: i + 1, url: `${url.origin}${productHref(p, brandSlug)}` }));
   const jsonLd = {
     "@context": "https://schema.org",
-    "@type": "ItemList",
-    "name": `${profile.business_name} — Products & Services`,
-    "itemListElement": filtered.slice(0, 50).map((p, i) => ({
-      "@type": "ListItem",
-      "position": i + 1,
-      "url": `${url.origin}/product/${encodeURIComponent(p.slug || p.id)}/${brandSlug}`
-    }))
+    "@graph": [
+      { "@type": "CollectionPage", name: `${profile.business_name} — ${viewLabel}`, url: canonicalUrl },
+      { "@type": "ItemList", name: `${profile.business_name} — ${viewLabel}`, itemListElement: ldList },
+      { "@type": "BreadcrumbList", itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: url.origin },
+        { "@type": "ListItem", position: 2, name: profile.business_name, item: `${url.origin}/b/${brandSlug}` },
+        { "@type": "ListItem", position: 3, name: view === "products" ? "Products & Services" : viewLabel }
+      ] }
+    ]
   };
 
-  const INITIAL_VISIBLE = 10;
-  const [firstProd, ...restProds] = filtered;
-  const firstCardHtml = firstProd ? serverFeedCardHtml(firstProd, profile, statsByProduct[firstProd.id] || {}, featuredSet.has(firstProd.id)) : "";
-  const insightHtml = insight && insight.summary_text ? serverCatalogueInsightCardHtml(insight) : "";
-  const restCardsHtml = restProds.map((prod, i) => {
-    const hiddenCls = i >= INITIAL_VISIBLE ? " lp-shop-card-hidden" : "";
-    const stats = statsByProduct[prod.id] || {};
-    const card = serverCompactCardHtml(prod, profile, stats, featuredSet.has(prod.id));
-    return hiddenCls ? card.replace('class="lp-prodcard"', `class="lp-prodcard${hiddenCls}"`) : card;
-  }).join("");
-  const hasMoreThanInitial = restProds.length > INITIAL_VISIBLE;
-
   const bodyHtml = `
-    <header class="lp-shop-topheader">
+    <header class="lp-shop-topheader lp-shop-topheader-inline">
       <div class="lp-shop-topheader-inner">
         <div class="lp-shop-topheader-brand">
           ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" class="lp-shop-topheader-logo">` : ""}
           <span class="lp-shop-topheader-name">${escapeHtmlAttr(profile.business_name)}</span>
         </div>
-        <nav class="lp-shop-topheader-nav">
+        <nav class="lp-shop-topheader-nav" aria-label="Brand navigation">
           <button type="button" class="lp-shop-theme-toggle" id="lp-shop-theme-toggle-btn" aria-label="Toggle dark mode">
             <svg class="lp-theme-icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
             <svg class="lp-theme-icon-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           </button>
-          <a href="/b/${escapeHtmlAttr(brandSlug)}" class="lp-shop-nav-btn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M15 18l-6-6 6-6"/></svg>
+          <a href="/b/${escapeHtmlAttr(brandSlug)}" class="lp-shop-nav-btn lp-shop-nav-btn-primary lp-shop-nav-btn-alive" aria-label="Go to ${escapeHtmlAttr(profile.business_name)}'s brand profile">
             <span>Brand Profile</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
           </a>
         </nav>
       </div>
@@ -439,8 +655,8 @@ async function handleProductsListingPage(request, env, ctx, url) {
 
     <div class="lp-shop-page-body">
       <div class="lp-shop-hero">
-        <h1 class="lp-shop-hero-title">Products &amp; Services</h1>
-        <p class="lp-shop-hero-subtitle">${escapeHtmlAttr(profile.tagline || `Everything ${profile.business_name} offers, all in one place.`)}</p>
+        <h1 class="lp-shop-hero-title">${view === "products" ? "Products &amp; Services" : viewLabel}</h1>
+        ${profile.tagline || view === "products" ? `<p class="lp-shop-hero-subtitle bz-tagline">${escapeHtmlAttr(profile.tagline || `Everything ${profile.business_name} offers, all in one place.`)}</p>` : ""}
         <div class="lp-shop-hero-actions">
           <button type="button" class="lp-product-page-share-btn" id="lp-shop-page-share">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.6" x2="15.4" y2="6.4"/><line x1="8.6" y1="13.4" x2="15.4" y2="17.6"/></svg>
@@ -453,33 +669,33 @@ async function handleProductsListingPage(request, env, ctx, url) {
         </div>
       </div>
 
-      <div class="lp-shop-toolbar">
-        <div class="lp-shop-toolbar-search" id="lp-shop-search-wrap">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input type="text" id="lp-shop-search-input" class="lp-shop-search-input" placeholder="Search products & services…" value="${escapeHtmlAttr(url.searchParams.get("q") || "")}" autocomplete="off">
-        </div>
-        <div class="lp-shop-filter-group" id="lp-shop-sort-group" role="group" aria-label="Sort products">
-          <button type="button" class="lp-shop-filter-btn ${sortParam === "newest" ? "lp-shop-filter-btn-active" : ""}" data-sort="newest">Newest</button>
-          <button type="button" class="lp-shop-filter-btn ${sortParam === "rating" ? "lp-shop-filter-btn-active" : ""}" data-sort="rating">Top Rated</button>
-          <button type="button" class="lp-shop-filter-btn ${sortParam === "views" ? "lp-shop-filter-btn-active" : ""}" data-sort="views">Most Viewed</button>
-          <button type="button" class="lp-shop-filter-btn ${sortParam === "likes" ? "lp-shop-filter-btn-active" : ""}" data-sort="likes">Most Liked</button>
-          ${featuredSet.size > 0 ? `<button type="button" class="lp-shop-filter-btn lp-shop-filter-btn-featured ${featuredOnly ? "lp-shop-filter-btn-active" : ""}" id="lp-shop-featured-toggle" data-featured-toggle="${featuredOnly ? "0" : "1"}" aria-pressed="${featuredOnly}">⭐ Featured</button>` : ""}
-        </div>
+      <div class="lp-shop-toolbar bz-toolbar" id="bz-toolbar">
+        <button type="button" class="bz-searchpill bz-searchpill-lg" id="bz-search-open" data-bz-search-open aria-haspopup="dialog">
+          ${IC.search}<span>Search products, services &amp; collections</span>
+        </button>
+        <input type="hidden" id="lp-shop-search-input" value="${escapeHtmlAttr(queryRaw)}">
       </div>
+      ${tabsHtml}
+      ${rowsHtml}
 
-      <div class="lp-shop-grid" id="lp-shop-grid" data-all-products="${escapeHtmlAttr(JSON.stringify(filtered))}">
-        ${firstCardHtml}
-        ${insightHtml}
-        ${restCardsHtml}
-        ${!filtered.length ? `<p class="lp-shop-empty">No products match your search.</p>` : ""}
+      <div class="lp-shop-grid${gridCls}" id="lp-shop-grid" data-all-products="${escapeHtmlAttr(JSON.stringify(view === "products" ? refine(productsAll) : []))}">
+        ${gridHtml}
       </div>
-      ${filtered.length ? `
+      ${total ? `
       <div class="lp-shop-infinite-sentinel" id="lp-shop-infinite-sentinel" data-done="${hasMoreThanInitial ? "false" : "true"}" data-loading="false">
         <div class="lp-shop-infinite-spinner"></div>
-        <button type="button" class="lp-shop-infinite-loadmore-btn" id="lp-shop-loadmore-btn">Load More Products</button>
-        <span class="lp-shop-infinite-done-text">You've seen every product</span>
+        <button type="button" class="lp-shop-infinite-loadmore-btn" id="lp-shop-loadmore-btn">Load More</button>
+        <span class="lp-shop-infinite-done-text">You've seen everything here</span>
       </div>` : ""}
+      ${staySafeHtml(url, ids.length)}
     </div>
+
+    <button type="button" class="bz-fsearch" id="bz-fsearch" data-bz-fsearch aria-label="Search ${escapeHtmlAttr(profile.business_name)}" hidden>
+      <span class="bz-fsearch-icon">${IC.search}</span><span class="bz-fsearch-text">Search this brand</span>
+    </button>
+    <button type="button" class="bz-ffilter" id="bz-ffilter" aria-label="Filter and sort" aria-haspopup="dialog" hidden>
+      ${IC.filter}<span>Filter</span>
+    </button>
 
     <footer class="lp-shop-footer">
       <div class="lp-shop-footer-inner">
@@ -498,20 +714,20 @@ window.__LIYOG_SHOP_CONTEXT__ = {
         profile: ${safeJson(profile)},
         brandSlug: ${safeJson(brandSlug)},
         businessName: ${safeJson(profile.business_name)},
-        products: ${safeJson(filtered)},
-        statsByProduct: ${safeJson(statsByProduct)},
         insight: ${safeJson(insight)},
-        initialVisible: ${INITIAL_VISIBLE}
+        initialVisible: ${INITIAL_VISIBLE},
+        view: ${safeJson(view)}
       };
+window.__BZ_BRAND__ = ${safeJson({ profileId: profile.id, brandName: profile.business_name, brandSlug, profile: { id: profile.id, slug: profile.slug, business_name: profile.business_name, business_category: profile.business_category, whatsapp_number: profile.whatsapp_number, phone_number: profile.phone_number } })};
+window.__BZ_CAT__ = ${safeJson({ base, view, sort: sortParam, q: queryRaw, featured: featuredOnly, hasFeatured: featuredSet.size > 0, counts, collections: collections.slice(0, 12).map((c) => ({ id: c.id, slug: c.slug, title: c.title, item_count: c.item_count, cover_url: c.cover_url || null, cover_color: safeColor(c.cover_color) || null, cw: c.cw || null, ch: c.ch || null, blurb: firstSentence(c.description, 90) })), videos: videosAll.slice(0, 12).map((v) => ({ ref: v.ref, vid: v.vid, title: v.title, tag: v.tag, price_display: v.price_display || null })), stripCollections })};
     </script>
   `;
 
   const html = pageShell({
-    title, metaDescription, canonicalUrl, ogImage,
+    title, metaDescription, canonicalUrl, ogImage, robots,
     ogType: "website", jsonLd, bodyHtml, origin: url.origin,
     showFloatingInquiry: true
   });
-
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60" } });
 }
 
@@ -525,6 +741,7 @@ const IC = {
   shield: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 3v6c0 4.5-3.2 8.2-8 9-4.8-.8-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>`,
   wa: `<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2z"/></svg>`,
   call: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>`,
+  filter: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>`,
   ask: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`
 };
 
@@ -734,7 +951,7 @@ async function handleProductDetailPage(request, env, ctx, url) {
         <span class="bz-crumb bz-crumb-now" aria-current="page">${escapeHtmlAttr(product.name)}</span>
       </nav>
 
-      <button type="button" class="bz-searchpill" id="bz-search-open" aria-haspopup="dialog">
+      <button type="button" class="bz-searchpill" id="bz-search-open" data-bz-search-open aria-haspopup="dialog">
         ${IC.search}<span>Search ${escapeHtmlAttr(profile.business_name)}</span>
       </button>
 
@@ -788,7 +1005,7 @@ async function handleProductDetailPage(request, env, ctx, url) {
 
       ${collectionHtml ? `
       <div class="lp-related-products bz-collection-row">
-        <h2 class="lp-related-products-title">More from ${escapeHtmlAttr(collection.title)}</h2>
+        <div class="bz-row-head"><h2 class="lp-related-products-title">More from ${escapeHtmlAttr(collection.title)}</h2><a class="bz-linkbtn" href="/collection/${encodeURIComponent(brandSlug)}/${encodeURIComponent(collection.slug)}">View collection ›</a></div>
         <div class="lp-related-products-row">
           <div class="lp-related-products-scroll bz-row-scroll">${collectionHtml}</div>
         </div>
@@ -811,7 +1028,7 @@ async function handleProductDetailPage(request, env, ctx, url) {
       ${prevNextHtml}
     </div>
 
-    <button type="button" class="bz-fsearch" id="bz-fsearch" aria-label="Search ${escapeHtmlAttr(profile.business_name)}" hidden>
+    <button type="button" class="bz-fsearch" id="bz-fsearch" data-bz-fsearch aria-label="Search ${escapeHtmlAttr(profile.business_name)}" hidden>
       <span class="bz-fsearch-icon">${IC.search}</span><span class="bz-fsearch-text">Search this brand</span>
     </button>
 
@@ -843,6 +1060,7 @@ async function handleProductDetailPage(request, env, ctx, url) {
         hasOwnerSessionHint: ${safeJson(hasOwnerSessionHint)}
       };
       window.__BZ_PRODUCT__ = ${safeJson({ productId: product.id, profileId: profile.id, brandName: profile.business_name, brandSlug, hasVideo: !!videoId })};
+      window.__BZ_BRAND__ = ${safeJson({ profileId: profile.id, brandName: profile.business_name, brandSlug, profile: { id: profile.id, slug: profile.slug, business_name: profile.business_name, business_category: profile.business_category, whatsapp_number: profile.whatsapp_number, phone_number: profile.phone_number } })};
     </script>
   `;
 
@@ -855,4 +1073,197 @@ async function handleProductDetailPage(request, env, ctx, url) {
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60" } });
 }
 
-export { handleProductsListingPage, handleProductDetailPage };
+// =====================================================================
+// [R3] COLLECTION PAGE  /collection/{brand}/{collection}   (a playlist-style page, reusable everywhere)
+// =====================================================================
+function itemRowHtml(r, brandSlug, colSlug, n) {
+  const x = imgWrapExtras(r);
+  return `<a class="bz-item" href="${productHref(r, brandSlug, colSlug)}">
+    <span class="bz-item-n" aria-hidden="true">${n}</span>
+    <span class="bz-item-thumb${x.cls}"${x.style}>${r.image_url ? `<img src="${escapeHtmlAttr(r.image_url)}" alt="" loading="lazy" decoding="async">` : ""}${x.badge}</span>
+    <span class="bz-item-t"><strong>${escapeHtmlAttr(r.name)}</strong>${r.price_display ? `<span class="bz-item-price"${fxAttrs(r)}>${escapeHtmlAttr(r.price_display)}</span>` : ""}<small>${r.kind === "service" ? "Service" : "Product"}</small></span>
+    <span class="bz-ss-go" aria-hidden="true">›</span></a>`;
+}
+
+function crumbsFor(url, brandSlug, brandName, lastLabel, midLabel, midHref) {
+  return `<nav class="bz-crumbs" aria-label="Breadcrumb">
+    <a class="bz-crumb" href="/">Home</a><i aria-hidden="true">›</i>
+    <a class="bz-crumb" href="/b/${escapeHtmlAttr(brandSlug)}">${escapeHtmlAttr(brandName)}</a><i aria-hidden="true">›</i>
+    ${midLabel ? `<a class="bz-crumb" href="${midHref}">${escapeHtmlAttr(midLabel)}</a><i aria-hidden="true">›</i>` : ""}
+    <span class="bz-crumb bz-crumb-now" aria-current="page">${escapeHtmlAttr(lastLabel)}</span></nav>`;
+}
+
+function brandRowHtml(profile) {
+  return `<a class="bz-seller" href="/b/${escapeHtmlAttr(profile.slug)}">
+    ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" width="44" height="44" loading="lazy">` : `<span class="bz-seller-logo"></span>`}
+    <span class="bz-seller-text"><strong>${escapeHtmlAttr(profile.business_name)}</strong><small>${escapeHtmlAttr([profile.store_city, profile.store_country].filter(Boolean).join(", ") || "View the full brand profile")}</small></span>
+    <span class="bz-seller-go">View Profile<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M9 18l6-6-6-6"/></svg></span></a>`;
+}
+
+function topHeaderHtml(profile, brandSlug, backHref, backLabel) {
+  return `<header class="lp-shop-topheader lp-shop-topheader-inline">
+      <div class="lp-shop-topheader-inner">
+        <div class="lp-shop-topheader-brand">
+          ${profile.logo_url ? `<img src="${escapeHtmlAttr(profile.logo_url)}" alt="" class="lp-shop-topheader-logo">` : ""}
+          <span class="lp-shop-topheader-name">${escapeHtmlAttr(profile.business_name)}</span>
+        </div>
+        <nav class="lp-shop-topheader-nav" aria-label="Brand navigation">
+          <button type="button" class="lp-shop-theme-toggle" id="lp-shop-theme-toggle-btn" aria-label="Toggle dark mode">
+            <svg class="lp-theme-icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <svg class="lp-theme-icon-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
+          <a href="${backHref}" class="lp-shop-nav-btn" aria-label="${escapeHtmlAttr(backLabel)}"><span>${escapeHtmlAttr(backLabel)}</span></a>
+          <a href="/b/${escapeHtmlAttr(brandSlug)}" class="lp-shop-nav-btn lp-shop-nav-btn-primary lp-shop-nav-btn-alive" aria-label="Go to ${escapeHtmlAttr(profile.business_name)}'s brand profile"><span>Brand Profile</span></a>
+        </nav>
+      </div>
+    </header>`;
+}
+
+function footerHtml(profile, brandSlug, url) {
+  return `<footer class="lp-shop-footer"><div class="lp-shop-footer-inner">
+    <div class="lp-shop-footer-brand">${escapeHtmlAttr(profile.business_name)}</div>
+    <div class="lp-shop-footer-text">© <span id="lp-shop-footer-year"></span> ${escapeHtmlAttr(profile.business_name)}. Powered by ${siteNameFor(url)}.</div>
+    <div class="lp-shop-footer-links"><a href="/b/${escapeHtmlAttr(brandSlug)}">Brand Profile</a><a href="/products/${escapeHtmlAttr(brandSlug)}">All Products</a></div></div></footer>`;
+}
+
+function brandContextScript(profile, brandSlug, extra) {
+  return `<script>window.__BZ_BRAND__ = ${safeJson({ profileId: profile.id, brandName: profile.business_name, brandSlug, profile: { id: profile.id, slug: profile.slug, business_name: profile.business_name, business_category: profile.business_category, whatsapp_number: profile.whatsapp_number, phone_number: profile.phone_number } })};${extra || ""}</script>`;
+}
+
+const SHARE_BTNS = `<div class="lp-shop-hero-actions bz-pl-actions">
+  <button type="button" class="lp-product-page-share-btn" data-bz-share><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.6" x2="15.4" y2="6.4"/><line x1="8.6" y1="13.4" x2="15.4" y2="17.6"/></svg><span>Share</span></button>
+  <button type="button" class="lp-product-page-copy-btn" data-bz-copy><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy Link</span></button></div>`;
+
+async function handleCollectionPage(request, env, ctx, url) {
+  const parts = url.pathname.split("/");
+  const brandSlug = decodeURIComponent(parts[2] || ""), colSlug = decodeURIComponent(parts[3] || "");
+  const profile = await getApprovedProfileBySlug(env, brandSlug);
+  if (!profile) return new Response("Not found", { status: 404 });
+
+  let col;
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT id, slug, title, description, reach, item_count, cover_url, cover_color, created_at, updated_at FROM collections WHERE profile_id = ? AND slug = ? AND status = 'live'`
+    ).bind(profile.id, colSlug).all();
+    col = results[0];
+  } catch (e) { col = null; }
+  if (!col) return new Response("Not found", { status: 404 });
+
+  const first = await safe(getCollectionItems(env, col.id, { limit: 24, offset: 0 }), { rows: [], hasMore: false });
+  const rows = first.rows || [];
+  const lead = rows[0] || {};
+  const cover = { cover_url: col.cover_url || lead.image_url || null, cover_color: col.cover_color || lead.img_color || null, cw: lead.img_w, ch: lead.img_h };
+  const canonicalUrl = `${url.origin}/collection/${encodeURIComponent(brandSlug)}/${encodeURIComponent(col.slug)}`;
+  const title = `${col.title} — ${profile.business_name} | ${siteNameFor(url)}`;
+  const metaDescription = buildMetaDescription(col.description || `${col.item_count} item${col.item_count === 1 ? "" : "s"} curated by ${profile.business_name}.`, null, 160);
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "CollectionPage", name: col.title, description: col.description || undefined, url: canonicalUrl, image: cover.cover_url || undefined, author: { "@type": "Organization", name: profile.business_name, url: `${url.origin}/b/${brandSlug}` } },
+      { "@type": "ItemList", numberOfItems: col.item_count, itemListElement: rows.map((r, i) => ({ "@type": "ListItem", position: i + 1, url: `${url.origin}${productHref(r, brandSlug)}` })) },
+      { "@type": "BreadcrumbList", itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: url.origin },
+        { "@type": "ListItem", position: 2, name: profile.business_name, item: `${url.origin}/b/${brandSlug}` },
+        { "@type": "ListItem", position: 3, name: "Collections", item: `${url.origin}/products/${brandSlug}?view=collections` },
+        { "@type": "ListItem", position: 4, name: col.title }
+      ] }
+    ]
+  };
+  const isPublic = col.reach === "public";
+  const bodyHtml = `
+    ${topHeaderHtml(profile, brandSlug, `/products/${encodeURIComponent(brandSlug)}?view=collections`, "All collections")}
+    <div class="lp-shop-page-body bz-pl-wrap">
+      ${crumbsFor(url, brandSlug, profile.business_name, col.title, "Collections", `/products/${encodeURIComponent(brandSlug)}?view=collections`)}
+      <button type="button" class="bz-searchpill" data-bz-search-open aria-haspopup="dialog">${IC.search}<span>Search ${escapeHtmlAttr(profile.business_name)}</span></button>
+      <div class="bz-pl">
+        <aside class="bz-pl-side">
+          ${collectionCoverHtml(cover, "bz-pl-cover")}
+          <h1 class="bz-pl-title">${escapeHtmlAttr(col.title)}</h1>
+          <p class="bz-pl-meta">${STACK_ICON} ${Number(col.item_count) || rows.length} item${col.item_count === 1 ? "" : "s"} · <span class="bz-pl-reach">${isPublic ? "Public collection" : `Only on ${escapeHtmlAttr(profile.business_name)}`}</span></p>
+          ${brandRowHtml(profile)}
+          ${col.description ? `<p class="bz-pl-desc">${escapeHtmlAttr(col.description)}</p>` : ""}
+          ${SHARE_BTNS}
+        </aside>
+        <section class="bz-pl-list" aria-label="Items in ${escapeHtmlAttr(col.title)}">
+          <div id="bz-pl-items">${rows.map((r, i) => itemRowHtml(r, brandSlug, col.slug, i + 1)).join("") || `<p class="lp-shop-empty">This collection is empty right now.</p>`}</div>
+          ${first.hasMore ? `<div class="bz-ss-pager"><button type="button" id="bz-pl-more" data-collection="${escapeHtmlAttr(col.id)}" data-next="24" data-brand="${escapeHtmlAttr(brandSlug)}" data-col="${escapeHtmlAttr(col.slug)}">Load more</button></div>` : ""}
+        </section>
+      </div>
+      ${staySafeHtml(url, 7)}
+      ${adSlotHtml(1, profile)}${adSlotHtml(2, profile)}
+    </div>
+    ${footerHtml(profile, brandSlug, url)}
+    <button type="button" class="bz-fsearch" data-bz-fsearch aria-label="Search ${escapeHtmlAttr(profile.business_name)}" hidden><span class="bz-fsearch-icon">${IC.search}</span><span class="bz-fsearch-text">Search this brand</span></button>
+    ${brandContextScript(profile, brandSlug)}`;
+  return new Response(pageShell({ title, metaDescription, canonicalUrl, ogImage: cover.cover_url || profile.cover_url || profile.logo_url || `${url.origin}/default-og-image.png`, ogType: "website", jsonLd, bodyHtml, origin: url.origin, showFloatingInquiry: true }),
+    { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60" } });
+}
+
+// =====================================================================
+// [R3] VIDEO PAGE  /video/{brand}/{product-or-"brand"}   (watch page + discovery, reusable everywhere)
+// =====================================================================
+async function handleVideoPage(request, env, ctx, url) {
+  const parts = url.pathname.split("/");
+  const brandSlug = decodeURIComponent(parts[2] || ""), ref = decodeURIComponent(parts[3] || "");
+  const profile = await getApprovedProfileBySlug(env, brandSlug);
+  if (!profile) return new Response("Not found", { status: 404 });
+
+  let products = [];
+  try {
+    ({ results: products } = await env.DB.prepare(
+      `SELECT id, name, description, price_display, price_minor, currency, price_type, image_url, slug, created_at, kind, img_w, img_h, video_id, video_status
+       FROM products WHERE profile_id = ? AND is_active = 1 AND is_draft = 0 AND video_id IS NOT NULL ORDER BY created_at DESC LIMIT 200`
+    ).bind(profile.id).all());
+  } catch (e) { products = []; }
+  const videos = collectVideos(products, profile);
+  const current = videos.find((v) => v.ref === ref || v.productId === ref);
+  if (!current) return new Response("Not found", { status: 404 });
+  const owner = current.productId ? products.find((p) => p.id === current.productId) : null;
+  const related = videos.filter((v) => v.ref !== current.ref).slice(0, 8);
+
+  const canonicalUrl = `${url.origin}/video/${encodeURIComponent(brandSlug)}/${encodeURIComponent(current.ref)}`;
+  const title = `${current.title} (video) — ${profile.business_name} | ${siteNameFor(url)}`;
+  const desc = (owner && owner.description) || profile.tagline || `Watch ${current.title} from ${profile.business_name}.`;
+  const metaDescription = buildMetaDescription(desc, current.price_display, 160);
+  const thumb = `https://i.ytimg.com/vi/${current.vid}/hqdefault.jpg`;
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "VideoObject", name: current.title, description: desc, thumbnailUrl: thumb, embedUrl: `https://www.youtube.com/embed/${current.vid}`, uploadDate: owner ? new Date(String(owner.created_at).replace(" ", "T") + "Z").toISOString() : undefined, publisher: { "@type": "Organization", name: profile.business_name } },
+      { "@type": "BreadcrumbList", itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: url.origin },
+        { "@type": "ListItem", position: 2, name: profile.business_name, item: `${url.origin}/b/${brandSlug}` },
+        { "@type": "ListItem", position: 3, name: "Videos", item: `${url.origin}/products/${brandSlug}?view=videos` },
+        { "@type": "ListItem", position: 4, name: current.title }
+      ] }
+    ]
+  };
+  const bodyHtml = `
+    ${topHeaderHtml(profile, brandSlug, `/products/${encodeURIComponent(brandSlug)}?view=videos`, "All videos")}
+    <div class="lp-shop-page-body bz-vp-wrap">
+      ${crumbsFor(url, brandSlug, profile.business_name, current.title, "Videos", `/products/${encodeURIComponent(brandSlug)}?view=videos`)}
+      <div class="bz-vp">
+        <div class="bz-vp-main">
+          <div class="bz-vp-player">${videoFacadeHtml(current.vid, current.title)}</div>
+          <h1 class="bz-pl-title">${escapeHtmlAttr(current.title)}</h1>
+          <p class="bz-pl-meta"><span class="bz-tag">${escapeHtmlAttr(current.tag)}</span>${current.price_display ? ` <span class="bz-item-price"${fxAttrs(current)}>${escapeHtmlAttr(current.price_display)}</span>` : ""}</p>
+          ${brandRowHtml(profile)}
+          ${owner && owner.description ? `<p class="bz-pl-desc">${escapeHtmlAttr(owner.description)}</p>` : ""}
+          ${owner ? `<a class="bz-btn-link" href="${productHref(owner, brandSlug)}">View this ${owner.kind === "service" ? "service" : "product"} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M9 18l6-6-6-6"/></svg></a>` : `<a class="bz-btn-link" href="/b/${encodeURIComponent(brandSlug)}">Visit ${escapeHtmlAttr(profile.business_name)} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M9 18l6-6-6-6"/></svg></a>`}
+          ${SHARE_BTNS}
+          ${staySafeHtml(url, 3)}
+        </div>
+        <aside class="bz-vp-rail" aria-label="More videos">
+          ${related.length ? `<h2 class="bz-rail-title">More videos from ${escapeHtmlAttr(profile.business_name)}</h2><div class="bz-vp-related">${related.map((v) => serverVideoCardHtml(v, brandSlug)).join("")}</div>` : ""}
+        </aside>
+      </div>
+      ${adSlotHtml(0, profile)}${adSlotHtml(2, profile)}${adSlotHtml(5, profile)}
+    </div>
+    ${footerHtml(profile, brandSlug, url)}
+    <button type="button" class="bz-fsearch" data-bz-fsearch aria-label="Search ${escapeHtmlAttr(profile.business_name)}" hidden><span class="bz-fsearch-icon">${IC.search}</span><span class="bz-fsearch-text">Search this brand</span></button>
+    ${brandContextScript(profile, brandSlug)}`;
+  return new Response(pageShell({ title, metaDescription, canonicalUrl, ogImage: thumb, ogType: "video.other", jsonLd, bodyHtml, origin: url.origin, showFloatingInquiry: true }),
+    { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60" } });
+}
+
+export { handleProductsListingPage, handleProductDetailPage, handleCollectionPage, handleVideoPage };
