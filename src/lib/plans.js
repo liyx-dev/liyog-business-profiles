@@ -12,6 +12,9 @@ export const DEFAULT_LIMITS = Object.freeze({
   max_images_per_product: 1,
   video_allowed: 0,
   max_collections: 2,
+  catalogue_collections_strip: 5,
+  catalogue_videos_strip: 5,
+  catalogue_services_strip: 6,
   max_items_per_collection: 25
 });
 
