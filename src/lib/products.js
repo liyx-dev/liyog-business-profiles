@@ -195,7 +195,25 @@ export async function handleDeleteProduct(env, userId, productId) {
   ).bind(productId).all();
   if (!results.length) return jsonResponse({ error: "Product not found." }, 404);
   if (results[0].profile_owner_id !== userId) return jsonResponse({ error: "Not your product." }, 403);
-  await env.DB.prepare("UPDATE products SET is_active = 0 WHERE id = ?").bind(productId).run();
+  // Free the stored photos too (only files inside THIS user's own folder are ever touched).
+  let removedKeys = [];
+  try {
+    const { results: imgs } = await env.DB.prepare("SELECT url FROM product_images WHERE product_id = ?").bind(productId).all();
+    const { results: cover } = await env.DB.prepare("SELECT image_url FROM products WHERE id = ?").bind(productId).all();
+    const urls = new Set(imgs.map((i) => i.url).concat(cover.map((c) => c.image_url)).filter(Boolean));
+    for (const u of urls) {
+      const own = parseOwnProductImage(u, userId, "");
+      if (!own) continue;
+      // keep the file if some other listing still points at the same picture
+      const { results: still } = await env.DB.prepare("SELECT 1 FROM product_images WHERE url = ? AND product_id != ? LIMIT 1").bind(u, productId).all();
+      if (!still.length) removedKeys.push(own.key);
+    }
+  } catch (e) { console.error("photo lookup failed (non-fatal):", e); }
+  await env.DB.batch([
+    env.DB.prepare("UPDATE products SET is_active = 0, image_url = NULL, video_id = NULL, video_status = 'none' WHERE id = ?").bind(productId),
+    env.DB.prepare("DELETE FROM product_images WHERE product_id = ?").bind(productId)
+  ]);
+  for (const key of removedKeys) { try { await env.ASSETS.delete(key); } catch (e) { console.error("R2 delete failed:", e); } }
   try { await recomputeCollectionsForProduct(env, productId); } catch (e) { console.error("collection recount failed:", e); }
   return jsonResponse({ success: true });
 }
