@@ -1,26 +1,16 @@
 /* =====================================================================
    LIYOG WORLD — src/assets/product-pages-client.txt
-   Client hydration for the two standalone pages:
+   Client hydration for the standalone pages:
      /products/{slug}            — catalogue listing
      /product/{slug}/{brand}     — individual product page
-   Loaded AFTER profile.js (which exposes window.LiyogProductUI) and
-   AFTER product-pages.css. Deliberately its own file, separate from
-   profile.js, per the "split code for easy debug/maintenance"
-   instruction — this file only ever touches the small public surface
-   profile.js exposes, never its internals directly.
-
-   2026-08-13 additions (all additive — nothing below this comment
-   block changes how the existing hydration functions behave):
-     - Infinite scroll on the listing page grid
-     - Dark-mode toggle wiring (shared helper from profile.js)
-     - Left/right arrow nav for the related-products row
-     - Floating "Send an Inquiry" button (reuses profile.js's existing
-       sheet/form — see openInquirySheet in profile.js, NOT rebuilt)
-     - Owner-only engagement chart on the product detail page
-
-   3b-1: every sponsored strip on these pages now tells the server which
-   category the page belongs to (the brand's own category), so boosts
-   that chose that category are shown first.
+     /collection/... and /video/... — only the shared pieces below run there
+   Loaded AFTER profile.js (window.LiyogProductUI) and BEFORE shop-ui.js.
+   Round 3 changes (everything else is the original behaviour):
+     - Search box moved to the shared search sheet (a hidden input keeps ?q= working)
+     - Floating "Send an Inquiry" now opens WhatsApp / Call / SMS / Inquiry choices
+     - Rows dropped in while scrolling rotate: sponsored grid -> collection items ->
+       sponsored shops -> collections -> sponsored strip -> videos ...
+     - Ads/rows are only injected on the Products view (other views carry their own ad slots)
    ===================================================================== */
 (function () {
   "use strict";
@@ -28,150 +18,88 @@
   const ui = window.LiyogProductUI;
   if (!ui) { console.error("LiyogProductUI not found — profile.js must load before this script."); return; }
 
-const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location.origin : "https://www.liyogworld.com.ng";
+  const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location.origin : "https://www.liyogworld.com.ng";
 
-  // Auto-fill footer year on whichever page has it — never hardcoded.
   const yearEl = document.getElementById("lp-shop-footer-year");
   if (yearEl) yearEl.textContent = new Date().getFullYear();
 
-  // Dark-mode toggle + floating inquiry button — present on BOTH
-  // standalone pages, wired once here regardless of which page's
-  // context object is present below.
   wireShopThemeToggle();
   wireFloatingInquiryButton();
 
-  if (window.__LIYOG_SHOP_CONTEXT__) {
-    hydrateShopListingPage(window.__LIYOG_SHOP_CONTEXT__);
-  }
-  if (window.__LIYOG_PRODUCT_PAGE_CONTEXT__) {
-    hydrateProductDetailPage(window.__LIYOG_PRODUCT_PAGE_CONTEXT__);
-  }
+  if (window.__LIYOG_SHOP_CONTEXT__) hydrateShopListingPage(window.__LIYOG_SHOP_CONTEXT__);
+  if (window.__LIYOG_PRODUCT_PAGE_CONTEXT__) hydrateProductDetailPage(window.__LIYOG_PRODUCT_PAGE_CONTEXT__);
 
-  // -----------------------------------------------------------------
-  // Dark mode — reads/writes the same data-theme attribute the
-  // dark-mode CSS block in profile.css already knows how to read
-  // (trigger #2 there). initShopThemeToggle is exported from
-  // profile.js so this one small mechanism has a single source of
-  // truth rather than being reimplemented per file.
-  // -----------------------------------------------------------------
   function wireShopThemeToggle() {
     const btn = document.getElementById("lp-shop-theme-toggle-btn");
     if (ui.initShopThemeToggle) ui.initShopThemeToggle(btn);
   }
 
-  // -----------------------------------------------------------------
-  // Floating "Send an Inquiry" — reuses the EXACT SAME sheet/form
-  // openInquirySheet() already builds and wires on the brand-profile
-  // page (now exported on window.LiyogProductUI). This function only
-  // ever calls it; it does not construct any new form markup.
-  // -----------------------------------------------------------------
+  // The floating button now offers WhatsApp / Call / SMS / Inquiry (shop-ui.js). If that file is
+  // unavailable it falls back to the original inquiry form, so nothing is ever lost.
   function wireFloatingInquiryButton() {
     const btn = document.getElementById("lp-shop-float-inquiry-btn");
     if (!btn) return;
     const shopCtx = window.__LIYOG_SHOP_CONTEXT__;
     const productCtx = window.__LIYOG_PRODUCT_PAGE_CONTEXT__;
-    const profile = (shopCtx && shopCtx.profile) || (productCtx && productCtx.profile);
+    const brand = window.__BZ_BRAND__;
+    const profile = (shopCtx && shopCtx.profile) || (productCtx && productCtx.profile) || (brand && brand.profile);
     if (!profile) { btn.style.display = "none"; return; }
-    btn.addEventListener("click", () => ui.openInquirySheet(profile));
+    btn.addEventListener("click", () => {
+      if (window.LiyogShopUI && window.LiyogShopUI.openContactDial) window.LiyogShopUI.openContactDial(profile, btn);
+      else ui.openInquirySheet(profile);
+    });
   }
 
   // -----------------------------------------------------------------
   // Listing page
   // -----------------------------------------------------------------
   function hydrateShopListingPage(ctx) {
-    const searchInput = document.getElementById("lp-shop-search-input");
+    const searchInput = document.getElementById("lp-shop-search-input"); // hidden: it only remembers ?q=
     const sortGroup = document.getElementById("lp-shop-sort-group");
     const grid = document.getElementById("lp-shop-grid");
 
-    // Search/sort re-navigate with updated query params rather than
-    // re-rendering client-side — the URL always represents the exact
-    // current view (shareable, bookmarkable, and each filter
-    // combination stays correctly server-rendered/indexed).
+    // Sorting/filtering re-navigates with updated query params so the URL always represents the exact
+    // current view (shareable, bookmarkable, and server-rendered/indexed).
     function applyFilters(sortOverride) {
       const url = new URL(window.location.href);
-      const q = searchInput.value.trim();
+      const q = searchInput ? searchInput.value.trim() : "";
       if (q) url.searchParams.set("q", q); else url.searchParams.delete("q");
-      if (sortOverride) url.searchParams.set("sort", sortOverride);
+      if (sortOverride) {
+        if (sortOverride === "newest") url.searchParams.delete("sort"); else url.searchParams.set("sort", sortOverride);
+      }
+      document.documentElement.classList.add("bz-navigating");
       window.location.href = url.toString();
     }
 
-    let debounceTimer;
-    if (searchInput) {
-      // 1400ms (not the previous 550ms) — this triggers a full PAGE
-      // RELOAD (see applyFilters above), not client-side filtering, so
-      // it needs to tolerate a natural pause between words (e.g.
-      // "vitamin" <pause to hit space> "D3") without firing early and
-      // reloading mid-sentence, which was exactly the reported bug:
-      // typing would appear to "jump ahead" and apply a partial query
-      // because the page had already reloaded out from under the input.
-      searchInput.addEventListener("input", () => {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => applyFilters(), 1400);
-      });
-    }
     if (sortGroup) {
       sortGroup.querySelectorAll("[data-sort]").forEach((btn) => {
         btn.addEventListener("click", () => applyFilters(btn.dataset.sort));
       });
     }
 
-    // Featured filter toggle — a FILTER (on/off), distinct from the
-    // sort buttons above, so it's wired separately even though it
-    // lives in the same button group visually. Only rendered by the
-    // server at all when this brand has at least one currently-
-    // featured product (see product-pages.js), so this element may
-    // simply not exist — the null check handles that.
     const featuredToggle = document.getElementById("lp-shop-featured-toggle");
     if (featuredToggle) {
       featuredToggle.addEventListener("click", () => {
         const url = new URL(window.location.href);
-        if (featuredToggle.dataset.featuredToggle === "1") {
-          url.searchParams.set("featured", "1");
-        } else {
-          url.searchParams.delete("featured");
-        }
+        if (featuredToggle.dataset.featuredToggle === "1") url.searchParams.set("featured", "1");
+        else url.searchParams.delete("featured");
+        document.documentElement.classList.add("bz-navigating");
         window.location.href = url.toString();
       });
     }
 
-    // Every card's like/rate/report/whatsapp/call buttons — the SAME
-    // wiring function the brand-profile page uses for its own inline
-    // grid, so behavior (and any future fix to it) stays identical
-    // across both places with zero duplication.
-    if (grid && ctx.profile) {
-      ui.wireProductCardActions(grid, ctx.profile);
-    }
+    // Every card's like/rate/report/whatsapp/call buttons — the SAME wiring the brand profile uses.
+    if (grid && ctx.profile) ui.wireProductCardActions(grid, ctx.profile);
 
     wireInfiniteScroll(ctx);
     wirePageShareAndCopy(ctx.profile, ctx.brandSlug);
 
-    // Sponsored sections on the catalogue page — three independent
-    // surfaces (products, catalogues/other-shops, and — via the new
-    // shared module — profiles too, if ever wanted here later), all
-    // rendered through window.LiyogSponsoredUI so behavior and visual
-    // design stay identical everywhere this module is used.
-    //
-    // Placement, per instruction: the FIRST sponsored-products section
-    // sits immediately after the AI Insight block (.lp-catalogue-insight)
-    // — never buried after potentially hundreds/thousands of products.
-    // A SECOND sponsored-products section is injected after the first
-    // infinite-scroll batch completes, and "Discover More Shops" after
-    // the second batch — each subsequent batch reveal can grow this
-    // further via injectSponsoredAfterBatch below, without needing to
-    // know in advance how many batches a huge catalogue will have.
-    if (ctx.profile && ctx.profile.id && window.LiyogSponsoredUI) {
+    // First sponsored section sits right after the AI insight card (strip layout).
+    if (ctx.view === "products" && ctx.profile && ctx.profile.id && window.LiyogSponsoredUI) {
       mountCatalogueSponsoredSections(ctx.profile.id, ctx.profile.business_category);
     }
   }
 
-  /**
-   * Creates the container elements for the catalogue page's sponsored
-   * sections and hands each to the shared module. Kept as its own
-   * function (rather than inlined into hydrateShopListingPage) so
-   * wireInfiniteScroll's batch-reveal hook (see below) can call back
-   * into it for the interleaved, per-batch sections without the two
-   * pieces of logic needing to know much about each other.
-   */
   function mountCatalogueSponsoredSections(profileId, category) {
     const insightAnchor = document.querySelector(".lp-catalogue-insight");
     const firstContainer = document.createElement("div");
@@ -187,11 +115,6 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
     window.LiyogSponsoredUI.mountProductsStrip(firstContainer, { excludeProfileId: profileId, title: "Sponsored Products", category });
   }
 
-  // Global share/copy for the WHOLE catalogue page (not one product) —
-  // same native-share-with-clipboard-fallback pattern profile.js's own
-  // shareProduct() uses, but without that function's per-product
-  // /api/products/:id/share tracking call, since this is a page-level
-  // share with no product-specific analytics endpoint to report to.
   function wirePageShareAndCopy(profile, brandSlug) {
     const shareBtn = document.getElementById("lp-shop-page-share");
     const copyBtn = document.getElementById("lp-shop-page-copy");
@@ -200,43 +123,54 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
     const pageUrl = `${WORKER_BASE}/products/${encodeURIComponent(brandSlug)}`;
     const shareData = {
       title: `${profile.business_name} — Products & Services`,
-      text: `Check out everything ${profile.business_name} offers on Liyog World.`,
+      text: `Check out everything ${profile.business_name} offers on ${/biziplex/.test(location.hostname) ? "BiziPlex" : "Liyog World"}.`,
       url: pageUrl
     };
 
     if (shareBtn) {
       shareBtn.addEventListener("click", async () => {
         try {
-          if (navigator.share) {
-            await navigator.share(shareData);
-          } else {
-            await navigator.clipboard.writeText(pageUrl);
-            ui.showToast("Link copied!", "success");
-          }
-        } catch (e) {
-          if (e && e.name === "AbortError") return; // visitor cancelled the share sheet
-        }
+          if (navigator.share) await navigator.share(shareData);
+          else { await navigator.clipboard.writeText(pageUrl); ui.showToast("Link copied!", "success"); }
+        } catch (e) { if (e && e.name === "AbortError") return; }
       });
     }
     if (copyBtn) {
       copyBtn.addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(pageUrl);
-          ui.showToast("Link copied!", "success");
-        } catch (e) {
-          ui.showToast("Couldn't copy the link. Please try again.", "error");
-        }
+        try { await navigator.clipboard.writeText(pageUrl); ui.showToast("Link copied!", "success"); }
+        catch (e) { ui.showToast("Couldn't copy the link. Please try again.", "error"); }
       });
     }
   }
 
-  // Cards past the first INITIAL_VISIBLE are already in the DOM (see
-  // product-pages.js — every product is ALWAYS server-rendered, for
-  // full SEO indexing) with the .lp-shop-card-hidden class. This just
-  // progressively removes that class in batches of ~10 as the visitor
-  // scrolls, using an IntersectionObserver on a sentinel element at
-  // the bottom of the grid — no re-fetching, no re-rendering, nothing
-  // that would risk desyncing from the server-rendered HTML.
+  // What drops in after each batch of cards while the visitor scrolls. Ads lean towards the grid layout;
+  // the strip layout is used sparingly. Rows come from shop-ui.js and quietly skip if it isn't there.
+  const BATCH_ROTATION = ["ad-products-grid", "collection-items", "ad-shops-grid", "collections", "ad-products-strip", "videos", "ad-shops-grid", "collection-items", "ad-products-grid", "ad-profiles-grid"];
+
+  function injectBatchBlock(batchNumber, anchorCard, ctx) {
+    if (!anchorCard || !ctx.profile || !ctx.profile.id) return;
+    const SU = window.LiyogSponsoredUI, SH = window.LiyogShopUI;
+    const kind = BATCH_ROTATION[(batchNumber - 1) % BATCH_ROTATION.length];
+    const container = document.createElement("div");
+    container.className = "lp-section";
+    container.id = `lp-sponsored-batch-${batchNumber}`;
+    container.hidden = true;
+    anchorCard.insertAdjacentElement("afterend", container);
+    const common = { excludeProfileId: ctx.profile.id, category: ctx.profile.business_category };
+    try {
+      if (kind === "collection-items" && SH) return SH.mountCollectionItemsRow(container);
+      if (kind === "collections" && SH) return SH.mountCollectionsRow(container);
+      if (kind === "videos" && SH) return SH.mountVideosRow(container);
+      if (!SU) { container.remove(); return; }
+      if (kind === "ad-shops-grid") return SU.mountCataloguesStrip(container, { ...common, title: "Discover More Shops", format: "grid", limit: 6 });
+      if (kind === "ad-profiles-grid") return SU.mountProfilesStrip(container, { ...common, title: "You Might Also Like", format: "grid", limit: 6 });
+      if (kind === "ad-products-strip") return SU.mountProductsStrip(container, { ...common, title: "Sponsored Products" });
+      return SU.mountProductsStrip(container, { ...common, title: "Sponsored Products", format: "grid", limit: 6 });
+    } catch (e) { container.remove(); }
+  }
+
+  // Cards past the first INITIAL_VISIBLE are already in the page (so search engines see them) with the
+  // .lp-shop-card-hidden class; this reveals them in batches as the visitor scrolls.
   function wireInfiniteScroll(ctx) {
     const grid = document.getElementById("lp-shop-grid");
     const sentinel = document.getElementById("lp-shop-infinite-sentinel");
@@ -246,6 +180,7 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
     const BATCH_SIZE = 10;
     let revealing = false;
     let batchesCompleted = 0;
+    let observer = null;
 
     function revealNextBatch() {
       if (revealing) return;
@@ -258,9 +193,6 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
       }
       revealing = true;
       sentinel.dataset.loading = "true";
-      // Small delay so the loading spinner is actually perceptible —
-      // on a fast connection with cached images this would otherwise
-      // reveal instantly and the spinner would just flash uselessly.
       setTimeout(() => {
         let lastRevealedCard = null;
         for (let i = 0; i < Math.min(BATCH_SIZE, hidden.length); i++) {
@@ -271,28 +203,9 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
         sentinel.dataset.loading = "false";
         batchesCompleted++;
 
-        // Interleave a sponsored section after this batch, right where
-        // the visitor's eye naturally lands (immediately after the
-        // last card they just saw appear) — never buried far below,
-        // and never requiring the visitor to have scrolled through an
-        // entire huge catalogue first. Alternates surface type per
-        // instruction: products after odd batches, "Discover More
-        // Shops" after the 2nd batch specifically, then continuing to
-        // alternate for any further batches on very large catalogues.
-        if (ctx.profile && ctx.profile.id && window.LiyogSponsoredUI && lastRevealedCard) {
-          const container = document.createElement("div");
-          container.className = "lp-section";
-          container.id = `lp-sponsored-batch-${batchesCompleted}`;
-          container.hidden = true;
-          lastRevealedCard.insertAdjacentElement("afterend", container);
+        if (ctx.view === "products" && lastRevealedCard) injectBatchBlock(batchesCompleted, lastRevealedCard, ctx);
 
-          if (batchesCompleted === 2) {
-            window.LiyogSponsoredUI.mountCataloguesStrip(container, { excludeProfileId: ctx.profile.id, title: "Discover More Shops", category: ctx.profile.business_category });
-          } else {
-            window.LiyogSponsoredUI.mountProductsStrip(container, { excludeProfileId: ctx.profile.id, title: "Sponsored Products", category: ctx.profile.business_category });
-          }
-        }
-
+        if (window.LiyogShopUI && window.LiyogShopUI.applyFx) window.LiyogShopUI.applyFx(grid);
         if (!grid.querySelectorAll(".lp-shop-card-hidden").length) {
           sentinel.dataset.done = "true";
           if (observer) observer.disconnect();
@@ -300,23 +213,13 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
       }, 250);
     }
 
-    // Path 1: auto-load as the visitor scrolls near the sentinel.
-    let observer = null;
     if ("IntersectionObserver" in window) {
       observer = new IntersectionObserver((entries) => {
         entries.forEach((entry) => { if (entry.isIntersecting) revealNextBatch(); });
       }, { rootMargin: "400px 0px" });
       observer.observe(sentinel);
     }
-
-    // Path 2: explicit "Load More" button — works identically whether
-    // or not IntersectionObserver is supported, so it's both a
-    // deliberate alternative for a visitor who prefers tapping over
-    // scroll-triggering, AND the fallback for the (rare) browser
-    // without IntersectionObserver support at all.
-    if (loadMoreBtn) {
-      loadMoreBtn.addEventListener("click", revealNextBatch);
-    }
+    if (loadMoreBtn) loadMoreBtn.addEventListener("click", revealNextBatch);
   }
 
   // -----------------------------------------------------------------
@@ -330,12 +233,6 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
     const statsEl = document.getElementById("lp-detail-stats");
     const insightEl = document.getElementById("lp-detail-insight");
 
-    // The visitor's OWN like/rating state can't be server-rendered
-    // (depends on session/fingerprint) — fetched client-side only.
-    // Note: engBarEl/contactEl already contain real, server-rendered
-    // HTML (logged-out default) for SEO/no-JS visitors — this fetch
-    // only refines that into the personalized version once JS runs;
-    // it does not change what a crawler or no-JS visitor already saw.
     let myLike = false;
     let myRating = null;
     try {
@@ -367,19 +264,7 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
     wireRelatedProductsArrows();
     if (hasOwnerSessionHint) wireOwnerChart(product.id);
 
-    // Three independent sponsored sections on the product-detail page,
-    // via the shared window.LiyogSponsoredUI module — products,
-    // catalogues (other shops), and profiles (other brands), each its
-    // own standalone section as instructed. Anchored off the OWNER-
-    // CHART element (#lp-product-page-owner-chart), which the server
-    // ALWAYS renders regardless of product count — unlike the related-
-    // products block (.lp-related-products), which the server omits
-    // entirely when a profile has too few products to show anything
-    // "related." That was the exact cause of sponsored sections never
-    // appearing on single-product profiles: this page's OLD code
-    // anchored to related-products' existence, so when it was absent,
-    // sponsored content silently never bound either. An independent,
-    // always-present anchor means this can never happen again.
+    // Sponsored sections, anchored off the owner-chart element (always rendered). Products use the grid layout.
     if (profile && profile.id && window.LiyogSponsoredUI) {
       const chartAnchor = document.getElementById("lp-product-page-owner-chart");
       if (chartAnchor && chartAnchor.parentElement) {
@@ -388,8 +273,8 @@ const WORKER_BASE = /^(www\.)?biziplex\.com$/.test(location.hostname) ? location
         productsContainer.id = "lp-sponsored-products-container";
         productsContainer.hidden = true;
         chartAnchor.insertAdjacentElement("afterend", productsContainer);
-        
-window.LiyogSponsoredUI.mountProductsStrip(productsContainer, { excludeProfileId: profile.id, title: "Sponsored Products", category: profile.business_category, format: "grid", limit: 6 });
+        window.LiyogSponsoredUI.mountProductsStrip(productsContainer, { excludeProfileId: profile.id, title: "Sponsored Products", category: profile.business_category, format: "grid", limit: 6 });
+
         const cataloguesContainer = document.createElement("div");
         cataloguesContainer.className = "lp-section";
         cataloguesContainer.id = "lp-sponsored-catalogues-container";
@@ -413,7 +298,6 @@ window.LiyogSponsoredUI.mountProductsStrip(productsContainer, { excludeProfileId
     const lightbox = document.getElementById("lp-product-hero-lightbox");
     const closeBtn = document.getElementById("lp-product-hero-lightbox-close");
     if (!heroWrap || !heroImg || !lightbox) return;
-
     heroWrap.addEventListener("click", () => lightbox.classList.add("lp-open"));
     if (closeBtn) closeBtn.addEventListener("click", (e) => { e.stopPropagation(); lightbox.classList.remove("lp-open"); });
     lightbox.addEventListener("click", (e) => { if (e.target === lightbox) lightbox.classList.remove("lp-open"); });
@@ -423,20 +307,12 @@ window.LiyogSponsoredUI.mountProductsStrip(productsContainer, { excludeProfileId
     const shareBtn = document.getElementById("lp-product-page-share");
     const copyBtn = document.getElementById("lp-product-page-copy");
     if (!shareBtn && !copyBtn) return;
-
     const shareUrl = ui.buildProductPageUrl(product, profile);
-
-    if (shareBtn) {
-      shareBtn.addEventListener("click", () => ui.shareProduct(product, profile, shareUrl));
-    }
+    if (shareBtn) shareBtn.addEventListener("click", () => ui.shareProduct(product, profile, shareUrl));
     if (copyBtn) {
       copyBtn.addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(shareUrl);
-          ui.showToast("Link copied!", "success");
-        } catch (e) {
-          ui.showToast("Couldn't copy the link. Please try again.", "error");
-        }
+        try { await navigator.clipboard.writeText(shareUrl); ui.showToast("Link copied!", "success"); }
+        catch (e) { ui.showToast("Couldn't copy the link. Please try again.", "error"); }
       });
     }
   }
@@ -445,27 +321,16 @@ window.LiyogSponsoredUI.mountProductsStrip(productsContainer, { excludeProfileId
     const reportBtn = document.getElementById("lp-product-page-report");
     if (!reportBtn) return;
     reportBtn.addEventListener("click", () => {
-      if (ui.openQuickReportConfirm) {
-        ui.openQuickReportConfirm(reportBtn.dataset.productId, reportBtn.dataset.productName);
-      }
+      if (ui.openQuickReportConfirm) ui.openQuickReportConfirm(reportBtn.dataset.productId, reportBtn.dataset.productName);
     });
   }
 
-  // Left/right arrow nav for the "You might also like" row. Only
-  // matters below the 640px breakpoint — at 640px+ product-pages.css
-  // switches that row to a real 5-column grid (no scrolling to
-  // navigate), and hides these arrows entirely via CSS, so this JS
-  // simply has nothing to do there and that's fine.
   function wireRelatedProductsArrows() {
     const scroll = document.getElementById("lp-related-products-scroll");
     const prevBtn = document.getElementById("lp-related-arrow-prev");
     const nextBtn = document.getElementById("lp-related-arrow-next");
     if (!scroll || !prevBtn || !nextBtn) return;
-
-    function cardStep() {
-      const card = scroll.querySelector(".lp-related-card");
-      return card ? card.offsetWidth + 12 : 150; // +12 = the row's gap
-    }
+    function cardStep() { const card = scroll.querySelector(".lp-related-card"); return card ? card.offsetWidth + 12 : 150; }
     function updateArrowState() {
       const maxScroll = scroll.scrollWidth - scroll.clientWidth;
       prevBtn.disabled = scroll.scrollLeft <= 4;
@@ -478,20 +343,13 @@ window.LiyogSponsoredUI.mountProductsStrip(productsContainer, { excludeProfileId
     updateArrowState();
   }
 
-  // Owner-only engagement chart. hasOwnerSessionHint (server-computed
-  // from whether a liyog_session cookie is even present) is ONLY used
-  // to decide whether it's worth attempting this fetch at all — the
-  // actual security boundary is entirely inside the existing
-  // /api/products/:id/chart endpoint itself (session + ownership
-  // check, unmodified, already live). A visitor with a session cookie
-  // who is NOT the owner will get a 403 here and simply see nothing,
-  // exactly as intended.
+  // Owner-only chart: the real check is the session + ownership test inside /api/products/:id/chart.
   async function wireOwnerChart(productId) {
     const wrap = document.getElementById("lp-product-page-owner-chart");
     if (!wrap) return;
     try {
       const res = await fetch(`${WORKER_BASE}/api/products/${productId}/chart?days=30`, { credentials: "include" });
-      if (!res.ok) return; // not the owner (or not signed in) — leave the section absent
+      if (!res.ok) return;
       const data = await res.json();
       if (!data.chart) return;
       wrap.innerHTML = ui.detailChartHtml(data.chart);
