@@ -15,7 +15,7 @@ import { checkText, checkImage, saveModerationFlags, getReadableRejectionMessage
 import * as reviews from "./lib/reviews.js";
 import { handleCreateProduct, handleUpdateProduct, handleDeleteProduct, handleListProducts, handleUploadProductImage } from "./lib/products.js";
 import * as productsEngagement from "./lib/products-engagement.js";
-import { handleProductsListingPage, handleProductDetailPage } from "./lib/product-pages.js";
+import { handleProductsListingPage, handleProductDetailPage, handleCollectionPage, handleVideoPage } from "./lib/product-pages.js";
 import { maybeCreditReferral, getMyReferrals } from "./lib/referral.js";
 import {
   handleBoostStatus, handleActivateBoost, handleBoostConfig,
@@ -1487,6 +1487,13 @@ if (url.pathname === "/api/boost/recap" && request.method === "GET") {
     }
     if (url.pathname.match(/^\/product\/[^/]+\/[^/]+$/)) {
       return handleProductDetailPage(request, env, ctx, url);
+    }
+
+if (url.pathname.match(/^\/collection\/[^/]+\/[^/]+$/)) {
+      return handleCollectionPage(request, env, ctx, url);
+    }
+    if (url.pathname.match(/^\/video\/[^/]+\/[^/]+$/)) {
+      return handleVideoPage(request, env, ctx, url);
     }
 
 // ---- Biziplex only: temporary root + signup page ----
