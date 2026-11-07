@@ -137,7 +137,7 @@
   function saveRecent(slug, q) { q = (q || "").trim(); if (q.length < 2) return; try { var l = getRecent(slug).filter(function (x) { return x !== q; }); l.unshift(q); localStorage.setItem(recentKey(slug), JSON.stringify(l.slice(0, 6))); } catch (e) {} }
 
   function initSearch(ctx) {
-    var open1 = $("#bz-search-open"), fs = $("#bz-fsearch"), sheet = null, lastFocus = null, token = 0, timer = null;
+    var openers = $$("[data-bz-search-open]"), open1 = openers[0], fs = $("[data-bz-fsearch]"), sheet = null, lastFocus = null, token = 0, timer = null;
     var state = { q: "", page: 1 };
     var th = $(".lp-shop-topheader");
     if (th) document.documentElement.style.setProperty("--bz-th-h", th.offsetHeight + "px");
@@ -150,8 +150,8 @@
         '</span><span class="bz-ss-t"><strong>' + esc(it.name) + "</strong><span>" + esc(priceOf(it)) + "</span><small>" + (it.kind === "service" ? "Service" : "Product") + '</small></span><span class="bz-ss-go">›</span></a>';
     }
     function collectionRow(c) {
-      return '<button type="button" class="bz-ss-row" data-coll="' + esc(c.id) + '" data-title="' + esc(c.title) + '"><span class="bz-ss-thumb">' + (c.cover_url ? '<img src="' + esc(c.cover_url) + '" alt="" loading="lazy">' : "") +
-        '</span><span class="bz-ss-t"><strong>' + esc(c.title) + "</strong><small>Collection · " + c.item_count + ' items</small></span><span class="bz-ss-go">›</span></button>';
+      return '<a class="bz-ss-row" href="/collection/' + encodeURIComponent(ctx.brandSlug) + "/" + encodeURIComponent(c.slug) + '"><span class="bz-ss-thumb">' + (c.cover_url ? '<img src="' + esc(c.cover_url) + '" alt="" loading="lazy">' : "") +
+        '</span><span class="bz-ss-t"><strong>' + esc(c.title) + "</strong><small>Collection · " + c.item_count + ' items</small></span><span class="bz-ss-go">›</span></a>';
     }
 
     function build() {
@@ -168,8 +168,7 @@
       input.addEventListener("input", function () { clearTimeout(timer); timer = setTimeout(function () { state.q = input.value.trim(); state.page = 1; run(); }, 250); });
       input.addEventListener("keydown", function (e) { if (e.key === "Enter") { saveRecent(ctx.brandSlug, input.value); var first = $("#bz-ss-body .bz-ss-row", sheet); if (first) first.click(); } });
       $("#bz-ss-body", sheet).addEventListener("click", function (e) {
-        var c = e.target.closest("[data-coll]"); if (c) { drill(c.getAttribute("data-coll"), c.getAttribute("data-title")); return; }
-        var r = e.target.closest("[data-recent]"); if (r) { input.value = r.getAttribute("data-recent"); state.q = input.value; state.page = 1; run(); return; }
+                var r = e.target.closest("[data-recent]"); if (r) { input.value = r.getAttribute("data-recent"); state.q = input.value; state.page = 1; run(); return; }
         var pg = e.target.closest("[data-page]"); if (pg && !pg.disabled) { state.page = Number(pg.getAttribute("data-page")); run(); $("#bz-ss-body", sheet).scrollTop = 0; }
         if (e.target.closest("a.bz-ss-row")) saveRecent(ctx.brandSlug, state.q);
       });
@@ -194,33 +193,19 @@
         if (d.collections && d.collections.length) h += '<div class="bz-ss-label">Collections</div>' + d.collections.map(collectionRow).join("");
         if (d.products && d.products.length) h += '<div class="bz-ss-label">' + (state.q ? "Products &amp; services" : "Popular here") + "</div>" + d.products.map(productRow).join("");
         if (!d.products.length && !(d.collections && d.collections.length)) h += '<p class="bz-ss-empty">Nothing found for “' + esc(state.q) + '”. Try another word.</p>';
+        if (state.q) h += '<div class="bz-ss-pager"><a class="bz-ss-seeall" href="/products/' + encodeURIComponent(ctx.brandSlug) + "?q=" + encodeURIComponent(state.q) + '">See all results in the catalogue ›</a></div>';
         if (d.pages > 1) h += '<div class="bz-ss-pager"><button type="button" data-page="' + (d.page - 1) + '"' + (d.page <= 1 ? " disabled" : "") + '>‹ Prev</button><span>Page ' + d.page + " of " + d.pages + '</span><button type="button" data-page="' + (d.page + 1) + '"' + (d.page >= d.pages ? " disabled" : "") + ">Next ›</button></div>";
         if (d.brandVideo) h += '<div class="bz-ss-label">Watch ' + esc(ctx.brandName) + '</div><div class="bz-ss-video"><div class="bz-video" data-yt="' + esc(d.brandVideo) + '"><button type="button" class="bz-video-play" aria-label="Play brand video"><img class="bz-video-poster" src="https://i.ytimg.com/vi/' + esc(d.brandVideo) + '/hqdefault.jpg" alt="" loading="lazy" referrerpolicy="no-referrer"><span class="bz-video-btn"><svg width="26" height="26" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg></span></button></div></div>';
         body.innerHTML = h; initVideos(body, null);
       }).catch(function () { if (my === token) body.innerHTML = '<p class="bz-ss-empty">Couldn\'t search right now. Check your connection and try again.</p>'; });
     }
 
-    function drill(id, title) {
-      var body = $("#bz-ss-body", sheet), offset = 0;
-      function load(first) {
-        cachedGet("/api/collections/" + id + "/items?offset=" + offset).then(function (d) {
-          var rows = d.items.map(productRow).join("");
-          if (first) body.innerHTML = '<button type="button" class="bz-ss-back" id="bz-ss-back">‹ Back to search</button><div class="bz-ss-label">' + esc(title) + '</div><div id="bz-ss-list"></div><div id="bz-ss-more"></div>';
-          $("#bz-ss-list", sheet).insertAdjacentHTML("beforeend", rows || (first ? '<p class="bz-ss-empty">This collection is empty right now.</p>' : ""));
-          var more = $("#bz-ss-more", sheet); more.innerHTML = d.next != null ? '<div class="bz-ss-pager"><button type="button" id="bz-ss-loadmore">Load more</button></div>' : "";
-          var lm = $("#bz-ss-loadmore", sheet); if (lm) lm.addEventListener("click", function () { offset = d.next; load(false); });
-          var bk = $("#bz-ss-back", sheet); if (bk && first) bk.addEventListener("click", run);
-        }).catch(function () { body.innerHTML = '<p class="bz-ss-empty">Couldn\'t open this collection. Please try again.</p>'; });
-      }
-      body.innerHTML = '<p class="bz-ss-loading">Opening…</p>'; load(true);
-    }
-
-    if (open1) open1.addEventListener("click", open);
+    openers.forEach(function (o) { o.addEventListener("click", open); });
     if (fs) {
       fs.addEventListener("click", open);
       var shown = false;
       function toggle() {
-        var inView = open1 ? open1.getBoundingClientRect().bottom > (parseInt(getComputedStyle(document.documentElement).getPropertyValue("--bz-header-h"), 10) || 60) + (th ? th.offsetHeight : 56) : false;
+        var inView = open1 && open1.offsetParent !== null ? open1.getBoundingClientRect().bottom > (parseInt(getComputedStyle(document.documentElement).getPropertyValue("--bz-header-h"), 10) || 60) + (th ? th.offsetHeight : 56) : false;
         var on = window.scrollY > 260 && !inView;
         if (on === shown) return; shown = on; fs.hidden = false;
         requestAnimationFrame(function () { fs.classList.toggle("is-on", on); });
@@ -256,18 +241,190 @@
     }).catch(function () {});
   }
 
-  window.LiyogShopUI = { applyFx: applyFx, mountProfileCollections: mountProfileCollections };
+
+  /* ---------------- shared: share/copy buttons, load more on collection page ---------------- */
+  function toast(m, t) { if (ui().showToast) ui().showToast(m, t || "success"); }
+  function copyText(t) { return (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { toast("Link copied!"); }).catch(function () { toast("Couldn't copy the link.", "error"); }); }
+  function initShareButtons() {
+    var url = location.href.split("#")[0];
+    $$("[data-bz-share]").forEach(function (b) { b.addEventListener("click", function () { if (navigator.share) navigator.share({ title: document.title, url: url }).catch(function () {}); else copyText(url); }); });
+    $$("[data-bz-copy]").forEach(function (b) { b.addEventListener("click", function () { copyText(url); }); });
+  }
+  function blurAttrs(it) {
+    var w = Number(it.img_w), h = Number(it.img_h), r = w && h ? w / h : 1;
+    var blur = it.kind === "service" || r < 0.92 || r > 1.1;
+    return blur && it.image_url ? { cls: " lp-fit-blur", style: ' style="--bz-bg:url(\'' + encodeURI(it.image_url).replace(/['"()\\]/g, function (c) { return "%" + c.charCodeAt(0).toString(16); }) + '\')"' } : { cls: "", style: "" };
+  }
+  function itemRowHtml(it, brand, colSlug, n) {
+    var b = blurAttrs(it);
+    return '<a class="bz-item" href="/product/' + encodeURIComponent(it.slug || it.id) + "/" + encodeURIComponent(brand) + (colSlug ? "?c=" + encodeURIComponent(colSlug) : "") + '"><span class="bz-item-n" aria-hidden="true">' + n + '</span><span class="bz-item-thumb' + b.cls + '"' + b.style + ">" +
+      (it.image_url ? '<img src="' + esc(it.image_url) + '" alt="" loading="lazy">' : "") + (it.has_video ? '<span class="lp-vid-badge"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>' : "") +
+      '</span><span class="bz-item-t"><strong>' + esc(it.name) + "</strong>" + (it.price_display ? '<span class="bz-item-price"' + fxAttr(it) + ">" + esc(it.price_display) + "</span>" : "") + "<small>" + (it.kind === "service" ? "Service" : "Product") + '</small></span><span class="bz-ss-go" aria-hidden="true">›</span></a>';
+  }
+  function fxAttr(it) { return it.price_minor != null && it.currency ? ' data-fx-minor="' + Number(it.price_minor) + '" data-fx-cur="' + esc(it.currency) + '"' + (it.price_type === "from" ? ' data-fx-from="1"' : "") : ""; }
+  function initCollectionLoadMore() {
+    var btn = $("#bz-pl-more"); if (!btn) return;
+    var list = $("#bz-pl-items"), next = Number(btn.dataset.next) || 24, busy = false;
+    btn.addEventListener("click", function () {
+      if (busy) return; busy = true; btn.textContent = "Loading…";
+      getJson("/api/collections/" + btn.dataset.collection + "/items?offset=" + next).then(function (d) {
+        var n = list.children.length;
+        list.insertAdjacentHTML("beforeend", d.items.map(function (it, i) { return itemRowHtml(it, btn.dataset.brand, btn.dataset.col, n + i + 1); }).join(""));
+        applyFx(list); busy = false;
+        if (d.next == null) btn.parentNode.remove(); else { next = d.next; btn.textContent = "Load more"; }
+      }).catch(function () { busy = false; btn.textContent = "Couldn't load. Tap to retry"; healLater(); });
+    });
+  }
+
+  /* ---------------- connection awareness: banner + self-heal + offline page ---------------- */
+  var needsHeal = false;
+  function healLater() { needsHeal = true; }
+  function initConnection() {
+    var bar = null;
+    function show(msg, kind) {
+      if (!bar) { bar = document.createElement("div"); bar.className = "bz-net"; bar.setAttribute("role", "status"); document.body.appendChild(bar); }
+      bar.className = "bz-net bz-net-" + kind;
+      bar.innerHTML = "<span>" + esc(msg) + '</span><button type="button" id="bz-net-retry">Retry</button>';
+      $("#bz-net-retry", bar).addEventListener("click", function () { location.reload(); });
+    }
+    function hide() { if (bar) { bar.remove(); bar = null; } }
+    window.addEventListener("offline", function () { show("You're offline. This page will reconnect by itself.", "off"); });
+    window.addEventListener("online", function () {
+      if (needsHeal || window.__lpCssFailed) { show("Back online. Refreshing…", "on"); setTimeout(function () { location.reload(); }, 700); }
+      else { show("Back online.", "on"); setTimeout(hide, 1600); }
+    });
+    if (navigator.onLine === false) show("You're offline. This page will reconnect by itself.", "off");
+    if ("serviceWorker" in navigator && location.protocol === "https:") {
+      window.addEventListener("load", function () { setTimeout(function () { navigator.serviceWorker.register("/sw.js").catch(function () {}); }, 1500); });
+    }
+  }
+
+  /* ---------------- catalogue: filter button + sheet, navigation skeleton ---------------- */
+  function catHref(cat, p) {
+    var u = new URLSearchParams(), all = { view: cat.view === "products" ? "" : cat.view, sort: cat.sort === "newest" ? "" : cat.sort, featured: cat.featured ? "1" : "", q: cat.q };
+    Object.keys(p).forEach(function (k) { all[k] = p[k]; });
+    Object.keys(all).forEach(function (k) { if (all[k]) u.set(k, all[k]); });
+    var s = u.toString(); return cat.base + (s ? "?" + s : "");
+  }
+  function initCatalogue(cat) {
+    document.addEventListener("click", function (e) {
+      if (e.target.closest && e.target.closest(".bz-tabs a.bz-tab, .bz-tabs button[data-sort], #lp-shop-featured-toggle, .bz-fsheet a")) document.documentElement.classList.add("bz-navigating");
+    });
+    window.addEventListener("pageshow", function () { document.documentElement.classList.remove("bz-navigating"); });
+
+    var fab = $("#bz-ffilter"), tabs = $("#bz-tabs"), sheet = null, last = null;
+    if (!fab) return;
+    function build() {
+      var types = [["products", "Products"], ["services", "Services"], ["collections", "Collections"], ["videos", "Videos"]];
+      var sorts = [["newest", "Newest"], ["rating", "Top rated"], ["views", "Most viewed"], ["likes", "Most liked"], ["price_asc", "Price: low to high"], ["price_desc", "Price: high to low"]];
+      function row(label, href, on, note) { return '<a class="bz-ss-row' + (on ? " is-on" : "") + '" href="' + esc(href) + '"' + (on ? ' aria-current="true"' : "") + '><span class="bz-ss-t"><strong>' + esc(label) + "</strong>" + (note != null ? "<small>" + note + "</small>" : "") + '</span><span class="bz-ss-go">' + (on ? "✓" : "›") + "</span></a>"; }
+      var h = '<div class="bz-ss-label">Show</div>' + types.map(function (t) { return row(t[1], catHref(cat, { view: t[0] === "products" ? "" : t[0], sort: "", featured: "" }), cat.view === t[0], (cat.counts && cat.counts[t[0]]) || 0); }).join("");
+      if (cat.view === "products" || cat.view === "services") {
+        h += '<div class="bz-ss-label">Sort by</div>' + sorts.map(function (s2) { return row(s2[1], catHref(cat, { sort: s2[0] === "newest" ? "" : s2[0] }), cat.sort === s2[0]); }).join("");
+        if (cat.hasFeatured) h += '<div class="bz-ss-label">Only show</div>' + row("⭐ Featured", catHref(cat, { featured: cat.featured ? "" : "1" }), cat.featured);
+      }
+      sheet = document.createElement("div"); sheet.className = "bz-ss bz-fsheet"; sheet.hidden = true;
+      sheet.innerHTML = '<div class="bz-ss-card" role="dialog" aria-modal="true" aria-label="Filter and sort"><div class="bz-ss-head"><strong style="flex:1;font-size:16px">Filter &amp; sort</strong><button type="button" class="bz-ss-close" aria-label="Close">✕</button></div><div class="bz-ss-body">' + h + "</div></div>";
+      document.body.appendChild(sheet);
+      $(".bz-ss-close", sheet).addEventListener("click", close);
+      sheet.addEventListener("click", function (e) { if (e.target === sheet) close(); });
+      sheet.addEventListener("keydown", function (e) { if (e.key === "Escape") close(); });
+    }
+    function open() { if (!sheet) build(); last = document.activeElement; sheet.hidden = false; document.body.style.overflow = "hidden"; var f = $(".bz-ss-close", sheet); if (f) f.focus(); }
+    function close() { if (!sheet) return; sheet.hidden = true; document.body.style.overflow = ""; if (last && last.focus) last.focus(); }
+    fab.addEventListener("click", open);
+    var th = $(".lp-shop-topheader"); if (th) document.documentElement.style.setProperty("--bz-th-h", th.offsetHeight + "px");
+    var on = false, tick = false;
+    function toggle() {
+      var past = tabs ? tabs.getBoundingClientRect().bottom < (parseInt(getComputedStyle(document.documentElement).getPropertyValue("--bz-header-h"), 10) || 60) + (th ? th.offsetHeight : 56) : window.scrollY > 300;
+      var now = window.scrollY > 260 && past; if (now === on) return; on = now; fab.hidden = false; requestAnimationFrame(function () { fab.classList.toggle("is-on", on); });
+    }
+    window.addEventListener("scroll", function () { if (!tick) { tick = true; requestAnimationFrame(function () { tick = false; toggle(); }); } }, { passive: true }); toggle();
+  }
+
+  /* ---------------- rows the catalogue drops in while scrolling (collections, collection items, videos) ---------------- */
+  function colCardHtml(c, brand) {
+    var exact = c.cover_url && c.cw && c.ch && Math.abs(c.cw / c.ch / (16 / 9) - 1) <= 0.06;
+    var media = !c.cover_url
+      ? '<div class="bz-colcard-media bz-cover-fallback"' + (/^#[0-9a-f]{6}$/i.test(c.cover_color || "") ? ' style="--bz-fb:' + c.cover_color + '"' : "") + '><img class="bz-cover-logo" src="/brand/logo-mark.png" alt="" width="56" height="56"></div>'
+      : '<div class="bz-colcard-media' + (exact ? "" : " lp-fit-blur") + '"' + (exact ? "" : ' style="--bz-bg:url(\'' + encodeURI(c.cover_url).replace(/['"()\\]/g, function (m) { return "%" + m.charCodeAt(0).toString(16); }) + '\')"') + '><img src="' + esc(c.cover_url) + '" alt="" loading="lazy"></div>';
+    return '<a class="bz-colcard" href="/collection/' + encodeURIComponent(brand) + "/" + encodeURIComponent(c.slug) + '"><div class="bz-colcard-frame">' + media + '<span class="bz-colcard-count">' + (c.item_count || 0) + ' items</span></div><div class="bz-colcard-body"><strong>' + esc(c.title) + "</strong>" + (c.blurb ? "<p>" + esc(c.blurb) + "</p>" : "") + '<span class="bz-colcard-view">View collection ›</span></div></a>';
+  }
+  function skeletonStrip(n) { var h = ""; for (var i = 0; i < n; i++) h += '<div class="bz-strip-item"><div class="bz-skel bz-skel-card"></div></div>'; return h; }
+  function stripShell(title, link, inner) { return '<section class="bz-strip"><div class="bz-strip-head"><h2>' + esc(title) + "</h2>" + (link ? '<a class="bz-linkbtn" href="' + esc(link) + '">See all ›</a>' : "") + '</div><div class="bz-strip-scroll">' + inner + "</div></section>"; }
+  var rowCursor = { col: 0 };
+  function catCtx() { return window.__BZ_CAT__ || null; }
+  function mountCollectionsRow(host) {
+    var cat = catCtx(), brand = window.__BZ_BRAND__; if (!host || !cat || !brand || !cat.collections.length) { if (host) host.hidden = true; return; }
+    var list = cat.collections.slice(0, Math.max(3, cat.stripCollections || 5));
+    host.hidden = false; host.className = "bz-row-host";
+    host.innerHTML = stripShell("Collections", cat.base + "?view=collections", list.map(function (c) { return '<div class="bz-strip-item bz-strip-item-col">' + colCardHtml(c, brand.brandSlug) + "</div>"; }).join(""));
+  }
+  function mountCollectionItemsRow(host) {
+    var cat = catCtx(), brand = window.__BZ_BRAND__; if (!host || !cat || !brand || !cat.collections.length) { if (host) host.hidden = true; return; }
+    var c = cat.collections[rowCursor.col++ % cat.collections.length];
+    host.hidden = false; host.className = "bz-row-host"; host.innerHTML = stripShell("More from " + c.title, "/collection/" + encodeURIComponent(brand.brandSlug) + "/" + encodeURIComponent(c.slug), skeletonStrip(3));
+    cachedGet("/api/collections/" + c.id + "/items?offset=0").then(function (d) {
+      if (!d.items.length) { host.hidden = true; return; }
+      var cards = d.items.slice(0, 8).map(function (it) {
+        var b = blurAttrs(it);
+        return '<a class="lp-related-card" href="/product/' + encodeURIComponent(it.slug || it.id) + "/" + encodeURIComponent(brand.brandSlug) + "?c=" + encodeURIComponent(c.slug) + '"><div class="lp-related-card-imgwrap' + b.cls + '"' + b.style + ">" + (it.image_url ? '<img src="' + esc(it.image_url) + '" alt="" loading="lazy">' : "") + '</div><div class="lp-related-card-body"><div class="lp-related-card-name">' + esc(it.name) + "</div>" + (it.price_display ? '<div class="lp-related-card-price"' + fxAttr(it) + ">" + esc(it.price_display) + "</div>" : "") + "</div></a>";
+      }).join("");
+      $(".bz-strip-scroll", host).innerHTML = cards; applyFx(host);
+    }).catch(function () { host.hidden = true; healLater(); });
+  }
+  function mountVideosRow(host) {
+    var cat = catCtx(), brand = window.__BZ_BRAND__; if (!host || !cat || !brand || !cat.videos.length) { if (host) host.hidden = true; return; }
+    host.hidden = false; host.className = "bz-row-host";
+    host.innerHTML = stripShell("Videos", cat.base + "?view=videos", cat.videos.slice(0, 6).map(function (v) {
+      return '<div class="bz-strip-item bz-strip-item-vid"><a class="bz-vidcard" href="/video/' + encodeURIComponent(brand.brandSlug) + "/" + encodeURIComponent(v.ref) + '"><div class="bz-vidcard-media"><img src="https://i.ytimg.com/vi/' + esc(v.vid) + '/hqdefault.jpg" alt="" loading="lazy" referrerpolicy="no-referrer"><span class="bz-vidcard-play"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg></span><span class="bz-vidcard-tag">' + esc(v.tag) + '</span></div><div class="bz-vidcard-body"><strong>' + esc(v.title) + "</strong>" + (v.price_display ? "<span>" + esc(v.price_display) + "</span>" : "") + "</div></a></div>";
+    }).join(""));
+  }
+
+  /* ---------------- floating contact button: WhatsApp / Call / SMS / Inquiry ---------------- */
+  var dial = null;
+  function closeDial() { if (dial) { dial.remove(); dial = null; document.removeEventListener("click", outside, true); document.removeEventListener("keydown", escKey, true); } }
+  function outside(e) { if (dial && !dial.contains(e.target) && !e.target.closest("#lp-shop-float-inquiry-btn")) closeDial(); }
+  function escKey(e) { if (e.key === "Escape") closeDial(); }
+  function openContactDial(profile, anchor) {
+    if (dial) { closeDial(); return; }
+    var digits = String(profile.whatsapp_number || "").replace(/[^\d]/g, ""), tel = String(profile.phone_number || "").replace(/[^\d+]/g, "");
+    var items = [];
+    if (digits) items.push(['<a class="bz-dial-i bz-dial-wa" href="https://wa.me/' + digits + "?text=" + encodeURIComponent("Hi " + profile.business_name + ", I found you on BiziPlex and I'm interested.") + '" target="_blank" rel="noopener noreferrer"><span class="bz-dial-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="#fff"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2z"/></svg></span><span>WhatsApp</span></a>']);
+    if (/^\+?\d{6,16}$/.test(tel)) {
+      items.push(['<a class="bz-dial-i bz-dial-call" href="tel:' + tel + '"><span class="bz-dial-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span><span>Call</span></a>']);
+      items.push(['<a class="bz-dial-i bz-dial-sms" href="sms:' + tel + '"><span class="bz-dial-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span><span>SMS</span></a>']);
+    }
+    items.push(['<button type="button" class="bz-dial-i bz-dial-ask" data-ask><span class="bz-dial-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M4 4h16v12H8l-4 4z"/><path d="M8 9h8M8 12h5"/></svg></span><span>Send an inquiry</span></button>']);
+    dial = document.createElement("div"); dial.className = "bz-dial"; dial.setAttribute("role", "menu"); dial.setAttribute("aria-label", "Contact " + profile.business_name);
+    dial.innerHTML = items.map(function (i) { return i[0]; }).join("");
+    document.body.appendChild(dial);
+    var r = anchor ? anchor.getBoundingClientRect() : { top: window.innerHeight - 70, right: window.innerWidth - 16 };
+    dial.style.bottom = Math.max(12, window.innerHeight - r.top + 10) + "px";
+    dial.style.right = Math.max(10, window.innerWidth - r.right) + "px";
+    var ask = $("[data-ask]", dial); if (ask) ask.addEventListener("click", function () { closeDial(); if (ui().openInquirySheet) ui().openInquirySheet(profile); });
+    $$("a", dial).forEach(function (a) { a.addEventListener("click", function () { setTimeout(closeDial, 50); }); });
+    document.addEventListener("click", outside, true); document.addEventListener("keydown", escKey, true);
+    var first = $("a, button", dial); if (first) first.focus();
+  }
+
+  window.LiyogShopUI = { applyFx: applyFx, mountProfileCollections: mountProfileCollections, mountCollectionsRow: mountCollectionsRow, mountCollectionItemsRow: mountCollectionItemsRow, mountVideosRow: mountVideosRow, openContactDial: openContactDial };
 
   function boot() {
     try {
       applyFx(document);
-      var ctx = window.__BZ_PRODUCT__;
-      if (ctx) {
+      initVideos(document, null);
+      initShareButtons();
+      initCollectionLoadMore();
+      initConnection();
+      var brand = window.__BZ_BRAND__ || window.__BZ_PRODUCT__;
+      if (window.__BZ_PRODUCT__) {
         var pc = window.__LIYOG_PRODUCT_PAGE_CONTEXT__ || {};
-        initGallery(ctx);
-        initCtaBar(ctx, pc.profile);
-        initSearch(ctx);
+        initGallery(window.__BZ_PRODUCT__);
+        initCtaBar(window.__BZ_PRODUCT__, pc.profile);
       }
+      if (brand) initSearch(brand);
+      if (window.__BZ_CAT__) initCatalogue(window.__BZ_CAT__);
     } catch (e) { console.error("shop-ui:", e); }
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
