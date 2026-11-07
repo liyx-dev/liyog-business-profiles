@@ -105,8 +105,30 @@ async function ownedProduct(env, id, userId) {
   return results.length ? results[0] : null;
 }
 
+// Shown (by the tiny service worker below) whenever a page can't be reached because the phone is offline.
+const OFFLINE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>You're offline | BiziPlex</title>
+<style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#F3F1EA;color:#111;text-align:center}
+@media(prefers-color-scheme:dark){body{background:#0F0E0C;color:#F3F0E8}.c{background:#1A1A1A!important;border-color:#2E2B24!important}p{color:#B0AA98!important}}
+.c{max-width:380px;background:#fff;border:1px solid #E4DFD1;border-radius:24px;padding:34px 24px;box-shadow:0 10px 28px rgba(17,17,17,.12)}
+.i{width:72px;height:72px;margin:0 auto 16px;border-radius:50%;background:rgba(0,169,79,.12);display:flex;align-items:center;justify-content:center;color:#00A94F}
+h1{font-size:21px;margin:0 0 8px}p{margin:0 0 20px;font-size:14.5px;line-height:1.55;color:#625F53}
+button{height:48px;padding:0 28px;border:0;border-radius:999px;background:#00A94F;color:#fff;font:800 15px system-ui;cursor:pointer}
+small{display:block;margin-top:14px;color:#9B9686;font-size:12.5px}</style></head><body><div class="c" role="alert">
+<div class="i"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/><path d="M3 3l18 18"/></svg></div>
+<h1>You're offline</h1><p>We can't reach BiziPlex right now. Check your connection. This page will reload by itself as soon as you're back online.</p>
+<button type="button" id="r">Try again</button><small id="s"></small></div>
+<script>var b=document.getElementById("r"),s=document.getElementById("s");function go(){s.textContent="Checking…";location.reload()}b.onclick=go;addEventListener("online",go);setInterval(function(){if(navigator.onLine)go()},8000)</script></body></html>`;
+
+// Minimal service worker: it ONLY steps in when a page navigation fails because there is no network.
+const SW_JS = `const V="bz-offline-v1",OFF="/offline";
+self.addEventListener("install",e=>{e.waitUntil(caches.open(V).then(c=>c.add(new Request(OFF,{cache:"reload"}))).then(()=>self.skipWaiting()))});
+self.addEventListener("activate",e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==V).map(x=>caches.delete(x)))).then(()=>self.clients.claim()))});
+self.addEventListener("fetch",e=>{const r=e.request;if(r.mode!=="navigate")return;e.respondWith(fetch(r).catch(()=>caches.match(OFF).then(x=>x||new Response("You are offline",{status:503,headers:{"content-type":"text/plain"}}))))});`;
+
 export async function routeShopApi(request, env, ctx, url) {
   const path = url.pathname;
+  if (path === "/sw.js") return new Response(SW_JS, { headers: { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-cache", "service-worker-allowed": "/" } });
+  if (path === "/offline") return new Response(OFFLINE_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
   if (!path.startsWith("/api/")) return null;
   const method = request.method;
   let m;
