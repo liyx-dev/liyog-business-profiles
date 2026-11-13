@@ -35,6 +35,7 @@ import SHOP_CSS from "./assets/shop-css.txt";
 import SHOP_UI_JS from "./assets/shop-ui.txt";
 import STUDIO_UI_JS from "./assets/studio-ui.txt";
 import { routeShopApi, runShopMaintenance } from "./lib/shop-api.js";
+import { brandSeoEnhance } from "./lib/brand-seo.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
 
@@ -1523,7 +1524,8 @@ if (url.pathname.match(/^\/collection\/[^/]+\/[^/]+$/)) {
           ).bind(slug.toLowerCase()).all();
           if (shellRows.length && shellRows[0].moderation_status === "approved") shellProfile = shellRows[0];
         } catch (e) { console.error("Shell profile lookup failed:", e); }
-        return htmlResponse(profileShellHtml(url, { slug, profile: shellProfile }), shellProfile ? 200 : 404);
+        const shellHtml = profileShellHtml(url, { slug, profile: shellProfile });
+        return htmlResponse(shellProfile ? await brandSeoEnhance(shellHtml, env, url, slug) : shellHtml, shellProfile ? 200 : 404);
       }
       const pagePath = await getSetting(env, "blogger_profile_page", "/p/brands.html");
       const redirectUrl = new URL(pagePath, url.origin);
