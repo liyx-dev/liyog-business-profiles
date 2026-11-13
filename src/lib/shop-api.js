@@ -21,6 +21,7 @@ const ID = "([A-Za-z0-9-]{8,64})";
 const R = {
   profCollections: new RegExp(`^/api/profiles/${ID}/collections$`),
   profSearch: new RegExp(`^/api/profiles/${ID}/search$`),
+  profOverview: new RegExp(`^/api/profiles/${ID}/brand-overview$`),
   profLimits: new RegExp(`^/api/profiles/${ID}/plan-limits$`),
   profColOrder: new RegExp(`^/api/profiles/${ID}/collections-order$`),
   colItems: new RegExp(`^/api/collections/${ID}/items$`),
@@ -125,10 +126,30 @@ self.addEventListener("install",e=>{e.waitUntil(caches.open(V).then(c=>c.add(new
 self.addEventListener("activate",e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==V).map(x=>caches.delete(x)))).then(()=>self.clients.claim()))});
 self.addEventListener("fetch",e=>{const r=e.request;if(r.mode!=="navigate")return;e.respondWith(fetch(r).catch(()=>caches.match(OFF).then(x=>x||new Response("You are offline",{status:503,headers:{"content-type":"text/plain"}}))))});`;
 
+// A sitemap so Google can find every brand, listing, collection and video page.
+async function sitemapResponse(env, origin) {
+  const x = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const urls = [{ loc: `${origin}/` }, { loc: `${origin}/explore` }];
+  const add = (p, last) => urls.push({ loc: `${origin}${p}`, last: last ? String(last).slice(0, 10) : "" });
+  const q = async (sql) => { try { return (await env.DB.prepare(sql).all()).results || []; } catch (e) { console.error("sitemap query failed:", e); return []; } };
+  for (const r of await q("SELECT slug, updated_at FROM profiles WHERE is_active = 1 AND moderation_status = 'approved' ORDER BY created_at DESC LIMIT 20000")) { add(`/b/${encodeURIComponent(r.slug)}`, r.updated_at); add(`/products/${encodeURIComponent(r.slug)}`); }
+  for (const r of await q("SELECT p.slug AS ps, b.slug AS bs, p.updated_at AS u, p.video_id AS v FROM products p JOIN profiles b ON b.id = p.profile_id WHERE p.is_active = 1 AND p.is_draft = 0 AND p.slug IS NOT NULL AND b.is_active = 1 AND b.moderation_status = 'approved' ORDER BY p.created_at DESC LIMIT 20000")) {
+    add(`/product/${encodeURIComponent(r.ps)}/${encodeURIComponent(r.bs)}`, r.u);
+    if (r.v) add(`/video/${encodeURIComponent(r.bs)}/${encodeURIComponent(r.ps)}`);
+  }
+  for (const r of await q("SELECT c.slug AS cs, b.slug AS bs, c.updated_at AS u FROM collections c JOIN profiles b ON b.id = c.profile_id WHERE c.status = 'live' AND c.item_count > 0 AND b.is_active = 1 AND b.moderation_status = 'approved' LIMIT 5000")) add(`/collection/${encodeURIComponent(r.bs)}/${encodeURIComponent(r.cs)}`, r.u);
+  const body = urls.slice(0, 49000).map((u) => `<url><loc>${x(u.loc)}</loc>${u.last ? `<lastmod>${x(u.last)}</lastmod>` : ""}</url>`).join("");
+  return new Response(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${body}</urlset>`, { headers: { "content-type": "application/xml; charset=utf-8", "cache-control": "public, max-age=3600" } });
+}
+
 export async function routeShopApi(request, env, ctx, url) {
   const path = url.pathname;
   if (path === "/sw.js") return new Response(SW_JS, { headers: { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-cache", "service-worker-allowed": "/" } });
   if (path === "/offline") return new Response(OFFLINE_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
+  if (path === "/sitemap.xml" && /(^|\.)biziplex\.com$/.test(url.hostname)) return sitemapResponse(env, url.origin);
+  if (path === "/robots.txt" && /(^|\.)biziplex\.com$/.test(url.hostname)) {
+    return new Response(`User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ${url.origin}/sitemap.xml\n`, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=3600" } });
+  }
   if (!path.startsWith("/api/")) return null;
   const method = request.method;
   let m;
@@ -172,6 +193,51 @@ export async function routeShopApi(request, env, ctx, url) {
     };
     if (mine) { const out = await build(); return out ? json(out) : fail("Not authenticated", 401); }
     return cachedPublic(request, ctx, 30, async () => (await build()) || { collections: [] });
+  }
+
+  // Brand profile overview: everything the profile page's extra rows need in ONE cheap, cached request.
+  if (method === "GET" && (m = path.match(R.profOverview))) {
+    const profile = await data.getPublicProfile(env, m[1]);
+    if (!profile) return fail("Not found", 404);
+    return cachedPublic(request, ctx, 30, async () => {
+      const { limits } = await getProfileLimits(env, profile);
+      const nCol = Math.max(0, Number(limits.catalogue_collections_strip ?? 5));
+      const nVid = Math.max(0, Number(limits.catalogue_videos_strip ?? 5));
+      const nSvc = Math.max(0, Number(limits.catalogue_services_strip ?? 6));
+      const first = (t, max) => { const x = String(t || "").replace(/\s+/g, " ").trim(); if (!x) return ""; const mm = x.match(/^(.{20,}?[.!?])(\s|$)/); const o = mm ? mm[1] : x; return o.length > max ? o.slice(0, max - 1).trim() + "…" : o; };
+      const out = { counts: { products: 0, services: 0, collections: 0, videos: 0 }, limits: { collections: nCol, videos: nVid, services: nSvc }, collections: [], videos: [], services: [] };
+      try {
+        const { results } = await env.DB.prepare("SELECT kind, COUNT(*) AS n, SUM(CASE WHEN video_id IS NOT NULL AND video_status != 'broken' THEN 1 ELSE 0 END) AS v FROM products WHERE profile_id = ? AND is_active = 1 AND is_draft = 0 GROUP BY kind").bind(profile.id).all();
+        for (const r of results) { if (r.kind === "service") out.counts.services += r.n; else out.counts.products += r.n; out.counts.videos += r.v || 0; }
+      } catch (e) { /* counts are cosmetic */ }
+      try {
+        const { results } = await env.DB.prepare(
+          `SELECT c.id, c.slug, c.title, c.description, c.item_count, c.cover_url, c.cover_color,
+             (SELECT p.img_w FROM collection_items ci JOIN products p ON p.id = ci.product_id WHERE ci.collection_id = c.id AND p.is_active = 1 AND p.is_draft = 0 ORDER BY ci.position ASC LIMIT 1) AS cw,
+             (SELECT p.img_h FROM collection_items ci JOIN products p ON p.id = ci.product_id WHERE ci.collection_id = c.id AND p.is_active = 1 AND p.is_draft = 0 ORDER BY ci.position ASC LIMIT 1) AS ch
+           FROM collections c WHERE c.profile_id = ? AND c.status = 'live' AND c.item_count > 0 ORDER BY c.position ASC, c.created_at ASC LIMIT 60`).bind(profile.id).all();
+        out.counts.collections = results.length;
+        out.collections = results.slice(0, nCol).map((c) => ({ id: c.id, slug: c.slug, title: c.title, item_count: c.item_count, cover_url: c.cover_url || null, cover_color: /^#[0-9a-f]{6}$/i.test(c.cover_color || "") ? c.cover_color : null, cw: c.cw || null, ch: c.ch || null, blurb: first(c.description, 90) }));
+      } catch (e) { /* collections table may be missing */ }
+      try {
+        const bv = extractYouTubeId(profile.youtube_url);
+        const vids = [];
+        if (bv) vids.push({ ref: "brand", vid: bv, title: `${profile.business_name} — brand video`, tag: "Brand video", price_display: null });
+        const { results } = await env.DB.prepare("SELECT id, name, slug, price_display, kind, video_id FROM products WHERE profile_id = ? AND is_active = 1 AND is_draft = 0 AND video_id IS NOT NULL AND video_status != 'broken' ORDER BY created_at DESC LIMIT 40").bind(profile.id).all();
+        for (const r of results) vids.push({ ref: r.slug || r.id, vid: r.video_id, title: r.name, tag: r.kind === "service" ? "Service" : "Product", price_display: r.price_display || null });
+        out.counts.videos = results.length + (bv ? 1 : 0);
+        out.videos = vids.slice(0, nVid);
+      } catch (e) { /* videos are optional */ }
+      try {
+        const { results } = await env.DB.prepare(
+          `SELECT p.id, p.slug, p.name, p.description, p.price_display, p.price_minor, p.currency, p.price_type, p.kind, p.image_url, p.img_w, p.img_h, p.view_count, p.video_id, p.video_status,
+                  COALESCE(s.average_rating, 0) AS average_rating, COALESCE(s.rating_count, 0) AS rating_count, COALESCE(s.like_count, 0) AS like_count
+           FROM products p LEFT JOIN product_stats s ON s.product_id = p.id
+           WHERE p.profile_id = ? AND p.is_active = 1 AND p.is_draft = 0 AND p.kind = 'service' ORDER BY p.created_at DESC LIMIT ?`).bind(profile.id, nSvc).all();
+        out.services = results.map((r) => ({ ...r, has_video: !!(r.video_id && r.video_status !== "broken"), video_id: undefined, video_status: undefined }));
+      } catch (e) { /* services are optional */ }
+      return out;
+    });
   }
 
   // Brand-only search: products, services and collections of ONE brand, paginated, edge-cached.
