@@ -217,7 +217,7 @@
   }
 
   /* ---------------- brand profile: collection rows (normal product cards) ---------------- */
-  function mountProfileCollections(p, isOwner) {
+  function mountProfileCollectionsLegacy(p, isOwner) {
     var anchor = document.getElementById("lp-products-section") || document.getElementById("lp-products-locked-section");
     var u = ui(); if (!anchor || !u.compactCardHtml || document.getElementById("bz-profile-collections")) return;
     getJson("/api/profiles/" + p.id + "/collections?surface=profile&preview=10").then(function (d) {
@@ -408,7 +408,236 @@
     var first = $("a, button", dial); if (first) first.focus();
   }
 
-  window.LiyogShopUI = { applyFx: applyFx, mountProfileCollections: mountProfileCollections, mountCollectionsRow: mountCollectionsRow, mountCollectionItemsRow: mountCollectionItemsRow, mountVideosRow: mountVideosRow, openContactDial: openContactDial };
+
+  /* =====================================================================
+     BRAND PROFILE — additions on top of the existing page (BiziPlex only).
+     profile.js builds the page exactly as before; this module then adds the trust strip, tabs,
+     service / collection / video rows, a fitted gallery, a smarter map and the shared floating search + contact.
+     Every step is guarded: if one fails the rest of the page still works.
+     ===================================================================== */
+  function svgIc(name, size) {
+    var s = size || 15, a = 'width="' + s + '" height="' + s + '" viewBox="0 0 24 24" aria-hidden="true"';
+    var m = {
+      star: '<svg ' + a + ' fill="currentColor"><path d="M12 2.5l2.9 6.6 7.1.7-5.4 4.8 1.6 7-6.2-3.7-6.2 3.7 1.6-7-5.4-4.8 7.1-.7z"/></svg>',
+      eye: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>',
+      heart: '<svg ' + a + ' fill="currentColor"><path d="M12 21s-6.7-4.35-9.3-8.2C1.1 10.5 1.6 7.4 4 5.9c2.1-1.3 4.7-.7 6.2 1.1L12 9l1.8-2c1.5-1.8 4.1-2.4 6.2-1.1 2.4 1.5 2.9 4.6 1.3 6.9C18.7 16.65 12 21 12 21z"/></svg>',
+      down: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H6.7a2 2 0 0 0-2 1.7l-1.4 9A2 2 0 0 0 5.3 15z"/></svg>',
+      cal: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
+      shield: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3l8 3v6c0 4.5-3.2 8.2-8 9-4.8-.8-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>',
+      clock: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+      link: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>',
+      dir: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l18-8-8 18-2-8z"/></svg>',
+      pin: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>',
+      chat: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+      search: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
+      share: '<svg ' + a + ' fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.6" x2="15.4" y2="6.4"/><line x1="8.6" y1="13.4" x2="15.4" y2="17.6"/></svg>'
+    };
+    return m[name] || "";
+  }
+  function compactNum(n) { n = Number(n) || 0; if (n < 1000) return String(n); if (n < 1e6) return (n / 1000).toFixed(n % 1000 >= 100 ? 1 : 0).replace(/\.0$/, "") + "k"; return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "m"; }
+  function pickNum() { for (var i = 0; i < arguments.length; i++) { var v = arguments[i], n = Number(v); if (v != null && v !== "" && isFinite(n)) return n; } return 0; }
+  function readStats(s) {
+    s = s || {};
+    return { avg: pickNum(s.average_rating, s.avg_rating, s.average, s.rating_avg, s.avg), count: pickNum(s.review_count, s.total_reviews, s.reviews_count, s.rating_count, s.count, s.total),
+      likes: pickNum(s.like_count, s.likes, s.reaction_likes, s.total_likes, s.likes_count), dislikes: pickNum(s.dislike_count, s.dislikes, s.reaction_dislikes, s.total_dislikes) };
+  }
+  function joinedInfo(created) {
+    var d = new Date(String(created || "").replace(" ", "T") + "Z"); if (isNaN(d.getTime())) return null;
+    var months = Math.max(0, Math.floor((Date.now() - d.getTime()) / 2629800000)), yrs = Math.floor(months / 12);
+    var tenure = months < 1 ? "New on BiziPlex" : months < 12 ? months + (months === 1 ? " month" : " months") + " on BiziPlex" : yrs + (yrs === 1 ? " year" : " years") + " on BiziPlex";
+    return { label: d.toLocaleDateString(undefined, { month: "short", year: "numeric" }), tenure: tenure };
+  }
+  function copyFallback(text) {
+    return new Promise(function (resolve, reject) {
+      function legacy() {
+        try {
+          var t = document.createElement("textarea"); t.value = text; t.setAttribute("readonly", ""); t.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+          document.body.appendChild(t); t.select(); t.setSelectionRange(0, text.length);
+          var ok = document.execCommand && document.execCommand("copy"); t.remove(); ok ? resolve() : reject(new Error("copy"));
+        } catch (e) { reject(e); }
+      }
+      try { if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(resolve, legacy); else legacy(); } catch (e) { legacy(); }
+    });
+  }
+  function shareOrCopy(url, title, text) {
+    function viaCopy() { return copyFallback(url).then(function () { toast("Link copied!"); }, function () { window.prompt("Copy this link", url); }); }
+    if (navigator.share) return navigator.share({ title: title, text: text, url: url }).catch(function (e) { if (e && e.name === "AbortError") return; return viaCopy(); });
+    return viaCopy();
+  }
+  function scrollToEl(el) { if (!el) return; try { el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) { el.scrollIntoView(); } }
+  function bgVar(url) { return "--bz-bg:url('" + encodeURI(url).replace(/['"()\\]/g, function (c) { return "%" + c.charCodeAt(0).toString(16); }) + "');"; }
+
+  /* ---- reusable service card (16:9, whole image, soft blur when the picture is another shape) ---- */
+  function serviceCardHtml(s, profile, opts) {
+    opts = opts || {}; var U = ui();
+    var w = Number(s.img_w), h = Number(s.img_h), exact = !!(w && h && Math.abs(w / h / (16 / 9) - 1) <= 0.06), blur = !!s.image_url && !exact;
+    var href = "/product/" + encodeURIComponent(s.slug || s.id) + "/" + encodeURIComponent(profile.slug);
+    var pr = { id: s.id, name: s.name, slug: s.slug, view_count: s.view_count, _engagement: { stats: { view_count: s.view_count, average_rating: s.average_rating, rating_count: s.rating_count, like_count: s.like_count } } };
+    var brandRow = opts.showBrand ? '<div class="bz-svc-brand">' + (profile.logo_url ? '<img src="' + esc(profile.logo_url) + '" alt="" width="22" height="22" loading="lazy">' : "") + "<span>" + esc(profile.business_name) + "</span></div>" : "";
+    return '<div class="lp-prodcard lp-svccard" data-product-id="' + esc(s.id) + '">' + (U.cardReportButtonHtml ? U.cardReportButtonHtml(pr) : "") +
+      '<a class="lp-prodcard-imgwrap lp-svc-media' + (blur ? " lp-fit-blur" : "") + '" style="--bz-ar:1.7778;' + esc(blur ? bgVar(s.image_url) : "") + '" href="' + href + '">' +
+      (s.image_url ? '<img src="' + esc(s.image_url) + '" alt="' + esc(s.name) + '" loading="lazy" data-fallback="true">' : "") +
+      (s.has_video ? '<span class="lp-vid-badge" title="Has video"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>' : "") + '<span class="bz-svc-tag">Service</span></a>' +
+      '<div class="lp-prodcard-body">' + brandRow + '<a class="lp-prodcard-name" href="' + href + '" style="text-decoration:none;color:inherit;">' + esc(s.name) + "</a>" +
+      (s.price_display ? '<div class="lp-prodcard-price"' + fxAttr(s) + ">" + esc(s.price_display) + "</div>" : "") +
+      (U.engagementBarHtml ? U.engagementBarHtml(pr, false) : "") + (U.contactButtonsHtml ? U.contactButtonsHtml(profile, pr, false) : "") + "</div></div>";
+  }
+  function videoCardHtml(v, brandSlug) {
+    return '<a class="bz-vidcard" href="/video/' + encodeURIComponent(brandSlug) + "/" + encodeURIComponent(v.ref) + '" aria-label="Watch video: ' + esc(v.title) + '"><div class="bz-vidcard-media"><img src="https://i.ytimg.com/vi/' + esc(v.vid) + '/hqdefault.jpg" alt="" loading="lazy" referrerpolicy="no-referrer"><span class="bz-vidcard-play"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg></span><span class="bz-vidcard-tag">' + esc(v.tag) + '</span></div><div class="bz-vidcard-body"><strong>' + esc(v.title) + "</strong>" + (v.price_display ? "<span>" + esc(v.price_display) + "</span>" : "") + "</div></a>";
+  }
+  function secHtml(id, title, sub, seeAll, inner, cls) {
+    return '<div class="lp-section bz-sec ' + (cls || "") + '" id="' + id + '"><div class="bz-sec-head"><h2 class="lp-section-title">' + esc(title) + "</h2>" + (seeAll ? '<a class="bz-linkbtn" href="' + esc(seeAll) + '">See all ›</a>' : "") + "</div>" + (sub ? '<p class="lp-section-sub">' + esc(sub) + "</p>" : "") + '<div class="bz-strip-scroll" tabindex="0">' + inner + "</div></div>";
+  }
+  function makeEl(html) { var d = document.createElement("div"); d.innerHTML = html.trim(); return d.firstChild; }
+
+  /* ---- trust strip ---- */
+  function ratingInner(st) { return st.count > 0 ? '<span class="bz-t-star">' + svgIc("star") + "</span><b>" + st.avg.toFixed(1) + "</b><small>(" + compactNum(st.count) + " review" + (st.count === 1 ? "" : "s") + ")</small>" : '<span class="bz-t-star">' + svgIc("star") + "</span><small>New — be the first to review</small>"; }
+  function likeInner(st) { return '<span class="bz-heart">' + svgIc("heart") + "</span><b>" + compactNum(st.likes) + "</b>" + (st.likes + st.dislikes > 0 ? '<span class="bz-dis" aria-label="Dislikes">' + svgIc("down", 13) + "<b>" + compactNum(st.dislikes) + "</b></span>" : "<small>likes</small>"); }
+  function buildTrust(p) {
+    var anchor = $("#lp-contact-banner") || $(".lp-actions"); if (!anchor || $("#bz-trust")) return null;
+    var st = readStats(p.review_stats), j = joinedInfo(p.created_at), chips = [];
+    chips.push('<a class="bz-t bz-t-rate" id="bz-t-rate" href="#lp-reviews-section" data-jump="lp-reviews-section" aria-label="Rating">' + ratingInner(st) + "</a>");
+    chips.push('<span class="bz-t" title="Profile views">' + svgIc("eye") + "<b>" + compactNum(p.profile_views || 0) + "</b><small>views</small></span>");
+    chips.push('<span class="bz-t bz-t-like" id="bz-t-like" title="Likes and dislikes">' + likeInner(st) + "</span>");
+    if (j) chips.push('<span class="bz-t" title="' + esc(j.tenure) + '">' + svgIc("cal") + "<b>" + esc(j.label) + "</b><small>" + esc(j.tenure.replace(" on BiziPlex", "")) + "</small></span>");
+    if (p.is_verified) chips.push('<span class="bz-t bz-t-ok" title="Verified brand">' + svgIc("shield") + "<b>Verified</b></span>");
+    if (p.response_time) chips.push('<span class="bz-t" title="Typical response time">' + svgIc("clock") + "<small>" + esc(String(p.response_time).slice(0, 34)) + "</small></span>");
+    var el = makeEl('<section class="bz-trust" id="bz-trust" aria-label="Trust and activity">' + chips.join("") + "</section>");
+    anchor.parentNode.insertBefore(el, anchor);
+    getJson("/api/reviews/" + p.id + "/stats").then(function (d) {
+      var s2 = readStats(d && d.stats); if (!s2.count && !s2.likes && !s2.dislikes) return;
+      var a = $("#bz-t-rate"), l = $("#bz-t-like"); if (a) a.innerHTML = ratingInner(s2); if (l) l.innerHTML = likeInner(s2);
+    }).catch(function () {});
+    return el;
+  }
+
+  /* ---- share (works everywhere) + copy link, friendlier inquiry label ---- */
+  function tuneActions(p) {
+    var url = location.origin + "/b/" + p.slug, title = p.business_name + " | BiziPlex", text = p.tagline || ("Discover " + p.business_name + " on BiziPlex");
+    var old = $("#lp-btn-share");
+    if (old && old.parentNode) {
+      var sh = old.cloneNode(false); sh.id = "lp-btn-share"; sh.className = "lp-btn lp-btn-ghost bz-share-btn"; sh.setAttribute("aria-label", "Share " + p.business_name); sh.title = "Share"; sh.innerHTML = svgIc("share", 18);
+      sh.addEventListener("click", function () { shareOrCopy(url, title, text); fetch("/api/track-share", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ profile_id: p.id, channel: "share" }) }).catch(function () {}); });
+      old.parentNode.replaceChild(sh, old);
+      var cp = document.createElement("button"); cp.type = "button"; cp.className = "lp-btn lp-btn-ghost bz-copy-btn"; cp.id = "lp-btn-copy"; cp.setAttribute("aria-label", "Copy link to " + p.business_name); cp.title = "Copy link"; cp.innerHTML = svgIc("link", 18);
+      cp.addEventListener("click", function () { copyFallback(url).then(function () { toast("Link copied!"); cp.classList.add("is-done"); setTimeout(function () { cp.classList.remove("is-done"); }, 1400); }, function () { window.prompt("Copy this link", url); }); });
+      sh.insertAdjacentElement("afterend", cp);
+    }
+    var ask = $("#lp-btn-inquiry span"); if (ask) ask.textContent = "Ask " + p.business_name + " a question";
+  }
+
+  /* ---- gallery: whole picture in a 16:9 frame over a soft blur ---- */
+  function tuneGallery() {
+    var g = $("#lp-gallery"); if (!g) return;
+    function run() { $$(".lp-gallery-tile", g).forEach(function (t) { var im = $("img", t); if (!im || t.dataset.bzFit) return; t.dataset.bzFit = "1"; t.classList.add("bz-fit"); t.setAttribute("style", (t.getAttribute("style") || "") + bgVar(im.getAttribute("src") || "")); }); }
+    run(); if (window.MutationObserver) new MutationObserver(run).observe(g, { childList: true });
+  }
+
+  /* ---- map: full address first, lazy-loaded, with directions ---- */
+  function tuneMap(p) {
+    var sec = $("#lp-map-section"), ifr = $("#lp-map"); if (!sec) return;
+    var street = [p.store_address, p.store_city, p.store_country].filter(Boolean).join(", ");
+    var q = p.store_address ? street : (p.map_address || street); if (!q) return;
+    if (ifr) {
+      var real = "https://maps.google.com/maps?q=" + encodeURIComponent(q) + "&output=embed" + (p.store_address ? "&z=17" : "");
+      ifr.removeAttribute("src"); ifr.setAttribute("loading", "lazy");
+      var load = function () { if (!ifr.getAttribute("src")) ifr.setAttribute("src", real); };
+      if ("IntersectionObserver" in window) { var io = new IntersectionObserver(function (es) { if (es.some(function (e) { return e.isIntersecting; })) { load(); io.disconnect(); } }, { rootMargin: "300px 0px" }); io.observe(sec); } else load();
+    }
+    if ($("#bz-map-actions")) return;
+    var bar = makeEl('<div class="bz-map-actions" id="bz-map-actions"><a class="bz-btn-soft" target="_blank" rel="noopener noreferrer" href="https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(q) + '">' + svgIc("dir", 16) + '<span>Get directions</span></a><a class="bz-btn-soft" target="_blank" rel="noopener noreferrer" href="https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q) + '">' + svgIc("pin", 16) + '<span>Open in Maps</span></a><button type="button" class="bz-btn-soft" id="bz-copy-addr">' + svgIc("link", 16) + "<span>Copy address</span></button></div>");
+    sec.appendChild(bar);
+    $("#bz-copy-addr", bar).addEventListener("click", function () { copyFallback(street || q).then(function () { toast("Address copied!"); }, function () { window.prompt("Copy this address", street || q); }); });
+  }
+
+  /* ---- products: price in the visitor's currency; the first card fits its picture ---- */
+  function tuneProducts() {
+    var grid = $("#lp-products-grid"); if (!grid) return;
+    function run() {
+      var list = []; try { list = JSON.parse(grid.dataset.allProducts || "[]"); } catch (e) { return; }
+      var byId = {}; list.forEach(function (x) { byId[x.id] = x; });
+      $$("[data-product-id]", grid).forEach(function (card) {
+        var pr = byId[card.getAttribute("data-product-id")]; if (!pr) return;
+        var priceEl = $(".lp-prodfeed-price, .lp-prodcard-price", card);
+        if (priceEl && !priceEl.hasAttribute("data-fx-minor") && pr.price_minor != null && pr.currency) { priceEl.setAttribute("data-fx-minor", pr.price_minor); priceEl.setAttribute("data-fx-cur", pr.currency); if (pr.price_type === "from") priceEl.setAttribute("data-fx-from", "1"); }
+        if (card.classList.contains("lp-prodfeed")) {
+          var wrap = $(".lp-prodfeed-imgwrap", card), w = Number(pr.img_w), h = Number(pr.img_h), r = w && h ? w / h : 1;
+          if (wrap && pr.image_url && !wrap.classList.contains("lp-fit-blur") && (pr.kind === "service" || r < 0.92 || r > 1.1)) { wrap.classList.add("lp-fit-blur"); wrap.setAttribute("style", (wrap.getAttribute("style") || "") + bgVar(pr.image_url)); }
+        }
+      });
+      applyFx(grid);
+    }
+    run(); if (window.MutationObserver) new MutationObserver(run).observe(grid, { childList: true });
+  }
+
+  /* ---- floating search + contact (same ones used on the catalogue and product pages) ---- */
+  function floatingSearch(root, brand) {
+    if ($("[data-bz-fsearch]")) return;
+    root.appendChild(makeEl('<button type="button" class="bz-fsearch" id="bz-fsearch" data-bz-fsearch aria-label="Search ' + esc(brand.brandName) + '" hidden><span class="bz-fsearch-icon">' + svgIc("search", 17) + '</span><span class="bz-fsearch-text">Search this brand</span></button>'));
+    initSearch(brand);
+  }
+  function floatingContact(root, p) {
+    if ($("#lp-shop-float-inquiry-btn")) return;
+    var b = makeEl('<button type="button" class="lp-shop-float-inquiry" id="lp-shop-float-inquiry-btn" aria-label="Contact ' + esc(p.business_name) + '" aria-haspopup="menu">' + svgIc("chat", 18) + "<span>Contact</span></button>");
+    root.appendChild(b); b.addEventListener("click", function () { openContactDial(p, b); });
+  }
+
+  /* ---- the main routine ---- */
+  function enhanceBrandProfile(p, isOwner) {
+    var root = $(".lp-root"), main = root ? $(".lp-main", root) : null;
+    if (!root || !main || !p || root.classList.contains("bz-brand")) return;
+    root.classList.add("bz-brand");
+    var brand = { profileId: p.id, brandName: p.business_name, brandSlug: p.slug, profile: { id: p.id, slug: p.slug, business_name: p.business_name, logo_url: p.logo_url, business_category: p.business_category, whatsapp_number: p.whatsapp_number, phone_number: p.phone_number } };
+    window.__BZ_BRAND__ = brand;
+    [function () { buildTrust(p); }, function () { tuneActions(p); }, function () { tuneGallery(); }, function () { tuneMap(p); }, function () { tuneProducts(); }, function () { floatingSearch(root, brand); }, function () { if (!isOwner) floatingContact(root, p); }]
+      .forEach(function (fn) { try { fn(); } catch (e) { console.error("brand step failed:", e); } });
+    // the old inline video player is heavy: keep it parked until we know the rich row loaded
+    var oldIframe = $("#lp-youtube"), parked = null;
+    if (oldIframe && oldIframe.getAttribute("src")) { parked = oldIframe.getAttribute("src"); oldIframe.removeAttribute("src"); }
+    root.addEventListener("click", function (e) { var a = e.target.closest && e.target.closest("[data-jump]"); if (a) { e.preventDefault(); scrollToEl(document.getElementById(a.getAttribute("data-jump"))); } });
+
+    var prodSec = $("#lp-products-section"), skel = null;
+    if (prodSec) { skel = makeEl('<div class="bz-row-host bz-skel-row" id="bz-brand-skel" aria-hidden="true"><div class="bz-skel bz-skel-card"></div><div class="bz-skel bz-skel-card"></div><div class="bz-skel bz-skel-card"></div></div>'); prodSec.insertAdjacentElement("afterend", skel); }
+    var prefix = location.origin + "/products/" + encodeURIComponent(p.slug);
+    cachedGet("/api/profiles/" + p.id + "/brand-overview").then(function (ov) {
+      if (skel) skel.remove();
+      var parts = {}, U = ui();
+      if (ov.services && ov.services.length) parts.svc = makeEl(secHtml("bz-svc-section", "Services", "Tap a service to see details and book with confidence", prefix + "?view=services", ov.services.map(function (s) { return '<div class="bz-strip-item bz-strip-item-svc">' + serviceCardHtml(s, p) + "</div>"; }).join(""), "bz-sec-svc"));
+      if (ov.collections && ov.collections.length) parts.col = makeEl(secHtml("bz-col-section", "Collections", "Handpicked sets, ready to browse", prefix + "?view=collections", ov.collections.map(function (c) { return '<div class="bz-strip-item bz-strip-item-col">' + colCardHtml(c, p.slug) + "</div>"; }).join(""), "bz-sec-col"));
+      if (ov.videos && ov.videos.length) parts.vid = makeEl(secHtml("bz-vid-section", "See It In Motion", "Watch it before you decide", prefix + "?view=videos", ov.videos.map(function (v) { return '<div class="bz-strip-item bz-strip-item-vid">' + videoCardHtml(v, p.slug) + "</div>"; }).join(""), "bz-sec-vid"));
+      if (!parts.vid && oldIframe && parked) oldIframe.setAttribute("src", parked); // fall back to the original player
+      var svcFirst = (ov.counts.services || 0) > (ov.counts.products || 0), ad = null;
+      if (window.LiyogSponsoredUI) { ad = makeEl('<div class="bz-row-host" id="bz-brand-ad" hidden></div>'); try { window.LiyogSponsoredUI.mountProductsStrip(ad, { excludeProfileId: p.id, title: "Sponsored Products", category: p.business_category, format: "grid", limit: 6 }); } catch (e) { ad = null; } }
+      var seq = [svcFirst ? parts.svc : null, prodSec, $("#lp-products-locked-section"), svcFirst ? null : parts.svc, parts.col, ad, parts.vid, $("#lp-gallery-section"), $("#lp-about-section"), $("#lp-reviews-section"), $("#lp-sponsored-profiles-container"), $("#lp-video-section"), $("#lp-map-section"), $("#lp-social-section"), $(".lp-meta", main)];
+      var tabsEl = buildTabs(p, ov, parts, prefix); if (tabsEl) main.insertBefore(tabsEl, main.firstChild);
+      seq.forEach(function (el) { if (el) main.appendChild(el); });
+      if (parts.vid) { var os = $("#lp-video-section"); if (os) os.hidden = true; }
+      [parts.svc, parts.col, parts.vid].filter(Boolean).forEach(function (s) { if (U.wireProductCardActions) U.wireProductCardActions(s, p); });
+      applyFx(main);
+      var tabsNow = $("#bz-brand-tabs"); if (tabsNow) refreshTabVisibility(tabsNow);
+    }).catch(function () { if (skel) skel.remove(); if (oldIframe && parked) oldIframe.setAttribute("src", parked); healLater(); });
+  }
+
+  function buildTabs(p, ov, parts, prefix) {
+    var c = ov.counts || {}, items = [];
+    function add(label, target, count) { items.push('<a class="bz-tab" href="#' + target + '" data-jump="' + target + '" data-target="' + target + '">' + label + (count ? "<i>" + count + "</i>" : "") + "</a>"); }
+    add("Products", "lp-products-section", c.products);
+    if (parts.svc) add("Services", "bz-svc-section", c.services);
+    if (parts.col) add("Collections", "bz-col-section", c.collections);
+    if (parts.vid) add("Videos", "bz-vid-section", c.videos);
+    add("Gallery", "lp-gallery-section"); add("About", "lp-about-section"); add("Reviews", "lp-reviews-section"); add("Visit", "lp-map-section");
+    items.push('<a class="bz-tab bz-tab-go" href="' + prefix + '">Browse all ›</a>');
+    return makeEl('<nav class="bz-tabs bz-brand-tabs" id="bz-brand-tabs" aria-label="Sections of ' + esc(p.business_name) + '">' + items.join("") + "</nav>");
+  }
+  function refreshTabVisibility(nav) {
+    $$("[data-target]", nav).forEach(function (a) { var id = a.getAttribute("data-target"), t = document.getElementById(id); a.hidden = !t || (t.hidden && id !== "lp-reviews-section" && id !== "lp-products-section"); });
+  }
+  function mountProfileCollections(p, isOwner) {
+    setTimeout(function () { try { enhanceBrandProfile(p, isOwner); } catch (e) { console.error(e); mountProfileCollectionsLegacy(p, isOwner); } }, 0);
+    setTimeout(function () { var n = $("#bz-brand-tabs"); if (n) refreshTabVisibility(n); }, 2500);
+  }
+
+  window.LiyogShopUI = { applyFx: applyFx, mountProfileCollections: mountProfileCollections, serviceCardHtml: serviceCardHtml, videoCardHtml: videoCardHtml, enhanceBrandProfile: enhanceBrandProfile, mountCollectionsRow: mountCollectionsRow, mountCollectionItemsRow: mountCollectionItemsRow, mountVideosRow: mountVideosRow, openContactDial: openContactDial };
 
   function boot() {
     try {
@@ -429,3 +658,4 @@
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();
+
