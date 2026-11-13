@@ -6,6 +6,8 @@
   "use strict";
 
   const IS_NEW_SITE = /^(www\.)?biziplex\.com$/.test(location.hostname);
+const SITE_NAME = IS_NEW_SITE ? "BiziPlex" : "Liyog World";
+  const SITE_HOST = IS_NEW_SITE ? "biziplex.com" : "liyogworld.com.ng";
   const WORKER_BASE = IS_NEW_SITE ? location.origin : "https://www.liyogworld.com.ng";
   const TEMPLATE_URL = `${WORKER_BASE}/brands-template.html`;
   const BIO_PREVIEW_CHAR_LIMIT = 160;
@@ -248,7 +250,7 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
 
     const smsBtn = document.getElementById("lp-btn-sms");
     if (p.phone_number && smsBtn) {
-      const smsText = `Hi ${p.business_name}, I found your brand profile on Liyog World.`;
+      const smsText = `Hi ${p.business_name}, I found your brand profile on ${SITE_NAME}.`;
       smsBtn.href = `sms:${sanitizeTel(p.phone_number)}?body=${encodeURIComponent(smsText)}`;
       smsBtn.hidden = false;
     }
@@ -1081,8 +1083,7 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
       return `
         <div class="lp-edit-field">
           <label class="lp-field-label">Your link</label>
-          <div class="lp-slug-locked-box">
-            <span>liyogworld.com.ng/b/${escHtml(p.slug)}</span>
+          <div class="lp-slug-locked-box">     <span>${SITE_HOST}/b/${escHtml(p.slug)}</span>
             <span class="lp-slug-locked-badge">🔒 ${daysLeft} day${daysLeft === 1 ? "" : "s"} left</span>
           </div>
           <p class="lp-field-hint">Your link can be changed once every 7 days. You changed it recently, so it's locked for now.</p>
@@ -1094,7 +1095,7 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
       <div class="lp-edit-field">
         <label class="lp-field-label">Your link</label>
         <div class="lp-slug-input-wrap">
-          <span class="lp-slug-prefix">liyogworld.com.ng/b/</span>
+          <span class="lp-slug-prefix">${SITE_HOST}/b/</span>
           <input type="text" name="slug" id="lp-edit-slug-input" class="lp-field-input lp-slug-input" value="${escAttr(p.slug)}" maxlength="20">
         </div>
         <p class="lp-slug-status" id="lp-edit-slug-status"></p>
@@ -1121,6 +1122,7 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
         </div>
         <input type="file" accept="image/*" class="lp-image-file-input" id="lp-file-${fieldName}" style="display:none;">
         <input type="hidden" name="${fieldName}" id="lp-hidden-${fieldName}" value="${escAttr(currentUrl || "")}">
+<p class="lp-field-hint">${fieldName === "cover_url" ? "Best size: wide 16:9 (for example 1280×720). Other sizes still work: we zoom them to fit, so keep the important part in the middle." : "Best size: square 1:1 (for example 500×500). Other sizes still work: we zoom them to fit."}</p>
       </div>
     `;
   }
@@ -1611,19 +1613,30 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
   // -------------------------------------------------------------------
   // State screens
   // -------------------------------------------------------------------
-
-  function showSkeleton() {
+function showSkeleton() {
     mount.innerHTML = `<div class="lp-root"><div class="lp-skeleton">
-      <div class="lp-skeleton-block" style="height:170px;margin-bottom:18px;"></div>
+      <div class="lp-skeleton-block" style="aspect-ratio:16/9;width:100%;"></div>
+      <div class="lp-skeleton-block" style="width:92px;height:92px;border-radius:22px;margin:-46px auto 14px;border:4px solid var(--surface);"></div>
       <div class="lp-skeleton-block" style="height:22px;width:55%;margin:0 auto 10px;"></div>
-      <div class="lp-skeleton-block" style="height:14px;width:35%;margin:0 auto;"></div>
+      <div class="lp-skeleton-block" style="height:14px;width:35%;margin:0 auto 16px;"></div>
+      <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:16px;">
+        <div class="lp-skeleton-block" style="height:34px;width:96px;border-radius:999px;"></div>
+        <div class="lp-skeleton-block" style="height:34px;width:84px;border-radius:999px;"></div>
+        <div class="lp-skeleton-block" style="height:34px;width:110px;border-radius:999px;"></div>
+      </div>
+      <div class="lp-skeleton-block" style="height:48px;margin-bottom:22px;"></div>
+      <div style="display:flex;gap:12px;overflow:hidden;">
+        <div class="lp-skeleton-block" style="flex:0 0 46%;height:210px;"></div>
+        <div class="lp-skeleton-block" style="flex:0 0 46%;height:210px;"></div>
+      </div>
     </div></div>`;
   }
+
   function showClaimScreen(prefillSlug) {
     const heading = prefillSlug ? `Claim "${esc(prefillSlug)}"` : "Your Brand Deserves a Home";
     const sub = prefillSlug
-      ? `You're one step away from making liyogworld.com.ng/b/${esc(prefillSlug)} yours.`
-      : "Claim a free brand profile on Liyog World — your own link to share, discoverable on Google, built to bring people to you every single day.";
+      ? `You're one step away from making ${SITE_HOST}/b/${esc(prefillSlug)}.`
+      : `Claim a free brand profile on ${SITE_NAME} — your own link to share, discoverable on Google, built to bring people to you every single day.`;
 
     mount.innerHTML = `<div class="lp-root"><div class="lp-state-screen">
       <h2>${heading}</h2>
@@ -1729,6 +1742,7 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
   // -------------------------------------------------------------------
 
   function injectSeoTags(p) {
+if (IS_NEW_SITE) return; // BiziPlex pages get all SEO tags from the server (brand-seo.js)
     const bioSnippet = p.tagline || stripHtml(p.bio_html).slice(0, 155);
     document.title = `${p.business_name} | Liyog World Brand Profiles`;
 
@@ -1826,7 +1840,7 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
   function buildWhatsAppLink(number, message, businessName) {
     if (!number) return null;
     const cleaned = number.replace(/[^\d+]/g, "").replace("+", "");
-    const text = message || `Hi ${businessName}, I found your brand profile on Liyog World and I'm interested.`;
+    const text = message || `Hi ${businessName}, I found your brand profile on ${SITE_NAME} and I'm interested.`;
     return `https://wa.me/${cleaned}?text=${encodeURIComponent(text)}`;
   }
   function sanitizeTel(number) { return number.replace(/[^\d+]/g, ""); }
@@ -3908,7 +3922,7 @@ function bindSponsoredProfilesSection(p) {
       getOverlayHost().appendChild(container);
     }
   }
-  window.LiyogSponsoredUI.mountProfilesStrip(container, { excludeProfileId: p.id, title: "You Might Also Like", category: p.business_category });
+  window.LiyogSponsoredUI.mountProfilesStrip(container, { excludeProfileId: p.id, title: "You Might Also Like", category: p.business_category, format: "grid", limit: 6 });
 }
 
 /**
@@ -3926,7 +3940,7 @@ function bindSponsoredCatalogueSection(p) {
     container.hidden = true;
     getOverlayHost().appendChild(container); // appended last = true bottom of the page
   }
-  window.LiyogSponsoredUI.mountCataloguesStrip(container, { excludeProfileId: p.id, title: "Discover More Shops", category: p.business_category });
+  window.LiyogSponsoredUI.mountCataloguesStrip(container, { excludeProfileId: p.id, title: "Discover More Shops", category: p.business_category, format: "grid", limit: 6 });
 }
 
 /**
