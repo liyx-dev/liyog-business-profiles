@@ -362,15 +362,10 @@ function productHref(p, brandSlug, colSlug) {
   return `/product/${encodeURIComponent(p.slug || p.id)}/${encodeURIComponent(brandSlug)}${colSlug ? `?c=${encodeURIComponent(colSlug)}` : ""}`;
 }
 
-// Services show in their own shape (1:1, 4:5 or 16:9). Anything else sits in a 16:9 frame over a soft blur.
-const SVC_RATIOS = [0.8, 1, 16 / 9];
+// Services always sit in a 16:9 frame. A picture that is already 16:9 fills it; any other shape is shown whole over a soft blur.
 function svcFrame(p) {
   const w = Number(p.img_w), h = Number(p.img_h);
-  if (!w || !h) return { ar: 16 / 9, exact: false };
-  const r = w / h;
-  let best = SVC_RATIOS[0];
-  for (const x of SVC_RATIOS) if (Math.abs(Math.log(r / x)) < Math.abs(Math.log(r / best))) best = x;
-  return Math.abs(r / best - 1) <= 0.06 ? { ar: best, exact: true } : { ar: 16 / 9, exact: false };
+  return { ar: 16 / 9, exact: !!(w && h && Math.abs(w / h / (16 / 9) - 1) <= 0.06) };
 }
 
 function serverServiceCardHtml(prod, profile, stats, isFeatured, extraCls) {
