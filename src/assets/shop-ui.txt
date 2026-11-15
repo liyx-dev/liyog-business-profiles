@@ -632,9 +632,25 @@
   function refreshTabVisibility(nav) {
     $$("[data-target]", nav).forEach(function (a) { var id = a.getAttribute("data-target"), t = document.getElementById(id); a.hidden = !t || (t.hidden && id !== "lp-reviews-section" && id !== "lp-products-section"); });
   }
+
+  /* safety net: if anything on the brand page is wider than the screen, contain it and say which element it was */
+  function overflowGuard() {
+    try {
+      var root = $(".lp-root"); if (!root) return;
+      var vw = document.documentElement.clientWidth, bad = [];
+      $$("*", root).forEach(function (el) {
+        var r = el.getBoundingClientRect(); if (!r.width || r.right <= vw + 2) return;
+        if (el.closest(".bz-strip-scroll,.bz-tabs,.lp-gallery,.lp-sponsored-scroll,.lp-related-products-scroll,.lp-sheet-overlay,.lp-pm-overlay,.lp-product-lightbox,.lp-lightbox,.bz-ss,.bz-dial,.bz-net")) return;
+        var pos = getComputedStyle(el).position; if (pos === "fixed" || pos === "absolute") return;
+        bad.push(el);
+      });
+      if (bad.length) { root.classList.add("bz-clip"); bad.slice(0, 12).forEach(function (el) { el.style.maxWidth = "100%"; }); console.warn("BiziPlex: these elements were wider than the screen and were contained:", bad.slice(0, 5)); }
+    } catch (e) { /* guard must never break the page */ }
+  }
   function mountProfileCollections(p, isOwner) {
     setTimeout(function () { try { enhanceBrandProfile(p, isOwner); } catch (e) { console.error(e); mountProfileCollectionsLegacy(p, isOwner); } }, 0);
     setTimeout(function () { var n = $("#bz-brand-tabs"); if (n) refreshTabVisibility(n); }, 2500);
+    setTimeout(overflowGuard, 1200); setTimeout(overflowGuard, 3500);
   }
 
   window.LiyogShopUI = { applyFx: applyFx, mountProfileCollections: mountProfileCollections, serviceCardHtml: serviceCardHtml, videoCardHtml: videoCardHtml, enhanceBrandProfile: enhanceBrandProfile, mountCollectionsRow: mountCollectionsRow, mountCollectionItemsRow: mountCollectionItemsRow, mountVideosRow: mountVideosRow, openContactDial: openContactDial };
