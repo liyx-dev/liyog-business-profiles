@@ -388,7 +388,6 @@ html.bz-navigating #lp-shop-grid, html.bz-navigating .bz-strip { opacity: .45; t
 /* =====================================================================
    ROUND 4 — BRAND PROFILE (only active when the page carries .bz-brand, i.e. on BiziPlex)
    ===================================================================== */
-.lp-root.bz-brand { max-width: 860px; }
 .lp-root.bz-brand .lp-cover-wrap { aspect-ratio: 16 / 9; }
 .lp-root.bz-brand .lp-cover { transform: none; }
 .lp-root.bz-brand .lp-logo-wrap { width: 96px; height: 96px; border-radius: 22px; box-shadow: 0 0 0 2px rgba(255,215,0,.55), var(--shadow-md); }
@@ -440,6 +439,7 @@ a.bz-t:hover { border-color: var(--liyog-gold); }
 .bz-skel-row { display: flex; gap: 12px; overflow: hidden; margin: 18px 20px 0; }
 .bz-skel-row .bz-skel-card { flex: 0 0 min(60vw, 220px); }
 .lp-root.bz-brand .bz-row-host { margin: 18px 20px 0; }
+@media (min-width: 960px) { .lp-root.bz-brand .bz-row-host { margin: 0 0 16px; } .lp-root.bz-brand .bz-skel-row { margin: 0 0 16px; } .bz-brand-tabs { padding-left: 0; padding-right: 0; margin-top: 0; } }
 
 /* ---- service card: always 16:9 (whole picture, soft blur when the shape differs) ---- */
 .lp-svc-media { aspect-ratio: 16 / 9; }
@@ -464,3 +464,25 @@ a.bz-t:hover { border-color: var(--liyog-gold); }
 .bz-sk-cover { aspect-ratio: 16 / 9; width: 100%; border-radius: 0; }
 .bz-sk-logo { width: 92px; height: 92px; border-radius: 22px; margin: -46px auto 14px; border: 4px solid var(--surface); }
 .bz-sk-chips { display: flex; gap: 8px; justify-content: center; margin: 14px 0; flex-wrap: wrap; } .bz-sk-chips .bz-skel { height: 34px; width: 96px; border-radius: 999px; }
+
+
+/* =====================================================================
+   ROUND 4b — keep the brand page inside the screen (fixes the "scattered" page)
+   ===================================================================== */
+/* the page container is always exactly as wide as the screen and never grows to fit a scrolling row */
+.bz-site .lp-root { display: block !important; width: 100%; min-width: 0; }
+.bz-site .lp-root > * { min-width: 0; }
+.lp-layout, .lp-side, .lp-main { min-width: 0; }
+body.bz-site { overflow-x: clip; }
+/* rows that scroll sideways must not widen their parents */
+.bz-site .lp-root .bz-strip-scroll,
+.bz-site .lp-root .bz-tabs,
+.bz-site .lp-root .lp-gallery,
+.bz-site .lp-root .lp-sponsored-scroll,
+.bz-site .lp-root .lp-related-products-scroll { max-width: 100%; contain: inline-size; }
+.lp-root.bz-clip { overflow-x: clip; }
+/* on wide screens the cover keeps the 16:9 look but is trimmed top and bottom so the page stays compact */
+@media (min-width: 960px) {
+  .bz-site .lp-root.bz-brand .lp-cover-wrap { aspect-ratio: 16 / 9; max-height: 440px; }
+  .bz-site .lp-root.bz-brand .lp-side .bz-trust { margin-left: 0; margin-right: 0; justify-content: flex-start; }
+}
