@@ -1,0 +1,562 @@
+/* =====================================================================
+   BIZIPLEX — studio-app.txt  (served as /studio-app.js)
+   The Studio: one calm place to run your brand. It is a small single-page app, so moving between sections
+   never reloads the page. Every section loads on its own, heals itself (Try again button, automatic retry
+   when your connection returns) and keeps what it already fetched for a minute, so the database is never
+   asked the same thing twice in a row.
+
+   It REUSES what you already have instead of copying it:
+     LiyogOwnerUI   (brands.js)    profile editor, inquiries list, referrals list  (the exact same code as the pen icon)
+     LiyogStudio    (studio-ui.js) add/edit item form, collections manager
+     LiyogBoostUI   (boost-ui.js)  boost sheets, insights, summary
+     LiyogTiersUI   (tiers-ui.js)  upgrade sheet
+   and the endpoints that already exist. The only new endpoints: /api/studio/overview and /api/studio/log.
+   ===================================================================== */
+(function () {
+  "use strict";
+  var root = document.getElementById("bz-studio");
+  if (!root) return;
+
+  /* ------------------------------ tiny helpers ------------------------------ */
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function PU() { return window.LiyogProductUI || {}; }
+  function OW() { return window.LiyogOwnerUI || null; }
+  function ST() { return window.LiyogStudio || null; }
+  function cssUrl(u) { return encodeURI(String(u || "")).replace(/'/g, "%27").replace(/\(/g, "%28").replace(/\)/g, "%29"); }
+  function parseArr(v) { try { var a = JSON.parse(v || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+  function compact(n) { n = Number(n) || 0; if (n < 1000) return String(n); if (n < 1e6) return (n / 1000).toFixed(n % 1000 >= 100 ? 1 : 0).replace(/\.0$/, "") + "k"; return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "m"; }
+  function cap(s) { s = String(s || ""); return s.charAt(0).toUpperCase() + s.slice(1); }
+  function lim(n) { n = Number(n); return n < 0 ? "Unlimited" : String(n); }
+  function debounce(fn, ms) { var t; return function () { var a = arguments, self = this; clearTimeout(t); t = setTimeout(function () { fn.apply(self, a); }, ms); }; }
+  function daysLeft(iso) { var t = new Date(String(iso || "").replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(iso || "") ? "" : "Z")).getTime(); return isNaN(t) ? 1 : Math.max(1, Math.ceil((t - Date.now()) / 86400000)); }
+  function fmtDate(iso) { var d = new Date(String(iso || "").replace(" ", "T") + "Z"); return isNaN(d) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); }
+  function toast(msg, type) { var f = PU().showToast; if (f) f(msg, type || "success"); else try { console.log("[studio]", msg); } catch (e) {} }
+  function copyText(t) {
+    return new Promise(function (res, rej) {
+      function legacy() { try { var a = document.createElement("textarea"); a.value = t; a.setAttribute("readonly", ""); a.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0"; document.body.appendChild(a); a.select(); var ok = document.execCommand && document.execCommand("copy"); a.remove(); ok ? res() : rej(new Error("copy")); } catch (e) { rej(e); } }
+      try { if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(res, legacy); else legacy(); } catch (e) { legacy(); }
+    });
+  }
+  function shareLink(url, title, text) {
+    var viaCopy = function () { return copyText(url).then(function () { toast("Link copied!"); }, function () { window.prompt("Copy this link", url); }); };
+    if (navigator.share) return navigator.share({ title: title, text: text, url: url }).catch(function (e) { if (e && e.name === "AbortError") return; return viaCopy(); });
+    return viaCopy();
+  }
+
+  /* ------------------------------ icons ------------------------------ */
+  var P = {
+    home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+    items: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
+    collections: '<path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="m2 13 10 5 10-5"/>',
+    boost: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    gift: '<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5"/>',
+    plan: '<path d="m12 3 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.8 6.2 20.9l1.1-6.5L2.6 9.8l6.5-.9z"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    back: '<path d="M15 18l-6-6 6-6"/>',
+    chev: '<path d="M9 18l6-6-6-6"/>',
+    refresh: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>',
+    ext: '<path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/>',
+    eye: '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/>',
+    heart: '<path d="M12 21s-6.7-4.35-9.3-8.2C1.1 10.5 1.6 7.4 4 5.9c2.1-1.3 4.7-.7 6.2 1.1L12 9l1.8-2c1.5-1.8 4.1-2.4 6.2-1.1 2.4 1.5 2.9 4.6 1.3 6.9C18.7 16.65 12 21 12 21z"/>',
+    star: '<path d="m12 3 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.8 6.2 20.9l1.1-6.5L2.6 9.8l6.5-.9z"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+    trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+    share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 10.6 15.4 6.4M8.6 13.4l6.8 4.2"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/>',
+    wifi: '<path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/>',
+    lock: '<rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>'
+  };
+  function ic(n, size) { var s = size || 22; return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[n] || "") + "</svg>"; }
+
+  /* ------------------------------ state, cache, network ------------------------------ */
+  var S = { user: null, brands: [], p: null, stats: null, plan: null, slug: null, page: "home", token: 0, cleanup: null, dirty: false, errored: false, boostMap: {}, framed: false };
+  var cache = {};
+  function cget(k, ttl) { var c = cache[k]; return c && Date.now() - c.t < (ttl || 60000) ? c.v : null; }
+  function cset(k, v) { cache[k] = { t: Date.now(), v: v }; return v; }
+  function bust(prefix) { Object.keys(cache).forEach(function (k) { if (k.indexOf(prefix) === 0) delete cache[k]; }); }
+
+  function api(method, url, body, opt) {
+    opt = opt || {};
+    var ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, opt.timeout || 14000);
+    return fetch(url, { method: method, credentials: "include", signal: ctl ? ctl.signal : undefined, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) {
+        return r.text().then(function (t) {
+          var d = {}; try { d = t ? JSON.parse(t) : {}; } catch (e) {}
+          if (!r.ok) { var er = new Error(d.error || ("Something went wrong (code " + r.status + "). Please try again.")); er.status = r.status; er.data = d; throw er; }
+          return d;
+        });
+      })
+      .catch(function (e) {
+        if (e && e.name === "AbortError") { var te = new Error("This is taking too long. Please check your connection and try again."); te.code = "timeout"; throw te; }
+        if (e instanceof TypeError) { var ne = new Error("You seem to be offline. Please check your connection."); ne.code = "network"; throw ne; }
+        throw e;
+      })
+      .then(function (v) { clearTimeout(timer); return v; }, function (e) { clearTimeout(timer); throw e; });
+  }
+  var inflight = {};
+  /** Cached GET: the same request is never repeated while a copy is fresh or already on its way. */
+  function getJson(url, ttl) {
+    var hit = cget("g:" + url, ttl); if (hit) return Promise.resolve(hit);
+    if (inflight[url]) return inflight[url];
+    var pr = api("GET", url).then(function (d) { delete inflight[url]; return cset("g:" + url, d); }, function (e) { delete inflight[url]; throw e; });
+    inflight[url] = pr; return pr;
+  }
+  var reported = 0;
+  function report(where, err) {
+    try {
+      console.error("[studio]", where, err);
+      if (reported >= 5) return; reported++;
+      var body = JSON.stringify({ w: where, m: String(err && err.message || err).slice(0, 200), s: err && err.status || 0, u: location.pathname });
+      if (navigator.sendBeacon) navigator.sendBeacon("/api/studio/log", new Blob([body], { type: "application/json" }));
+    } catch (e) {}
+  }
+
+  /* ------------------------------ routes ------------------------------ */
+  var NAV = [
+    { id: "home", label: "Home", icon: "home" },
+    { id: "items", label: "My items", icon: "items", badge: function () { var s = S.stats; return s ? s.products + s.services : null; } },
+    { id: "collections", label: "Collections", icon: "collections", badge: function () { return S.stats ? S.stats.collections : null; } },
+    { id: "boost", label: "Boost", icon: "boost", badge: function () { return S.stats && S.stats.activeBoosts ? S.stats.activeBoosts : null; } },
+    { id: "profile", label: "Edit profile", icon: "edit" },
+    { id: "inquiries", label: "Inquiries", icon: "chat", badge: function () { return S.stats && S.stats.inquiries ? S.stats.inquiries : null; } },
+    { id: "referrals", label: "Referrals", icon: "gift" },
+    { id: "plan", label: "Plan", icon: "plan" }
+  ];
+  function pageMeta(id) { return NAV.filter(function (n) { return n.id === id; })[0] || NAV[0]; }
+  function parsePath() {
+    var parts = location.pathname.replace(/\/+$/, "").split("/");
+    var slug = parts[2] ? decodeURIComponent(parts[2]) : null, page = parts[3] || "home";
+    if (!NAV.some(function (n) { return n.id === page; })) page = "home";
+    return { slug: slug, page: page };
+  }
+  function pathFor(page, slug) { return "/studio/" + encodeURIComponent(slug || S.slug) + (page === "home" ? "" : "/" + page); }
+  function go(page) {
+    if (S.dirty && !window.confirm("You have changes that aren't saved. Leave without saving?")) return;
+    S.dirty = false;
+    var path = pathFor(page);
+    if (location.pathname !== path) history.pushState({}, "", path);
+    render(true);
+  }
+
+  /* ------------------------------ overview (who am I, which brand) ------------------------------ */
+  function ssKey(slug) { return "bz_st_ov:" + slug; }
+  function readSS(slug) { try { var v = JSON.parse(sessionStorage.getItem(ssKey(slug)) || "null"); return v && Date.now() - v.t < 300000 ? v.d : null; } catch (e) { return null; } }
+  function writeSS(slug, d) { try { sessionStorage.setItem(ssKey(slug), JSON.stringify({ t: Date.now(), d: d })); } catch (e) {} }
+  function apply(d) {
+    S.user = d.user || S.user; S.brands = d.brands || S.brands;
+    if (d.profile) { S.p = d.profile; S.stats = d.stats; S.plan = d.plan; }
+  }
+  function loadOverview(slug) {
+    return api("GET", "/api/studio/overview" + (slug ? "?slug=" + encodeURIComponent(slug) : "")).then(function (d) { if (slug && d.profile) writeSS(slug, d); return d; });
+  }
+  /** After something changes: fetch fresh numbers quietly and update the menu (and Home) without a flash. */
+  var refreshing = false;
+  function refreshQuietly() {
+    if (refreshing || !S.slug) return; refreshing = true;
+    loadOverview(S.slug).then(function (d) { apply(d); renderSide(); renderTop(); if (S.page === "home" && !S.dirty) mountPage("home"); })
+      .catch(function (e) { report("refresh", e); }).then(function () { refreshing = false; });
+  }
+
+  /* ------------------------------ boot ------------------------------ */
+  function boot() {
+    var r = parsePath(); S.slug = r.slug; S.page = r.page;
+    var cached = S.slug ? readSS(S.slug) : null;
+    if (cached) { apply(cached); startApp(); }
+    loadOverview(S.slug).then(function (d) {
+      apply(d);
+      if (!S.slug) {
+        if (d.brands.length === 1) { S.slug = d.brands[0].slug; history.replaceState({}, "", pathFor("home")); return loadOverview(S.slug).then(function (d2) { apply(d2); startApp(); }); }
+        return d.brands.length ? screenPicker(d.brands) : screenNoBrand();
+      }
+      if (!d.profile) return screenNotYours(d.brands);
+      if (cached) { renderSide(); renderTop(); if (S.page === "home") mountPage("home"); } else startApp();
+    }).catch(function (e) {
+      if (e && e.status === 401) return screenSignedOut();
+      report("boot", e);
+      if (!cached) screenError(e);
+    });
+  }
+
+  /* ------------------------------ screens before the app ------------------------------ */
+  function bigScreen(iconName, title, body, actionsHtml) {
+    root.dataset.state = "screen"; S.framed = false;
+    root.innerHTML = '<div class="bz-st-screen"><div class="bz-st-screen-ic">' + ic(iconName, 34) + "</div><h1>" + esc(title) + "</h1><p>" + body + '</p><div class="bz-st-screen-acts">' + (actionsHtml || "") + "</div></div>";
+  }
+  function screenSignedOut() { bigScreen("lock", "Sign in to open your Studio", "Your Studio is where you add items, edit your profile and boost your brand. Sign in with Google to continue.", '<a class="bz-st-btn bz-st-btn-primary" href="/join">Sign in</a>'); }
+  function screenNoBrand() { bigScreen("plus", "Create your brand profile", "You don't have a brand profile yet. It's free and takes a minute.", '<a class="bz-st-btn bz-st-btn-primary" href="/join">Create my profile</a>'); }
+  function screenError(e) { bigScreen("wifi", "We couldn't open your Studio", esc(e && e.message || "Please check your connection."), '<button type="button" class="bz-st-btn bz-st-btn-primary" data-act="reload">Try again</button>'); }
+  function brandCards(brands) {
+    return '<div class="bz-st-pick">' + brands.map(function (b) {
+      return '<a class="bz-st-pick-card" href="/studio/' + encodeURIComponent(b.slug) + '">' + (b.logo_url ? '<img src="' + esc(b.logo_url) + '" alt="" width="44" height="44">' : '<span class="bz-st-pick-ph">' + esc((b.business_name || "?").charAt(0).toUpperCase()) + "</span>") + "<strong>" + esc(b.business_name) + "</strong><small>/b/" + esc(b.slug) + "</small>" + ic("chev", 18) + "</a>";
+    }).join("") + "</div>";
+  }
+  function screenPicker(brands) { root.dataset.state = "screen"; root.innerHTML = '<div class="bz-st-screen"><h1>Which brand do you want to manage?</h1>' + brandCards(brands) + "</div>"; }
+  function screenNotYours(brands) { root.dataset.state = "screen"; root.innerHTML = '<div class="bz-st-screen"><div class="bz-st-screen-ic">' + ic("alert", 34) + "</div><h1>That brand isn't in your account</h1><p>Pick one of your own brands:</p>" + (brands.length ? brandCards(brands) : '<a class="bz-st-btn bz-st-btn-primary" href="/join">Create my profile</a>') + "</div>"; }
+
+  /* ------------------------------ the frame (menu, top bar, view) ------------------------------ */
+  function startApp() {
+    root.dataset.state = "ready";
+    if (!S.framed) {
+      root.innerHTML =
+        '<div class="bz-st-net" id="st-net" role="status" hidden>' + ic("wifi", 18) + "<span>You're offline. We'll reconnect automatically.</span></div>" +
+        '<div class="bz-st-app"><aside class="bz-st-side" id="st-side" aria-label="Studio menu"></aside><div class="bz-st-main">' +
+        '<header class="bz-st-top" id="st-top"></header><nav class="bz-st-chips" id="st-chips" aria-label="Studio sections"></nav>' +
+        '<div class="bz-st-view" id="st-view" tabindex="-1"></div></div></div>' +
+        '<button type="button" class="bz-st-fab" id="st-fab" data-act="add" hidden aria-label="Add a product or service">' + ic("plus", 22) + "<span>Add</span></button>";
+      S.framed = true;
+    }
+    renderSide(); render(false);
+  }
+  function brandInitial() { return esc(((S.p && S.p.business_name) || "?").charAt(0).toUpperCase()); }
+  function planName() { var id = S.plan && S.plan.planId; return id ? cap(id) : "Free"; }
+
+  function renderSide() {
+    var side = $("#st-side"); if (!side || !S.p) return;
+    var p = S.p, multi = S.brands.length > 1;
+    side.innerHTML =
+      '<div class="bz-st-side-brand">' + (p.logo_url ? '<img src="' + esc(p.logo_url) + '" alt="" width="48" height="48">' : '<span class="bz-st-side-ph">' + brandInitial() + "</span>") +
+      '<div class="bz-st-side-name"><strong>' + esc(p.business_name) + "</strong><small>" + esc(planName()) + " plan</small></div></div>" +
+      (multi ? '<label class="bz-st-switch"><span>Switch brand</span><select data-switch>' + S.brands.map(function (b) { return '<option value="' + esc(b.slug) + '"' + (b.slug === S.slug ? " selected" : "") + ">" + esc(b.business_name) + "</option>"; }).join("") + "</select></label>" : "") +
+      '<nav class="bz-st-nav" aria-label="Studio">' + NAV.map(function (n) {
+        var b = n.badge ? n.badge() : null;
+        return '<a class="bz-st-nav-a' + (n.id === S.page ? " is-active" : "") + '" href="' + pathFor(n.id) + '" data-go="' + n.id + '"' + (n.id === S.page ? ' aria-current="page"' : "") + ">" + ic(n.icon, 20) + "<span>" + n.label + "</span>" + (b ? '<em class="bz-st-badge">' + compact(b) + "</em>" : "") + "</a>";
+      }).join("") + "</nav>" +
+      '<a class="bz-st-side-view" href="/b/' + encodeURIComponent(p.slug) + '">' + ic("ext", 18) + "<span>View my public page</span></a>";
+  }
+
+  function renderTop() {
+    var top = $("#st-top"), chips = $("#st-chips"); if (!top || !S.p) return;
+    var m = pageMeta(S.page), home = S.page === "home";
+    top.innerHTML =
+      (home ? "" : '<button type="button" class="bz-st-icon-btn bz-st-back" data-go="home" aria-label="Back to Studio home">' + ic("back", 22) + "</button>") +
+      '<div class="bz-st-top-t"><span class="bz-st-eyebrow">' + esc(S.p.business_name) + " · Studio</span><h1 id=\"st-h1\" tabindex=\"-1\">" + (home ? "Welcome back" : esc(m.label)) + "</h1></div>" +
+      '<div class="bz-st-top-acts">' + (home ? "" : '<button type="button" class="bz-st-icon-btn" data-act="refresh" aria-label="Refresh this section" title="Refresh">' + ic("refresh", 20) + "</button>") +
+      '<a class="bz-st-icon-btn" href="/b/' + encodeURIComponent(S.p.slug) + '" aria-label="View my public page" title="View my public page">' + ic("ext", 20) + "</a></div>";
+    if (chips) {
+      chips.hidden = home;
+      chips.innerHTML = NAV.filter(function (n) { return n.id !== "home"; }).map(function (n) {
+        return '<a class="bz-st-chip' + (n.id === S.page ? " is-active" : "") + '" href="' + pathFor(n.id) + '" data-go="' + n.id + '">' + n.label + "</a>";
+      }).join("");
+      var act = $(".bz-st-chip.is-active", chips); if (act && act.scrollIntoView) { try { act.scrollIntoView({ inline: "center", block: "nearest" }); } catch (e) {} }
+    }
+    document.title = (home ? "Studio" : m.label) + " · " + S.p.business_name + " | BiziPlex";
+  }
+
+  function render(focus) {
+    var r = parsePath();
+    if (r.slug && S.slug && r.slug.toLowerCase() !== S.slug.toLowerCase()) { location.reload(); return; }
+    S.page = r.page; renderSide(); renderTop();
+    var fab = $("#st-fab"); if (fab) fab.hidden = !(S.page === "home" || S.page === "items");
+    mountPage(S.page);
+    if (focus) { window.scrollTo(0, 0); var h = $("#st-h1"); if (h && h.focus) try { h.focus({ preventScroll: true }); } catch (e) {} }
+  }
+
+  /* ------------------------------ mounting a section (with self-healing) ------------------------------ */
+  function skeleton(id) {
+    var line = '<div class="bz-st-sk" style="height:18px;width:55%"></div>';
+    if (id === "home") return '<div class="bz-st-sk bz-st-sk-hero"></div><div class="bz-st-sk-row"><div class="bz-st-sk"></div><div class="bz-st-sk"></div><div class="bz-st-sk"></div></div><div class="bz-st-sk-tiles"><div class="bz-st-sk"></div><div class="bz-st-sk"></div><div class="bz-st-sk"></div><div class="bz-st-sk"></div></div>';
+    if (id === "items") return '<div class="bz-st-sk" style="height:96px;margin-bottom:12px"></div>' + [1, 2, 3, 4].map(function () { return '<div class="bz-st-sk" style="height:104px;margin-bottom:10px"></div>'; }).join("");
+    return '<div class="bz-st-card">' + line + '<div class="bz-st-sk" style="height:14px;margin-top:12px"></div><div class="bz-st-sk" style="height:14px;width:80%;margin-top:8px"></div><div class="bz-st-sk" style="height:120px;margin-top:16px"></div></div>';
+  }
+  function errorCard(e) {
+    var off = e && (e.code === "network" || e.code === "timeout");
+    return '<div class="bz-st-card bz-st-error" role="alert"><div class="bz-st-screen-ic">' + ic(off ? "wifi" : "alert", 30) + "</div><h3>" + (off ? "Connection trouble" : "This section didn't load") + "</h3><p>" + esc(e && e.message || "Something went wrong.") + '</p><button type="button" class="bz-st-btn bz-st-btn-primary" data-act="retry">Try again</button></div>';
+  }
+  function mountPage(id) {
+    var tok = ++S.token, view = $("#st-view"); if (!view || !S.p) return;
+    if (S.cleanup) { try { S.cleanup(); } catch (e) {} S.cleanup = null; }
+    S.errored = false; view.innerHTML = skeleton(id);
+    var c = { stale: function () { return tok !== S.token; }, setCleanup: function (f) { if (tok === S.token) S.cleanup = f; } };
+    Promise.resolve().then(function () { return PAGES[id](view, c); }).catch(function (e) {
+      if (tok !== S.token) return;
+      S.errored = true; report(id, e);
+      if (e && e.status === 401) { screenSignedOut(); return; }
+      view.innerHTML = errorCard(e);
+    });
+  }
+  var lastRefresh = 0;
+  function refreshPage() {
+    if (Date.now() - lastRefresh < 2000) return; lastRefresh = Date.now();
+    bust("g:"); bust("items:"); bust("boost:"); mountPage(S.page);
+    if (S.page === "home") refreshQuietly();
+  }
+
+  /* ------------------------------ PAGES ------------------------------ */
+  var PAGES = {};
+
+  /* ---- Home ---- */
+  PAGES.home = function (view) {
+    var p = S.p, st = S.stats || {}, live = p.moderation_status === "approved";
+    var photos = parseArr(p.store_photos);
+    var todo = [
+      [!!p.logo_url, "Add your logo"], [!!p.cover_url, "Add a cover photo"], [!!p.tagline, "Write a short tagline"], [!!p.bio_html, "Tell your brand story"],
+      [photos.length > 0, "Add photos to your gallery"], [!!(p.whatsapp_number || p.phone_number), "Add a WhatsApp or phone number"], [!!(p.store_city || p.store_address || p.map_address), "Say where you are"]
+    ];
+    var done = todo.filter(function (t) { return t[0]; }).length, pct = Math.round(done / todo.length * 100);
+    var next = todo.filter(function (t) { return !t[0]; })[0];
+    var items = (st.products || 0) + (st.services || 0);
+    var tiles = [
+      { id: "items", label: "My items", sub: items + " live" + (st.drafts ? " · " + st.drafts + " draft" + (st.drafts === 1 ? "" : "s") : ""), icon: "items", c: "green" },
+      { id: "collections", label: "Collections", sub: (st.collections || 0) + " group" + (st.collections === 1 ? "" : "s"), icon: "collections", c: "blue" },
+      { id: "boost", label: "Boost", sub: st.activeBoosts ? st.activeBoosts + " running now" : "Get seen by more people", icon: "boost", c: "gold" },
+      { id: "profile", label: "Edit profile", sub: "Logo, cover, gallery, contact", icon: "edit", c: "indigo" },
+      { id: "inquiries", label: "Inquiries", sub: st.inquiries ? st.inquiries + " message" + (st.inquiries === 1 ? "" : "s") : "Messages from visitors", icon: "chat", c: "teal" },
+      { id: "referrals", label: "Referrals", sub: "Invite friends", icon: "gift", c: "pink" },
+      { id: "plan", label: "Plan", sub: planName() + " plan", icon: "plan", c: "purple" }
+    ];
+    view.innerHTML =
+      '<section class="bz-st-hero"><div class="bz-st-hero-cover"' + (p.cover_url ? ' style="background-image:url(\'' + esc(cssUrl(p.cover_url)) + '\')"' : "") + "></div>" +
+      '<div class="bz-st-hero-body">' + (p.logo_url ? '<img class="bz-st-logo bz-img" src="' + esc(p.logo_url) + '" alt="" width="76" height="76">' : '<span class="bz-st-logo bz-st-logo-ph">' + brandInitial() + "</span>") +
+      '<div class="bz-st-hero-t"><h2>' + esc(p.business_name) + "</h2>" + (p.tagline ? "<p>" + esc(p.tagline) + "</p>" : "") +
+      '<div class="bz-st-badges"><span class="bz-st-pill ' + (live ? "ok" : "warn") + '">' + (live ? "Live" : "Under review") + '</span><span class="bz-st-pill">' + esc(planName()) + " plan</span></div></div></div>" +
+      '<div class="bz-st-hero-acts"><a class="bz-st-btn bz-st-btn-ghost" href="/b/' + encodeURIComponent(p.slug) + '">' + ic("ext", 18) + "<span>View my page</span></a>" +
+      '<button type="button" class="bz-st-btn bz-st-btn-ghost" data-act="share-page">' + ic("share", 18) + "<span>Share</span></button></div></section>" +
+      (pct < 100 ? '<section class="bz-st-card bz-st-progress"><div class="bz-st-progress-top"><strong>Complete your profile</strong><span>' + pct + '%</span></div><div class="bz-st-bar"><span style="width:' + pct + '%"></span></div><p>' + (next ? "Next: " + esc(next[1]) : "") + '</p><button type="button" class="bz-st-btn bz-st-btn-sm bz-st-btn-primary" data-go="profile">Finish it</button></section>' : "") +
+      '<section class="bz-st-quick" aria-label="Quick actions"><button type="button" class="bz-st-q bz-st-q-add" data-act="add">' + ic("plus", 24) + "<span>Add</span><small>a product or service</small></button>" +
+      '<button type="button" class="bz-st-q" data-go="profile">' + ic("edit", 24) + "<span>Edit</span><small>my profile</small></button>" +
+      '<button type="button" class="bz-st-q bz-st-q-boost" data-go="boost">' + ic("boost", 24) + "<span>Boost</span><small>get more views</small></button></section>" +
+      '<section class="bz-st-stats" aria-label="At a glance">' +
+      stat("eye", compact(st.views), "Page views") + stat("heart", st.likes == null ? "–" : compact(st.likes), "Likes") + stat("star", st.rating ? Number(st.rating).toFixed(1) : "–", st.ratingCount ? st.ratingCount + " review" + (st.ratingCount === 1 ? "" : "s") : "Rating") + stat("chat", compact(st.inquiries || 0), "Inquiries") + "</section>" +
+      '<h2 class="bz-st-h2">Everything in one place</h2><section class="bz-st-tiles">' + tiles.map(function (t) {
+        var b = t.id === "items" ? items : null;
+        return '<a class="bz-st-tile bz-c-' + t.c + '" href="' + pathFor(t.id) + '" data-go="' + t.id + '"><span class="bz-st-tile-ic">' + ic(t.icon, 24) + "</span><strong>" + t.label + "</strong><small>" + esc(t.sub) + "</small>" + ic("chev", 18) + "</a>";
+      }).join("") + "</section>";
+    function stat(i, v, l) { return '<div class="bz-st-stat">' + ic(i, 18) + "<strong>" + esc(v) + "</strong><span>" + esc(l) + "</span></div>"; }
+  };
+
+  /* ---- My items ---- */
+  function itemPageUrl(x) { return "/product/" + encodeURIComponent(x.slug || x.id) + "/" + encodeURIComponent(S.p.slug); }
+  function itemsChanged() { bust("items:"); bust("g:"); refreshQuietly(); }
+  function openForm(existing, after) {
+    var s = ST(); if (!s || !s.openProductForm) return toast("The editor didn't load. Please refresh the page.", "error");
+    s.openProductForm(S.p, existing || null, function () { itemsChanged(); if (after) after(); });
+  }
+  PAGES.items = function (view, c) {
+    var p = S.p, key = "items:" + p.id, data = cget(key, 90000);
+    var pr = data ? Promise.resolve(data) : api("GET", "/api/profiles/" + p.id + "/products").then(function (d) { return cset(key, d); });
+    return pr.then(function (d) {
+      if (c.stale()) return;
+      if (!d.unlocked) {
+        view.innerHTML = '<div class="bz-st-card bz-st-center"><div class="bz-st-screen-ic">' + ic("lock", 30) + '</div><h3>Unlock your catalogue</h3><p>Upgrade your plan to list products and services, or invite a friend who completes their own profile.</p><div class="bz-st-row"><button type="button" class="bz-st-btn bz-st-btn-primary" data-act="upgrade">Upgrade my plan</button><button type="button" class="bz-st-btn bz-st-btn-ghost" data-go="referrals">Invite a friend</button></div></div>';
+        return;
+      }
+      var all = d.products || [], max = d.maxProducts || 0;
+      var st = { q: "", f: "all", n: 10 };
+      var realCount = all.filter(function (x) { return !x.is_draft; }).length, full = max >= 0 && max < 1000000 && realCount >= max;
+      view.innerHTML =
+        '<section class="bz-st-card bz-it-head"><div class="bz-it-usage"><strong>' + realCount + "</strong> of <strong>" + (max >= 1000000 ? "unlimited" : max) + '</strong> items used' + (max < 1000000 ? '<div class="bz-st-bar"><span style="width:' + Math.min(100, Math.round(realCount / Math.max(1, max) * 100)) + '%"></span></div>' : "") + "</div>" +
+        (full ? '<button type="button" class="bz-st-btn bz-st-btn-gold" data-act="upgrade">Upgrade to add more</button>' : '<button type="button" class="bz-st-btn bz-st-btn-primary" data-act="add">' + ic("plus", 18) + "<span>Add item</span></button>") + "</section>" +
+        '<div class="bz-it-tools"><label class="bz-st-search">' + ic("search", 18) + '<input id="it-q" type="search" placeholder="Search your items" autocomplete="off" aria-label="Search your items"></label><div class="bz-st-seg" id="it-f" role="tablist"></div></div>' +
+        '<div id="it-list" class="bz-it-list"></div><div id="it-more" class="bz-it-more"></div>';
+      var listEl = $("#it-list", view), moreEl = $("#it-more", view), fEl = $("#it-f", view);
+      function match(x) {
+        if (st.f === "draft") { if (!x.is_draft) return false; } else if (x.is_draft) return false;
+        if (st.f === "product" && x.kind === "service") return false;
+        if (st.f === "service" && x.kind !== "service") return false;
+        if (st.q) { var q = st.q.toLowerCase(); if ((x.name || "").toLowerCase().indexOf(q) < 0 && (x.description || "").toLowerCase().indexOf(q) < 0) return false; }
+        return true;
+      }
+      function counts() { return { all: all.filter(function (x) { return !x.is_draft; }).length, product: all.filter(function (x) { return !x.is_draft && x.kind !== "service"; }).length, service: all.filter(function (x) { return !x.is_draft && x.kind === "service"; }).length, draft: all.filter(function (x) { return x.is_draft; }).length }; }
+      function chips() {
+        var n = counts(), defs = [["all", "All"], ["product", "Products"], ["service", "Services"]]; if (n.draft) defs.push(["draft", "Drafts"]);
+        fEl.innerHTML = defs.map(function (d) { return '<button type="button" role="tab" class="bz-st-seg-b' + (st.f === d[0] ? " is-active" : "") + '" data-f="' + d[0] + '">' + d[1] + " <em>" + n[d[0]] + "</em></button>"; }).join("");
+      }
+      function row(x) {
+        var img = x.image_url ? '<img class="bz-img" src="' + esc(x.image_url) + '" alt="" loading="lazy" width="80" height="80">' : '<span class="bz-it-ph">' + ic("items", 26) + "</span>";
+        return '<article class="bz-it" data-id="' + esc(x.id) + '"><a class="bz-it-img" ' + (x.is_draft ? 'href="#" data-a="edit"' : 'href="' + itemPageUrl(x) + '" target="_blank" rel="noopener"') + ">" + img + '</a><div class="bz-it-body"><h3 class="bz-it-name">' + esc(x.name) + '</h3><div class="bz-it-chips"><span class="bz-st-pill">' + (x.kind === "service" ? "Service" : "Product") + "</span>" + (x.is_draft ? '<span class="bz-st-pill warn">Draft</span>' : "") + '<span class="bz-st-pill gold" data-bid="' + esc(x.id) + '" hidden></span></div><div class="bz-it-price">' + (x.price_display ? esc(x.price_display) : "No price set") + '</div><div class="bz-it-meta">' + ic("eye", 14) + " " + compact(x.view_count || 0) + '</div></div><div class="bz-it-acts"><button type="button" class="bz-st-btn bz-st-btn-sm bz-st-btn-primary" data-a="edit">' + ic("edit", 15) + "<span>Edit</span></button>" +
+          (x.is_draft ? "" : '<button type="button" class="bz-st-btn bz-st-btn-sm bz-st-btn-gold" data-a="boost">' + ic("boost", 15) + "<span>Boost</span></button>") +
+          (x.is_draft ? "" : '<a class="bz-st-icon-btn bz-st-icon-sm" href="' + itemPageUrl(x) + '" target="_blank" rel="noopener" aria-label="View on my page">' + ic("ext", 16) + "</a>") +
+          '<button type="button" class="bz-st-icon-btn bz-st-icon-sm bz-danger" data-a="del" aria-label="Delete">' + ic("trash", 16) + "</button></div></article>";
+      }
+      function draw() {
+        chips();
+        var rows = all.filter(match), shown = rows.slice(0, st.n);
+        listEl.innerHTML = shown.length ? shown.map(row).join("") : '<div class="bz-st-card bz-st-center"><p>' + (st.q || st.f !== "all" ? "Nothing matches that." : "No items yet. Tap <b>Add item</b> to create your first one.") + "</p></div>";
+        moreEl.innerHTML = rows.length > st.n ? '<button type="button" class="bz-st-btn bz-st-btn-ghost" data-more>Show ' + Math.min(10, rows.length - st.n) + " more</button>" : "";
+        paintBoosts(shown.filter(function (x) { return !x.is_draft; }).map(function (x) { return x.id; }));
+      }
+      function paintBoosts(ids) {
+        ids.forEach(function (id) { var b = S.boostMap[id]; var el = $('[data-bid="' + id + '"]', listEl); if (el) { if (b) { el.textContent = "Boosted · " + daysLeft(b.expires_at) + "d left"; el.hidden = false; } else el.hidden = true; } });
+        var need = ids.filter(function (id) { return S.boostMap[id] === undefined; }).slice(0, 24);
+        if (!need.length) return;
+        var chunks = []; for (var i = 0; i < need.length; i += 12) chunks.push(need.slice(i, i + 12));
+        chunks.forEach(function (ch) {
+          getJson("/api/profiles/" + p.id + "/boost-status?products=" + encodeURIComponent(ch.join(",")), 45000).then(function (r) {
+            if (c.stale()) return; var m = r.productBoosts || {}; ch.forEach(function (id) { S.boostMap[id] = m[id] || null; }); paintBoosts(ch);
+          }).catch(function () { /* badges are cosmetic */ });
+        });
+      }
+      draw();
+      $("#it-q", view).addEventListener("input", debounce(function (e) { st.q = e.target.value.trim(); st.n = 10; draw(); }, 160));
+      function onClick(e) {
+        var f = e.target.closest("[data-f]"); if (f) { st.f = f.dataset.f; st.n = 10; draw(); return; }
+        if (e.target.closest("[data-more]")) { st.n += 10; draw(); return; }
+        var b = e.target.closest("[data-a]"); if (!b) return; e.preventDefault();
+        var rowEl = b.closest(".bz-it"); if (!rowEl) return;
+        var x = all.filter(function (z) { return z.id === rowEl.dataset.id; })[0]; if (!x) return;
+        if (b.dataset.a === "edit") return openForm(x, function () { mountPage("items"); });
+        if (b.dataset.a === "boost") { var bu = window.LiyogBoostUI; return bu ? bu.openBoostSheet(p, { scope: "product", product: { id: x.id, name: x.name } }) : toast("Boosting didn't load. Please refresh.", "error"); }
+        if (b.dataset.a === "del") {
+          var acts = $(".bz-it-acts", rowEl), old = acts.innerHTML;
+          acts.innerHTML = '<span class="bz-it-ask">Delete this item?</span><button type="button" class="bz-st-btn bz-st-btn-sm bz-st-btn-danger" data-a="del-yes">Delete</button><button type="button" class="bz-st-btn bz-st-btn-sm bz-st-btn-ghost" data-a="del-no">Keep</button>';
+          acts.dataset.old = old; return;
+        }
+        if (b.dataset.a === "del-no") { var ac = $(".bz-it-acts", rowEl); ac.innerHTML = ac.dataset.old || ""; return; }
+        if (b.dataset.a === "del-yes") {
+          b.disabled = true; b.textContent = "Deleting…";
+          api("DELETE", "/api/products/" + x.id).then(function () {
+            all = all.filter(function (z) { return z.id !== x.id; }); d.products = all; cset(key, d); itemsChanged(); toast("Deleted."); mountPage("items");
+          }).catch(function (er) { report("delete", er); toast(er.message, "error"); var ac2 = $(".bz-it-acts", rowEl); if (ac2) ac2.innerHTML = ac2.dataset.old || ""; });
+        }
+      }
+      view.addEventListener("click", onClick);
+      c.setCleanup(function () { view.removeEventListener("click", onClick); });
+    });
+  };
+
+  /* ---- Collections ---- */
+  PAGES.collections = function (view, c) {
+    view.innerHTML = '<section class="bz-st-card"><div id="co-box"></div></section>';
+    var s = ST(), box = $("#co-box", view);
+    if (s && s.mountCollections) s.mountCollections(box, S.p, function () { bust("g:"); refreshQuietly(); });
+    else box.innerHTML = '<p class="bz-st-note">The collections tool didn\'t load.</p><button type="button" class="bz-st-btn bz-st-btn-primary" data-act="reload">Reload</button>';
+  };
+
+  /* ---- Boost ---- */
+  PAGES.boost = function (view, c) {
+    var p = S.p, bu = window.LiyogBoostUI;
+    function card(el, title, text, b, scope) {
+      el.innerHTML = '<div class="bz-bo-ic">' + ic("boost", 22) + "</div><h3>" + title + "</h3><p>" + text + "</p>" +
+        (b ? '<div class="bz-st-pill gold">Boosted · ' + daysLeft(b.expires_at) + " day" + (daysLeft(b.expires_at) === 1 ? "" : "s") + " left</div>" : '<button type="button" class="bz-st-btn bz-st-btn-gold" data-boost="' + scope + '">Boost</button>');
+    }
+
+    view.innerHTML = '<div id="bo-ended" hidden></div><section class="bz-st-grid2"><article class="bz-st-card bz-bo" id="bo-profile"></article><article class="bz-st-card bz-bo" id="bo-cat"></article></section>' +
+      '<section class="bz-st-card"><h3 class="bz-st-h3">Boost one item</h3><p class="bz-st-note">Pick an item from your list and tap <b>Boost</b> on it.</p><button type="button" class="bz-st-btn bz-st-btn-ghost" data-go="items"><span>Go to my items</span></button></section>' +
+      '<section class="bz-st-card"><div class="bz-st-card-h"><h3 class="bz-st-h3">Your active boosts</h3></div><div id="bo-list"><div class="bz-st-sk" style="height:64px"></div></div></section>' +
+      '<section class="bz-st-card"><h3 class="bz-st-h3">How are your boosts doing?</h3><p class="bz-st-note">See how many people saw and tapped your boosts.</p><button type="button" class="bz-st-btn bz-st-btn-primary" data-act="insights">' + ic("boost", 18) + "<span>Boost insights</span></button></section>";
+    if (bu && bu.mountEndedSummary) bu.mountEndedSummary($("#bo-ended", view), p);
+    return getJson("/api/profiles/" + p.id + "/active-boosts", 45000).then(function (r) {
+      if (c.stale()) return;
+      var boosts = r.boosts || [];
+      function pick(scope) { return boosts.filter(function (b) { return b.scope === scope; })[0] || null; }
+      card($("#bo-profile", view), "Your brand profile", "Show your whole brand to more people.", pick("profile"), "profile");
+      card($("#bo-cat", view), "All your products", "Feature your full catalogue page.", pick("catalogue"), "catalogue");
+      $("#bo-list", view).innerHTML = boosts.length ? boosts.map(function (b) {
+        var label = b.scope === "product" ? (b.product_name || "A product") : b.scope === "catalogue" ? "All products page" : "Your brand profile";
+        return '<div class="bz-bo-row"><div><strong>' + esc(label) + "</strong><small>Started " + esc(fmtDate(b.boosted_at)) + " · Ends " + esc(fmtDate(b.expires_at)) + '</small></div><span class="bz-st-pill gold">' + daysLeft(b.expires_at) + " day" + (daysLeft(b.expires_at) === 1 ? "" : "s") + " left</span></div>";
+      }).join("") : '<p class="bz-st-note">Nothing is boosted right now.</p>';
+    }).catch(function (e) {
+      if (c.stale()) return; report("boost", e);
+      card($("#bo-profile", view), "Your brand profile", "Show your whole brand to more people.", null, "profile");
+      card($("#bo-cat", view), "All your products", "Feature your full catalogue page.", null, "catalogue");
+      $("#bo-list", view).innerHTML = '<p class="bz-st-note">' + esc(e.message || "Couldn't load this right now.") + '</p><button type="button" class="bz-st-btn bz-st-btn-ghost" data-act="retry">Try again</button>';
+    });
+  };
+
+  /* ---- Edit profile (the same editor as the pen icon) ---- */
+  PAGES.profile = function (view, c) {
+    var ow = OW();
+    if (!ow || !ow.mountProfileEditor) { view.innerHTML = errorCard(new Error("The profile editor didn't load. Please refresh the page.")); return; }
+    view.innerHTML = '<nav class="bz-st-chips bz-pf-jump" id="pf-jump" aria-label="Jump to"></nav><section class="bz-st-card bz-pf-card"><div id="pf-mount"></div></section>';
+    var form = ow.mountProfileEditor($("#pf-mount", view), S.p);
+    var groups = $$(".lp-edit-group", form), jump = $("#pf-jump", view);
+    jump.innerHTML = groups.map(function (g, i) { var t = $(".lp-edit-group-title", g); return '<button type="button" class="bz-st-chip" data-jump="' + i + '">' + esc(t ? t.textContent : "Section " + (i + 1)) + "</button>"; }).join("");
+    jump.addEventListener("click", function (e) { var b = e.target.closest("[data-jump]"); if (!b) return; var g = groups[Number(b.dataset.jump)]; if (g && g.scrollIntoView) g.scrollIntoView({ behavior: "smooth", block: "start" }); });
+    S.dirty = false;
+    form.addEventListener("input", function () { S.dirty = true; });
+  };
+
+  /* ---- Inquiries ---- */
+  PAGES.inquiries = function (view, c) {
+    var ow = OW();
+    view.innerHTML = '<section class="bz-st-card"><p class="bz-st-note">Messages from visitors appear here. For privacy they are removed after 7 days, so reply soon.</p><div id="lp-inquiries-list"></div></section>';
+    if (!ow || !ow.loadInquiries) { $("#lp-inquiries-list", view).innerHTML = '<p class="bz-st-note">The inbox didn\'t load. Please refresh the page.</p>'; return; }
+    return ow.loadInquiries(S.p.id);
+  };
+
+  /* ---- Referrals ---- */
+  PAGES.referrals = function (view, c) {
+    var p = S.p, code = p.referral_code || p.slug, link = location.origin + "/join?ref=" + encodeURIComponent(code);
+    view.innerHTML =
+      '<section class="bz-st-card"><h3 class="bz-st-h3">Invite friends to BiziPlex</h3><p class="bz-st-note">Share your personal link. When a friend joins and completes their own brand profile, it counts as a referral.</p>' +
+      '<div class="bz-st-linkbox"><input type="text" readonly value="' + esc(link) + '" aria-label="Your referral link" id="rf-link"><button type="button" class="bz-st-btn bz-st-btn-primary bz-st-btn-sm" data-act="copy-ref">' + ic("link", 16) + "<span>Copy</span></button></div>" +
+      '<div class="bz-st-row"><button type="button" class="bz-st-btn bz-st-btn-ghost" data-act="share-ref">' + ic("share", 18) + "<span>Share link</span></button></div></section>" +
+      '<section class="bz-st-card"><h3 class="bz-st-h3">People you\'ve referred</h3><div id="rf-sum"><div class="bz-st-sk" style="height:48px"></div></div><button type="button" class="bz-st-btn bz-st-btn-ghost" data-act="referrals-list">' + ic("users", 18) + "<span>See the full list</span></button></section>";
+    return getJson("/api/profiles/" + p.id + "/referrals", 60000).then(function (r) {
+      if (c.stale()) return;
+      var done = (r.completed || []).length, pend = (r.pending || []).length;
+      $("#rf-sum", view).innerHTML = '<div class="bz-st-stats bz-st-stats-2"><div class="bz-st-stat">' + ic("check", 18) + "<strong>" + done + "</strong><span>Completed</span></div><div class=\"bz-st-stat\">" + ic("users", 18) + "<strong>" + pend + "</strong><span>Joining</span></div></div>";
+    }).catch(function () { var el = $("#rf-sum", view); if (el) el.innerHTML = '<p class="bz-st-note">Couldn\'t load the numbers right now. The list below still works.</p>'; });
+  };
+
+  /* ---- Plan ---- */
+  PAGES.plan = function (view) {
+    var pl = S.plan || { planId: "free", limits: {} }, L = pl.limits || {}, st = S.stats || {}, used = (st.products || 0) + (st.services || 0);
+    function meter(label, usedN, max) {
+      var unl = Number(max) < 0, pct = unl ? 8 : Math.min(100, Math.round(usedN / Math.max(1, Number(max)) * 100));
+      return '<div class="bz-pl-m"><div class="bz-pl-m-t"><span>' + label + "</span><strong>" + usedN + " / " + lim(max) + '</strong></div><div class="bz-st-bar"><span style="width:' + pct + '%"></span></div></div>';
+    }
+    view.innerHTML = '<section class="bz-st-card bz-pl-hero"><span class="bz-st-pill gold">Your plan</span><h2>' + esc(cap(pl.planId || "free")) + '</h2><p class="bz-st-note">Upgrade any time. Payment is one-time and your limits go up straight away.</p><button type="button" class="bz-st-btn bz-st-btn-gold" data-act="upgrade">' + ic("plan", 18) + "<span>Upgrade my plan</span></button></section>" +
+      '<section class="bz-st-card"><h3 class="bz-st-h3">What you can do</h3>' + meter("Items (products + services)", used, L.max_products == null ? 5 : L.max_products) + meter("Collections", st.collections || 0, L.max_collections == null ? 2 : L.max_collections) +
+      '<div class="bz-pl-facts"><div><span>Photos per item</span><strong>' + (L.max_images_per_product == null ? 1 : lim(L.max_images_per_product)) + "</strong></div><div><span>Items per collection</span><strong>" + (L.max_items_per_collection == null ? 25 : lim(L.max_items_per_collection)) + "</strong></div><div><span>Video on items</span><strong>" + (L.video_allowed ? "Included" : "Not included") + "</strong></div></div></section>";
+  };
+
+  /* ------------------------------ actions (one delegated listener) ------------------------------ */
+  root.addEventListener("click", function (e) {
+    var goEl = e.target.closest("[data-go]");
+    if (goEl && !e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) { e.preventDefault(); go(goEl.dataset.go); return; }
+    var a = e.target.closest("[data-act]"); if (!a) { var bo = e.target.closest("[data-boost]"); if (bo) boostScope(bo.dataset.boost); return; }
+    var act = a.dataset.act, p = S.p;
+    if (act === "reload") return location.reload();
+    if (act === "retry" || act === "refresh") return refreshPage();
+    if (act === "add") return openForm(null, function () { if (S.page === "items") mountPage("items"); });
+    if (act === "upgrade") { var t = window.LiyogTiersUI; return t ? t.openUpgradeSheet(p) : toast("Upgrades didn't load. Please refresh.", "error"); }
+    if (act === "insights") { var bu = window.LiyogBoostUI; return bu && bu.openInsights ? bu.openInsights(p) : toast("Insights didn't load. Please refresh.", "error"); }
+    if (act === "share-page") return shareLink(location.origin + "/b/" + p.slug, p.business_name + " | BiziPlex", p.tagline || "Discover " + p.business_name + " on BiziPlex");
+    if (act === "copy-ref") { var inp = $("#rf-link"); return copyText(inp ? inp.value : "").then(function () { toast("Link copied!"); }, function () { window.prompt("Copy this link", inp ? inp.value : ""); }); }
+    if (act === "share-ref") { var l = $("#rf-link"); return shareLink(l ? l.value : "", "Join me on BiziPlex", "Create your free brand profile on BiziPlex."); }
+    if (act === "referrals-list") { var ow = OW(); return ow && ow.openReferralsSheet ? ow.openReferralsSheet(p) : toast("The list didn't load. Please refresh.", "error"); }
+  });
+  function boostScope(scope) {
+    var bu = window.LiyogBoostUI; if (!bu) return toast("Boosting didn't load. Please refresh.", "error");
+    bu.openBoostSheet(S.p, { scope: scope });
+  }
+  root.addEventListener("change", function (e) {
+    var sw = e.target.closest("[data-switch]");
+    if (sw) { if (S.dirty && !window.confirm("You have changes that aren't saved. Switch anyway?")) { renderSide(); return; } S.dirty = false; location.assign("/studio/" + encodeURIComponent(sw.value)); }
+  });
+  // pictures that fail to load swap to a calm placeholder instead of a broken icon
+  root.addEventListener("error", function (e) {
+    var im = e.target; if (!im || im.tagName !== "IMG" || !im.classList.contains("bz-img")) return;
+    var ph = document.createElement("span"); ph.className = "bz-it-ph"; ph.innerHTML = ic("items", 26); if (im.parentNode) im.replaceWith(ph);
+  }, true);
+
+  /* ------------------------------ network + safety ------------------------------ */
+  function net(on) { var el = $("#st-net"); if (el) el.hidden = on; }
+  window.addEventListener("offline", function () { net(false); });
+  window.addEventListener("online", function () { net(true); toast("You're back online."); if (S.errored) refreshPage(); });
+  window.addEventListener("popstate", function () { S.dirty = false; if (S.framed) render(true); });
+  window.addEventListener("beforeunload", function (e) { if (S.dirty) { e.preventDefault(); e.returnValue = ""; } });
+  window.addEventListener("pageshow", function (e) { if (e.persisted && S.framed) refreshQuietly(); });
+
+  // what the profile editor calls after a successful save (instead of reloading the whole page)
+  window.LiyogStudioHooks = {
+    afterProfileSave: function (data) {
+      S.dirty = false; bust("g:");
+      try { sessionStorage.removeItem(ssKey(S.slug)); } catch (e) {}
+      if (data && data.newSlug) { location.assign("/studio/" + encodeURIComponent(data.newSlug) + "/profile"); return; }
+      refreshQuietly(); toast("Saved! Your changes are live.");
+    }
+  };
+
+  if (!navigator.onLine) setTimeout(function () { net(false); }, 0);
+  boot();
+})();
