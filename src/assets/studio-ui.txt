@@ -223,18 +223,20 @@
   }
 
   /* ---------- collections manager (Manage My Products > Collections) ---------- */
-  function openCollections(p, onChange) {
-    var sh = sheet("Collections"), cols = [];
+  /* The collections manager. Used both inside a bottom sheet (Manage My Products) and as a full page (Studio),
+     so there is ONE copy of the logic. box = the element to draw in; onFatal = what to do if the list can't load. */
+  function collectionsEngine(box, p, onChange, onFatal) {
+    var sh = { body: box, close: function () { if (onFatal) onFatal(); } }, cols = [];
     function changed() { if (onChange) onChange(); }
     function load() { return api("GET", "/api/profiles/" + p.id + "/collections?mine=1").then(function (d) { cols = d.collections || []; draw(); }); }
     function draw() {
       sh.body.innerHTML = '<p class="bz-st-note" style="margin:0 0 12px">Group items into collections, like playlists. Public collections can also be shown on Explore later.</p><div class="bz-st-list">' +
         (cols.length ? cols.map(function (c, i) {
-          return '<div class="bz-st-item" data-id="' + esc(c.id) + '">' + (c.cover_url ? '<img src="' + esc(c.cover_url) + '" alt="">' : '<span class="bz-st-ph"></span>') + '<div class="bz-st-t"><strong>' + esc(c.title) + "</strong><small>" + c.item_count + " items · " + (c.reach === "public" ? "Public" : "My pages only") + (c.status === "draft" ? " · Hidden" : "") + "</small></div>" +
-            '<button class="bz-st-mini" data-a="up"' + (i === 0 ? " disabled" : "") + ' aria-label="Move up">↑</button><button class="bz-st-mini" data-a="down"' + (i === cols.length - 1 ? " disabled" : "") + ' aria-label="Move down">↓</button><button class="bz-st-mini" data-a="items">Items</button><button class="bz-st-mini" data-a="edit">Edit</button></div>';
+          return '<div class="bz-co-row" data-id="' + esc(c.id) + '">' + (c.cover_url ? '<img src="' + esc(c.cover_url) + '" alt="">' : '<span class="bz-co-ph"></span>') + '<div class="bz-co-t"><strong>' + esc(c.title) + "</strong><small>" + c.item_count + " item" + (c.item_count === 1 ? "" : "s") + " · " + (c.reach === "public" ? "Public" : "My pages only") + (c.status === "draft" ? " · Hidden" : "") + "</small></div>" +
+            '<div class="bz-co-acts"><button class="bz-st-mini" data-a="up"' + (i === 0 ? " disabled" : "") + ' aria-label="Move up">↑</button><button class="bz-st-mini" data-a="down"' + (i === cols.length - 1 ? " disabled" : "") + ' aria-label="Move down">↓</button><button class="bz-st-mini" data-a="items">Items</button><button class="bz-st-mini" data-a="edit">Edit</button></div></div>';
         }).join("") : '<p class="bz-st-note">No collections yet.</p>') + '</div><button type="button" class="lp-btn lp-btn-primary lp-submit-btn" id="co-new" style="margin-top:14px"><span>New collection</span></button>';
       $("#co-new", sh.body).addEventListener("click", function () { edit(null); });
-      $$(".bz-st-item", sh.body).forEach(function (row) {
+      $$(".bz-co-row", sh.body).forEach(function (row) {
         row.addEventListener("click", function (e) {
           var b = e.target.closest("[data-a]"); if (!b || b.disabled) return; var id = row.dataset.id, a = b.dataset.a, c = cols.filter(function (x) { return x.id === id; })[0];
           if (a === "edit") edit(c); else if (a === "items") items(c);
@@ -282,7 +284,23 @@
       }).catch(function (er) { toast(er.message || "Couldn't load your products", "error"); draw(); });
     }
     load().catch(function (er) { toast(er.message, "error"); sh.close(); });
+    return { reload: function () { return load(); } };
+  }
+  function openCollections(p, onChange) {
+    var sh = sheet("Collections");
+    collectionsEngine(sh.body, p, onChange, sh.close);
+  }
+  /** Draws the collections manager as a page section (Studio). Returns { reload }. */
+  function mountCollections(box, p, onChange) {
+    var eng = null;
+    function fatal() {
+      box.innerHTML = '<div class="bz-co-err"><p>We couldn\'t load your collections.</p><button type="button" class="lp-btn lp-btn-primary" id="co-retry"><span>Try again</span></button></div>';
+      $("#co-retry", box).addEventListener("click", function () { box.innerHTML = ""; eng = collectionsEngine(box, p, onChange, fatal); });
+    }
+    eng = collectionsEngine(box, p, onChange, fatal);
+    return { reload: function () { return eng.reload(); } };
   }
 
-  window.LiyogStudio = { openProductForm: openProductForm, openCollections: openCollections };
+  window.LiyogStudio = { openProductForm: openProductForm, openCollections: openCollections, mountCollections: mountCollections };
 })();
+
