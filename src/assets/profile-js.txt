@@ -458,6 +458,8 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
+          
+${IS_NEW_SITE ? `<a class="lp-studio-link lp-studio-link-block" href="/studio/${encodeURIComponent(p.slug)}/profile">Open full Studio ›</a>` : ""}
           <div class="lp-edit-tabs">
             <button type="button" class="lp-edit-tab lp-edit-tab-active" id="lp-tab-details">Details</button>
             <button type="button" class="lp-edit-tab" id="lp-tab-inquiries">Inquiries <span class="lp-edit-tab-badge" id="lp-inquiries-count" hidden></span></button>
@@ -1351,11 +1353,19 @@ if (window.LiyogShopUI) window.LiyogShopUI.mountProfileCollections(p, isOwner);
       statusEl.className = "lp-edit-form-status lp-edit-success";
       submitBtn.innerHTML = "<span>Saved</span>";
 
+if (window.LiyogStudioHooks && typeof window.LiyogStudioHooks.afterProfileSave === "function") {
+        window.LiyogStudioHooks.afterProfileSave(data, updates);
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = "<span>Save Changes</span>";
+        form.addEventListener("submit", (e2) => handleEditSubmit(e2, p), { once: true });
+        return;
+      }
       if (data.newSlug) {
         setTimeout(() => { window.location.href = `${WORKER_BASE}/b/${data.newSlug}`; }, 1500);
       } else {
         setTimeout(() => window.location.reload(), 1500);
       }
+
     } catch (err) {
       statusEl.textContent = err.message;
       statusEl.className = "lp-edit-form-status lp-edit-error";
@@ -3417,6 +3427,7 @@ function openProductsManageModal(p) {
       <div class="lp-pm-dialog" role="dialog" aria-modal="true" aria-label="Manage products and services">
         <div class="lp-pm-header">
           <h3 class="lp-pm-title">Manage Products &amp; Services</h3>
+          ${IS_NEW_SITE ? `<a class="lp-studio-link" href="/studio/${encodeURIComponent(p.slug)}/items">Open Studio ›</a>` : ""}
           <button type="button" class="lp-pm-close" id="lp-pm-close" aria-label="Close">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
@@ -4394,6 +4405,32 @@ function initShopThemeToggle(btnEl) {
   });
 }
 
+/* ---------------------------------------------------------------------
+   STUDIO BRIDGE — lets the Studio page (/studio/{brand}) reuse THIS file's profile editor,
+   inquiries list and referrals list, so there is only ever one copy of that code.
+   Paste this whole block directly ABOVE the line:   window.LiyogProductUI = {
+   ------------------------------------------------------------------- */
+function mountProfileEditor(container, p) {
+  container.innerHTML = '<form id="lp-edit-form"></form>';
+  const form = container.querySelector("#lp-edit-form");
+  form.innerHTML = buildEditFormHtml(p);
+  wireImageUpload(form, "logo_url", p);
+  wireImageUpload(form, "cover_url", p);
+  wireGalleryUpload(form, p);
+  wireCategoryDropdown(p.business_category);
+  wireTagInput(safeParseArray(p.key_points));
+  wireRichTextToolbar();
+  wireEditSlugField(p.slug);
+  form.addEventListener("submit", (e) => handleEditSubmit(e, p), { once: true });
+  return form;
+}
+
+window.LiyogOwnerUI = {
+  mountProfileEditor,
+  loadInquiries: loadInquiriesForOwner,
+  openReferralsSheet
+};
+
 window.LiyogProductUI = {
   engagementBarHtml,
   wireProductCardActions,
@@ -4425,3 +4462,4 @@ compressImageToWebp,
 };
 
 })();
+
