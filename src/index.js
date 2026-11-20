@@ -36,6 +36,10 @@ import SHOP_UI_JS from "./assets/shop-ui.txt";
 import STUDIO_UI_JS from "./assets/studio-ui.txt";
 import { routeShopApi, runShopMaintenance } from "./lib/shop-api.js";
 import { brandSeoEnhance } from "./lib/brand-seo.js";
+import STUDIO_APP_JS from "./assets/studio-app.txt";
+import STUDIO_CSS from "./assets/studio-css.txt";
+import { studioShellHtml } from "./lib/studio-shell.js";
+import { routeStudioApi } from "./lib/studio-api.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
 
@@ -225,6 +229,9 @@ if (url.pathname === "/site.css") {
 if (url.pathname === "/shop.css") return new Response(SHOP_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
     if (url.pathname === "/shop-ui.js") return new Response(SHOP_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
     if (url.pathname === "/studio-ui.js") return new Response(STUDIO_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+
+if (url.pathname === "/studio.css") return new Response(STUDIO_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
+    if (url.pathname === "/studio-app.js") return new Response(STUDIO_APP_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
 
     if (url.pathname === "/manifest.webmanifest") return serveManifest(url.origin);
     const brandFile = serveBrandAsset(url.pathname);
@@ -904,6 +911,8 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
 // Shop API
 { const shopResponse = await routeShopApi(request, env, ctx, url); if (shopResponse) return shopResponse; }
 
+{ const studioResponse = await routeStudioApi(request, env, ctx, url); if (studioResponse) return studioResponse; }
+
     // -----------------------------------------------------------------
     // Product engagement — views, likes, star ratings (preset-text,
     // no free-text reviews), shares, reports, LiyX AI summaries.
@@ -1502,6 +1511,7 @@ if (url.pathname.match(/^\/collection\/[^/]+\/[^/]+$/)) {
       if (url.pathname === "/") return renderHomePage(url);
       if (url.pathname === "/explore") return renderExplorePage(url);
       if (url.pathname === "/join") return htmlResponse(profileShellHtml(url));
+if (url.pathname === "/studio" || url.pathname.startsWith("/studio/")) return htmlResponse(studioShellHtml(url));
     }
 
     // -----------------------------------------------------------------
