@@ -486,3 +486,21 @@ body.bz-site { overflow-x: clip; }
   .bz-site .lp-root.bz-brand .lp-cover-wrap { aspect-ratio: 16 / 9; max-height: 440px; }
   .bz-site .lp-root.bz-brand .lp-side .bz-trust { margin-left: 0; margin-right: 0; justify-content: flex-start; }
 }
+
+/* =====================================================================
+   ROUND 5 — "Open Studio" links, roomier Collections rows (used in the quick sheet AND the Studio)
+   ===================================================================== */
+.lp-studio-link { margin-left: auto; margin-right: 10px; display: inline-flex; align-items: center; gap: 4px; padding: 8px 14px; border-radius: 999px; border: 1.5px solid var(--liyog-green); background: var(--surface); color: var(--liyog-green-dark); font: 800 12.5px var(--font-body); text-decoration: none; white-space: nowrap; transition: background .15s, color .15s; }
+.lp-studio-link:hover { background: var(--liyog-green); color: #fff; }
+.lp-studio-link-block { display: flex; justify-content: center; margin: 0 0 14px; }
+
+.bz-co-row { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 4px 12px; align-items: center; padding: 12px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-sm); }
+.bz-co-row img, .bz-co-ph { grid-row: 1 / span 2; width: 56px; height: 56px; border-radius: 14px; object-fit: cover; background: var(--surface-soft); display: block; }
+.bz-co-t { min-width: 0; }
+.bz-co-t strong { display: block; font: 800 15px/1.25 var(--font-display); color: var(--ink); overflow-wrap: anywhere; }
+.bz-co-t small { display: block; margin-top: 2px; font-size: 12.5px; color: var(--ink-soft); }
+.bz-co-acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.bz-co-acts .bz-st-mini { min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface-soft); color: var(--ink); font: 700 13px var(--font-body); cursor: pointer; }
+.bz-co-acts .bz-st-mini:hover:not(:disabled) { border-color: var(--liyog-green); color: var(--liyog-green-dark); }
+.bz-co-acts .bz-st-mini:disabled { opacity: .4; cursor: not-allowed; }
+.bz-co-err { text-align: center; padding: 18px 8px; color: var(--ink-soft); }
