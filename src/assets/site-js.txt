@@ -101,7 +101,7 @@
     if (!tab) return;
     var label = tab.querySelector("span");
     if (user && user.p && user.p.length) {
-      tab.setAttribute("href", "/b/" + encodeURIComponent(user.p[0].s));
+tab.setAttribute("href", user.p.length > 1 ? "/studio" : "/studio/" + encodeURIComponent(user.p[0].s));
       if (label) label.textContent = "My brand";
     } else if (user) {
       tab.setAttribute("href", "/join");
@@ -136,6 +136,7 @@
     var menu = el("div", { "class": "bz-menu", role: "menu", hidden: "" });
     menu.appendChild(el("div", { "class": "bz-menu-head", text: user.n || "Your account" }));
     var profiles = user.p || [];
+if (profiles.length) menu.appendChild(el("a", { href: profiles.length > 1 ? "/studio" : "/studio/" + encodeURIComponent(profiles[0].s), role: "menuitem" }, [el("span", { text: "Open Studio" }), el("span", { "class": "bz-menu-tag", text: "Manage" })]));
     if (profiles.length) {
       menu.appendChild(el("div", { "class": "bz-menu-label", text: profiles.length > 1 ? "Your brands" : "Your brand" }));
       profiles.slice(0, 5).forEach(function (p) {
@@ -205,4 +206,3 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
 })();
-
