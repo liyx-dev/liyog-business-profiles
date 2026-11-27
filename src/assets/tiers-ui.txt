@@ -175,7 +175,24 @@ const ui = window.LiyogProductUI;
    * handoff carrying the exact tier + price so nothing can be
    * misrepresented).
    */
+  // On the new site: the plan chooser (monthly / 6 months / yearly) once you have set prices; until then the old one-time sheet.
+  const IS_NEW_SITE = /^(www\.)?biziplex\.com$/.test(location.hostname);
+  let plansUiRequested = false;
   function openUpgradeSheet(p) {
+    if (!IS_NEW_SITE) { openLegacyUpgradeSheet(p); return; }
+    const hooks = window.LiyogStudioHooks || {};
+    const start = () => window.LiyogPlansUI.open(p, () => openLegacyUpgradeSheet(p), hooks.afterPlanChange);
+    if (window.LiyogPlansUI) { start(); return; }
+    if (plansUiRequested) { openLegacyUpgradeSheet(p); return; }
+    plansUiRequested = true;
+    const s = document.createElement("script");
+    s.src = `${WORKER_BASE}/plans-ui.js`;
+    s.onload = () => { if (window.LiyogPlansUI) start(); else openLegacyUpgradeSheet(p); };
+    s.onerror = () => openLegacyUpgradeSheet(p);
+    document.head.appendChild(s);
+  }
+
+  function openLegacyUpgradeSheet(p) {
     const host = getOverlayHost();
     let overlay = document.getElementById("lp-tiers-overlay");
     if (!overlay) {
@@ -413,4 +430,3 @@ const ui = window.LiyogProductUI;
     maybeShowTierResultToast
   };
 })();
-
