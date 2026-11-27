@@ -1,21 +1,22 @@
 // =====================================================================
-// BIZIPLEX — src/lib/studio-api.js
-// The two small endpoints the Studio (/studio/{brand}) needs. Everything else the Studio does
+// BIZIPLEX — src/lib/studio-api.js   (Round 6)
+// The small endpoints the Studio (/studio/{brand}) needs. Everything else the Studio does
 // reuses the endpoints you already have (products, collections, boosts, tiers, inquiries, referrals).
-//   GET  /api/studio/overview?slug=...   owner only: who you are, your brands, the chosen brand's full
-//                                        profile, counts, rating, and your plan limits. ONE request.
-//   POST /api/studio/log                 owner only: the Studio reports a problem it hit (goes to the
-//                                        Worker logs only: nothing is written to the database).
-// Reads are a handful of small indexed queries, run only when the Studio opens or is refreshed.
+//   GET  /api/studio/overview?slug=...   owner only: who you are, your brands, the chosen brand's full profile, counts,
+//                                        rating, your plan limits AND the plan status (trial, subscription, hidden items,
+//                                        reminders). ONE request. Also applies anything that came due since the last visit.
+//   GET  /api/studio/hidden?profile_id=  owner only: the items hidden because the plan no longer covers them
+//   POST /api/studio/hidden/delete       owner only: remove one hidden item for good
+//   POST /api/studio/log                 the Studio reports a problem (goes to the Worker logs only: nothing is written to the database)
 // =====================================================================
 import { verifySessionToken } from "./auth.js";
 import { getProfileLimits } from "./plans.js";
 import * as reviews from "./reviews.js";
 import { readReviewStats } from "./brand-seo.js";
+import { getPlanStatus, syncIfDue } from "./plan-engine.js";
+import { renewIfDue } from "./subscriptions.js";
 
-const J = (data, status = 200) => new Response(JSON.stringify(data), {
-  status, headers: { "content-type": "application/json", "cache-control": "private, no-store" }
-});
+const J = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
 
 function cookie(request, name) {
   const m = (request.headers.get("Cookie") || "").match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
@@ -35,19 +36,21 @@ async function overview(request, env, url) {
   const uid = await sessionUser(request, env);
   if (!uid) return J({ ok: false, signedOut: true, error: "Please sign in to open your Studio." }, 401);
 
-  // who + all their brands (small columns only)
   const [{ results: users }, { results: brands }] = await env.DB.batch([
     env.DB.prepare("SELECT id, display_name, avatar_url FROM users WHERE id = ?").bind(uid),
     env.DB.prepare("SELECT id, slug, business_name, logo_url, moderation_status FROM profiles WHERE owner_id = ? ORDER BY created_at ASC LIMIT 10").bind(uid)
   ]);
   const user = users[0] ? { id: users[0].id, name: users[0].display_name || "", avatar: users[0].avatar_url || "" } : { id: uid, name: "", avatar: "" };
 
-  const out = { ok: true, user, brands, profile: null, stats: null, plan: null, serverTime: new Date().toISOString() };
+  const out = { ok: true, user, brands, profile: null, stats: null, plan: null, planStatus: null, serverTime: new Date().toISOString() };
   const slug = String(url.searchParams.get("slug") || "").toLowerCase().trim();
   const chosen = slug ? brands.find((b) => String(b.slug).toLowerCase() === slug) : null;
   if (!chosen) return J(out);
 
-  // the chosen brand: full row (the same fields the profile page already uses), counts and plan, in one round trip
+  // Things that came due since the last visit (a renewal, an ended trial) are applied now, before we read the plan.
+  try { await renewIfDue(env, chosen.id); } catch (e) { console.error("Studio renewal check failed:", e); }
+  try { await syncIfDue(env, chosen.id); } catch (e) { console.error("Studio plan sync failed:", e); }
+
   const [{ results: rows }, { results: items }, { results: cols }, { results: inq }] = await env.DB.batch([
     env.DB.prepare("SELECT * FROM profiles WHERE id = ? AND owner_id = ?").bind(chosen.id, uid),
     env.DB.prepare("SELECT kind, is_draft, COUNT(*) AS n FROM products WHERE profile_id = ? AND is_active = 1 GROUP BY kind, is_draft").bind(chosen.id),
@@ -62,7 +65,6 @@ async function overview(request, env, url) {
     if (r.is_draft) stats.drafts += r.n; else if (r.kind === "service") stats.services += r.n; else stats.products += r.n;
   }
 
-  // optional extras: any one of these failing must never break the Studio
   try {
     const s = readReviewStats(await reviews.getStats(env, profile.id));
     stats.rating = s.avg || null; stats.ratingCount = s.count || 0; stats.likes = s.likes || 0; stats.dislikes = s.dislikes || 0;
@@ -70,12 +72,20 @@ async function overview(request, env, url) {
   try {
     const { results } = await env.DB.prepare("SELECT COUNT(*) AS n FROM boost_log WHERE profile_id = ? AND expires_at > datetime('now')").bind(profile.id).all();
     stats.activeBoosts = results[0] ? results[0].n : 0;
-  } catch (e) { /* column names differ: the boost page reads its own data */ }
+  } catch (e) { /* the boost page reads its own data */ }
   try { out.plan = await getProfileLimits(env, profile); } catch (e) { out.plan = null; }
+  try { out.planStatus = await getPlanStatus(env, profile); } catch (e) { out.planStatus = null; }   // null = the new plan tables aren't there yet
 
   out.profile = profile;
   out.stats = stats;
   return J(out);
+}
+
+async function ownedProfileId(request, env, profileId) {
+  const uid = await sessionUser(request, env);
+  if (!uid || !profileId) return null;
+  const { results } = await env.DB.prepare("SELECT id FROM profiles WHERE id = ? AND owner_id = ?").bind(profileId, uid).all();
+  return results.length ? results[0].id : null;
 }
 
 async function clientLog(request, env) {
@@ -95,10 +105,26 @@ export async function routeStudioApi(request, env, ctx, url) {
   try {
     if (request.method === "GET" && url.pathname === "/api/studio/overview") return await overview(request, env, url);
     if (request.method === "POST" && url.pathname === "/api/studio/log") return await clientLog(request, env);
+
+    if (request.method === "GET" && url.pathname === "/api/studio/hidden") {
+      const id = await ownedProfileId(request, env, url.searchParams.get("profile_id"));
+      if (!id) return J({ error: "Not your profile." }, 403);
+      const { results } = await env.DB.prepare(
+        "SELECT id, name, kind, image_url, price_display, created_at FROM products WHERE profile_id = ? AND plan_hidden = 1 AND is_draft = 0 ORDER BY created_at ASC LIMIT 300").bind(id).all();
+      return J({ items: results });
+    }
+    if (request.method === "POST" && url.pathname === "/api/studio/hidden/delete") {
+      if (!sameOrigin(request)) return J({ error: "Not allowed" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const id = await ownedProfileId(request, env, body.profile_id);
+      if (!id || !body.product_id) return J({ error: "Not your profile." }, 403);
+      // "deleted" = the same soft delete the rest of the system uses (is_active stays 0); an upgrade can never bring it back
+      const r = await env.DB.prepare("UPDATE products SET plan_hidden = 0, is_active = 0 WHERE id = ? AND profile_id = ? AND plan_hidden = 1").bind(body.product_id, id).run();
+      return J({ success: true, removed: Number(r.meta && r.meta.changes) || 0 });
+    }
   } catch (err) {
     console.error("Studio API failed:", err);
     return J({ ok: false, error: "Something went wrong on our side. Please try again." }, 500);
   }
   return null;
 }
-
