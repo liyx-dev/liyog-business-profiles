@@ -83,10 +83,10 @@
 /* ---------- home ---------- */
 #bz-studio .bz-st-hero { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 28px; overflow: hidden; box-shadow: var(--shadow-sm); margin-bottom: 14px; }
 #bz-studio .bz-st-hero-cover { height: 118px; background: linear-gradient(135deg, var(--bz-green-600), var(--bz-green) 55%, #1fbf6a) center / cover no-repeat; }
-#bz-studio .bz-st-hero-body { display: flex; gap: 14px; padding: 0 18px; margin-top: -34px; align-items: flex-end; }
+#bz-studio .bz-st-hero-body { display: block; padding: 0 18px; margin-top: -40px; }
 #bz-studio .bz-st-logo { width: 76px; height: 76px; border-radius: 22px; object-fit: cover; border: 4px solid var(--surface); background: var(--surface); box-shadow: var(--shadow-md); flex-shrink: 0; }
 #bz-studio .bz-st-logo-ph { display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--bz-green-400), var(--bz-green-600)); color: #fff; font: 800 30px var(--font-display); }
-#bz-studio .bz-st-hero-t { min-width: 0; padding-bottom: 4px; }
+#bz-studio .bz-st-hero-t { min-width: 0; padding: 12px 0 2px; }
 #bz-studio .bz-st-hero-t h2 { margin: 0; font: 800 22px/1.15 var(--font-display); letter-spacing: -.02em; overflow-wrap: anywhere; }
 #bz-studio .bz-st-hero-t p { margin: 3px 0 0; color: var(--ink-soft); font-size: 14.5px; }
 #bz-studio .bz-st-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -215,3 +215,27 @@
 #bz-studio .bz-st-sk-tiles .bz-st-sk { min-height: 128px; }
 @keyframes bz-st-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { #bz-studio .bz-st-sk, #bz-studio .bz-st-view, #bz-studio .bz-st-bar > span { animation: none; transition: none; } }
+
+/* ---------- Round 6 fixes ---------- */
+/* section buttons: one swipeable row (shop.css also uses this class name for collection chips, which wrap) */
+#bz-studio .bz-st-chips { flex-wrap: nowrap !important; overflow-x: auto !important; }
+/* profile pictures: a square box for the logo, a wide box for the cover (the picture fills the box, never stretched) */
+#bz-studio .bz-pf-card #lp-upload-box-logo_url { width: min(100%, 260px); aspect-ratio: 1 / 1; min-height: 0; }
+#bz-studio .bz-pf-card #lp-upload-box-cover_url { width: 100%; aspect-ratio: 16 / 9; min-height: 0; }
+#bz-studio .bz-pf-card .lp-image-upload-preview { width: 100%; height: 100%; object-fit: cover; }
+/* room at the bottom so the last card is never tucked under the bottom bar */
+#bz-studio { padding-bottom: calc(var(--bz-bottomnav-h, 0px) + 96px + env(safe-area-inset-bottom, 0px)); }
+
+/* ---------- Round 6: trial, reminders, hidden items ---------- */
+#bz-studio .bz-st-trial { display: flex; align-items: center; gap: 14px; background: linear-gradient(135deg, rgba(255, 185, 0, .16), rgba(255, 185, 0, .06)); border-color: rgba(255, 185, 0, .55); }
+#bz-studio .bz-st-trial > div { flex: 1; min-width: 0; }
+#bz-studio .bz-st-trial strong { display: block; font: 800 16px var(--font-display); }
+#bz-studio .bz-st-trial p { margin: 4px 0 0; font-size: 14px; line-height: 1.5; color: var(--ink-soft); }
+#bz-studio .bz-st-trial .bz-st-btn { flex-shrink: 0; }
+@media (max-width: 560px) { #bz-studio .bz-st-trial { flex-direction: column; align-items: stretch; text-align: left; } }
+#bz-studio .bz-st-alert { margin-bottom: 14px; padding: 16px 18px; border-radius: 22px; border: 1.5px solid rgba(255, 138, 0, .5); background: rgba(255, 138, 0, .1); }
+#bz-studio .bz-st-alert-gold { border-color: rgba(255, 185, 0, .6); background: rgba(255, 185, 0, .14); }
+#bz-studio .bz-st-alert strong { display: block; font: 800 16px var(--font-display); }
+#bz-studio .bz-st-alert p { margin: 4px 0 12px; font-size: 14.5px; line-height: 1.5; color: var(--ink-soft); }
+#bz-studio .bz-it-hidden { opacity: .8; border-style: dashed; }
+#bz-studio .bz-it-hidden .bz-it-img { filter: grayscale(.6); }
