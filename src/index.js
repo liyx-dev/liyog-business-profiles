@@ -40,6 +40,10 @@ import STUDIO_APP_JS from "./assets/studio-app.txt";
 import STUDIO_CSS from "./assets/studio-css.txt";
 import { studioShellHtml } from "./lib/studio-shell.js";
 import { routeStudioApi } from "./lib/studio-api.js";
+import PLANS_UI_JS from "./assets/plans-ui.txt";
+import ADMIN_UI_JS from "./assets/admin-ui.txt";
+import { routePlansApi, runPlanNightly } from "./lib/subscriptions.js";
+import { routeAdminApi, adminShellHtml } from "./lib/admin-api.js";
 
 const GOOGLE_CLIENT_ID = "339189715859-r0ieuulq2932t2s4paq0muvmj0mlkln1.apps.googleusercontent.com";
 
@@ -232,6 +236,9 @@ if (url.pathname === "/shop.css") return new Response(SHOP_CSS, { headers: { "co
 
 if (url.pathname === "/studio.css") return new Response(STUDIO_CSS, { headers: { "content-type": "text/css; charset=utf-8", ...NO_CACHE_HEADERS } });
     if (url.pathname === "/studio-app.js") return new Response(STUDIO_APP_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+
+if (url.pathname === "/plans-ui.js") return new Response(PLANS_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
+if (url.pathname === "/admin-ui.js") return new Response(ADMIN_UI_JS, { headers: { "content-type": "application/javascript; charset=utf-8", ...NO_CACHE_HEADERS } });
 
     if (url.pathname === "/manifest.webmanifest") return serveManifest(url.origin);
     const brandFile = serveBrandAsset(url.pathname);
@@ -913,6 +920,9 @@ ctx.waitUntil(maybeCreditReferral(env, { ...results[0], ...updates }));
 
 { const studioResponse = await routeStudioApi(request, env, ctx, url); if (studioResponse) return studioResponse; }
 
+{ const plansResponse = await routePlansApi(request, env, ctx, url); if (plansResponse) return plansResponse; }
+{ const adminResponse = await routeAdminApi(request, env, ctx, url); if (adminResponse) return adminResponse; }
+
     // -----------------------------------------------------------------
     // Product engagement — views, likes, star ratings (preset-text,
     // no free-text reviews), shares, reports, LiyX AI summaries.
@@ -1512,6 +1522,7 @@ if (url.pathname.match(/^\/collection\/[^/]+\/[^/]+$/)) {
       if (url.pathname === "/explore") return renderExplorePage(url);
       if (url.pathname === "/join") return htmlResponse(profileShellHtml(url));
 if (url.pathname === "/studio" || url.pathname.startsWith("/studio/")) return htmlResponse(studioShellHtml(url));
+if (url.pathname === "/admin") return htmlResponse(adminShellHtml(url));
     }
 
     // -----------------------------------------------------------------
@@ -1574,6 +1585,7 @@ profile.is_verified = computeIsVerified(profile) ? 1 : 0;
     ctx.waitUntil(productsEngagement.runScheduledProductInsights(env)); // LiyX AI — same rule, per product
     ctx.waitUntil(productsEngagement.runScheduledCatalogueInsights(env)); // LiyX AI — catalogue-wide, ~monthly or signal-threshold
 ctx.waitUntil(runShopMaintenance(env)); // exchange rates + YouTube health checks
+ctx.waitUntil(runPlanNightly(env)); // ends expired trials/plans, charges due renewals
   }
 };
 
