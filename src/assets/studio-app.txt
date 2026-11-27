@@ -14,6 +14,7 @@
    ===================================================================== */
 (function () {
   "use strict";
+  var W = window;
   var root = document.getElementById("bz-studio");
   if (!root) return;
 
@@ -152,7 +153,7 @@
   function writeSS(slug, d) { try { sessionStorage.setItem(ssKey(slug), JSON.stringify({ t: Date.now(), d: d })); } catch (e) {} }
   function apply(d) {
     S.user = d.user || S.user; S.brands = d.brands || S.brands;
-    if (d.profile) { S.p = d.profile; S.stats = d.stats; S.plan = d.plan; }
+    if (d.profile) { S.p = d.profile; S.stats = d.stats; S.plan = d.plan; S.ps = d.planStatus || null; }
   }
   function loadOverview(slug) {
     return api("GET", "/api/studio/overview" + (slug ? "?slug=" + encodeURIComponent(slug) : "")).then(function (d) { if (slug && d.profile) writeSS(slug, d); return d; });
@@ -216,7 +217,7 @@
     renderSide(); render(false);
   }
   function brandInitial() { return esc(((S.p && S.p.business_name) || "?").charAt(0).toUpperCase()); }
-  function planName() { var id = S.plan && S.plan.planId; return id ? cap(id) : "Free"; }
+  function planName() { if (S.ps && S.ps.planLabel) return S.ps.planLabel; var id = S.plan && S.plan.planId; return id ? cap(id) : "Free"; }
 
   function renderSide() {
     var side = $("#st-side"); if (!side || !S.p) return;
@@ -254,8 +255,9 @@
     var r = parsePath();
     if (r.slug && S.slug && r.slug.toLowerCase() !== S.slug.toLowerCase()) { location.reload(); return; }
     S.page = r.page; renderSide(); renderTop();
-    var fab = $("#st-fab"); if (fab) fab.hidden = !(S.page === "home" || S.page === "items");
+    var fab = $("#st-fab"); if (fab) fab.hidden = S.page !== "items";
     mountPage(S.page);
+    if (!S.payChecked) { S.payChecked = true; handlePayReturn(); }
     if (focus) { window.scrollTo(0, 0); var h = $("#st-h1"); if (h && h.focus) try { h.focus({ preventScroll: true }); } catch (e) {} }
   }
 
@@ -290,6 +292,51 @@
   }
 
   /* ------------------------------ PAGES ------------------------------ */
+
+  /* ------------------------------ plan: trial, reminders, hidden items ------------------------------ */
+  function alertHtml() {
+    var ps = S.ps; if (!ps || !ps.reminder) return "";
+    var n = ps.hidden || 0, d = ps.trial.daysLeft, label = ps.trial.planLabel || "Premium", v = ps.trial.viewsGained || 0, m;
+    if (ps.reminder === "trial_soon") m = ["gold", "Your free trial ends in " + d + " day" + (d === 1 ? "" : "s"), (v ? v + " new people visited your page since you started. " : "") + "Keep " + label + " to keep everything you added.", "Keep my plan"];
+    else if (ps.reminder === "trial_last") m = ["warn", "Last day of your free trial", "After today, items above your free limit are hidden. Nothing is deleted. Choose a plan to keep them showing.", "Choose a plan"];
+    else if (ps.reminder === "trial_ended") m = ["warn", n + " of your items are hidden", "Your free trial has ended. Nothing was deleted. Choose a plan and they come back straight away.", "Show them again"];
+    else if (ps.reminder === "items_hidden") m = ["warn", n + " of your items are hidden", "Your plan doesn't cover them right now. Nothing was deleted. Choose a plan and they come back straight away.", "Show them again"];
+    else if (ps.reminder === "payment_failed") m = ["warn", "We couldn't renew your plan", "Please pay again to keep it. Your plan stays on for " + (ps.graceDays || 0) + " more days.", "Pay now"];
+    else return "";
+    return '<section class="bz-st-alert bz-st-alert-' + m[0] + '"><strong>' + esc(m[1]) + "</strong><p>" + esc(m[2]) + '</p><button type="button" class="bz-st-btn bz-st-btn-sm bz-st-btn-gold" data-act="upgrade">' + esc(m[3]) + "</button></section>";
+  }
+  function planCardHtml() {
+    var ps = S.ps; if (!ps) return "";
+    var a = alertHtml(); if (a) return a;
+    if (ps.trial.eligible) return '<section class="bz-st-card bz-st-trial"><div><strong>Try ' + esc(ps.trial.planLabel || "Premium") + " free for " + ps.trial.days + ' days</strong><p>No card needed. See what more items, more photos and video can do for your brand.</p></div><button type="button" class="bz-st-btn bz-st-btn-gold" data-act="trial">Start free trial</button></section>';
+    if (ps.trial.active) return '<section class="bz-st-card bz-st-trial"><div><strong>' + esc(ps.trial.planLabel || "Premium") + " trial: " + ps.trial.daysLeft + " day" + (ps.trial.daysLeft === 1 ? "" : "s") + ' left</strong><p>Enjoy everything your trial gives you. Pick a plan any time to keep it.</p></div><button type="button" class="bz-st-btn bz-st-btn-ghost" data-act="upgrade">See plans</button></section>';
+    return "";
+  }
+  function loadHidden(view, c) {
+    var box = $("#it-hidden", view); if (!box || !S.ps || !(S.ps.hidden > 0)) return;
+    api("GET", "/api/studio/hidden?profile_id=" + encodeURIComponent(S.p.id)).then(function (d) {
+      if (c.stale()) return;
+      var items = d.items || []; if (!items.length) { box.innerHTML = ""; return; }
+      box.innerHTML = '<h2 class="bz-st-h2">Hidden until you choose a plan</h2><p class="bz-st-note">These are safe. Nothing was deleted. When you choose a plan, they come back by themselves.</p><div class="bz-it-list">' + items.map(function (x) {
+        return '<article class="bz-it bz-it-hidden" data-hid="' + esc(x.id) + '"><span class="bz-it-img">' + (x.image_url ? '<img class="bz-img" src="' + esc(x.image_url) + '" alt="" loading="lazy" width="80" height="80">' : '<span class="bz-it-ph">' + ic("items", 26) + "</span>") + '</span><div class="bz-it-body"><h3 class="bz-it-name">' + esc(x.name) + '</h3><div class="bz-it-chips"><span class="bz-st-pill warn">Hidden</span></div><div class="bz-it-price">' + (x.price_display ? esc(x.price_display) : "") + '</div></div><div class="bz-it-acts"><button type="button" class="bz-st-btn bz-st-btn-sm bz-st-btn-gold" data-act="upgrade">Show again</button><button type="button" class="bz-st-icon-btn bz-st-icon-sm bz-danger" data-hdel="' + esc(x.id) + '" aria-label="Delete for good">' + ic("trash", 16) + "</button></div></article>";
+      }).join("") + "</div>";
+      box.onclick = function (e) {
+        var b = e.target.closest("[data-hdel]"); if (!b) return;
+        if (!window.confirm("Delete this item for good? This can't be undone.")) return;
+        b.disabled = true;
+        api("POST", "/api/studio/hidden/delete", { profile_id: S.p.id, product_id: b.dataset.hdel }).then(function () { toast("Deleted."); refreshQuietly(); mountPage("items"); }).catch(function (er) { toast(er.message, "error"); b.disabled = false; });
+      };
+    }).catch(function () { box.innerHTML = ""; });
+  }
+  function handlePayReturn() {
+    try {
+      var q = new URLSearchParams(location.search), r = q.get("pay"); if (!r) return;
+      q.delete("pay"); history.replaceState({}, "", location.pathname + (q.toString() ? "?" + q.toString() : ""));
+      if (r === "success") { toast("Payment received. Your plan is on!"); if (W.LiyogStudioHooks) W.LiyogStudioHooks.afterPlanChange(); }
+      else toast("We couldn't confirm that payment. If money left your account, please message us on WhatsApp.", "error");
+    } catch (e) { /* cosmetic */ }
+  }
+
   var PAGES = {};
 
   /* ---- Home ---- */
@@ -319,6 +366,7 @@
       '<div class="bz-st-badges"><span class="bz-st-pill ' + (live ? "ok" : "warn") + '">' + (live ? "Live" : "Under review") + '</span><span class="bz-st-pill">' + esc(planName()) + " plan</span></div></div></div>" +
       '<div class="bz-st-hero-acts"><a class="bz-st-btn bz-st-btn-ghost" href="/b/' + encodeURIComponent(p.slug) + '">' + ic("ext", 18) + "<span>View my page</span></a>" +
       '<button type="button" class="bz-st-btn bz-st-btn-ghost" data-act="share-page">' + ic("share", 18) + "<span>Share</span></button></div></section>" +
+      planCardHtml() +
       (pct < 100 ? '<section class="bz-st-card bz-st-progress"><div class="bz-st-progress-top"><strong>Complete your profile</strong><span>' + pct + '%</span></div><div class="bz-st-bar"><span style="width:' + pct + '%"></span></div><p>' + (next ? "Next: " + esc(next[1]) : "") + '</p><button type="button" class="bz-st-btn bz-st-btn-sm bz-st-btn-primary" data-go="profile">Finish it</button></section>' : "") +
       '<section class="bz-st-quick" aria-label="Quick actions"><button type="button" class="bz-st-q bz-st-q-add" data-act="add">' + ic("plus", 24) + "<span>Add</span><small>a product or service</small></button>" +
       '<button type="button" class="bz-st-q" data-go="profile">' + ic("edit", 24) + "<span>Edit</span><small>my profile</small></button>" +
@@ -355,8 +403,9 @@
         '<section class="bz-st-card bz-it-head"><div class="bz-it-usage"><strong>' + realCount + "</strong> of <strong>" + (max >= 1000000 ? "unlimited" : max) + '</strong> items used' + (max < 1000000 ? '<div class="bz-st-bar"><span style="width:' + Math.min(100, Math.round(realCount / Math.max(1, max) * 100)) + '%"></span></div>' : "") + "</div>" +
         (full ? '<button type="button" class="bz-st-btn bz-st-btn-gold" data-act="upgrade">Upgrade to add more</button>' : '<button type="button" class="bz-st-btn bz-st-btn-primary" data-act="add">' + ic("plus", 18) + "<span>Add item</span></button>") + "</section>" +
         '<div class="bz-it-tools"><label class="bz-st-search">' + ic("search", 18) + '<input id="it-q" type="search" placeholder="Search your items" autocomplete="off" aria-label="Search your items"></label><div class="bz-st-seg" id="it-f" role="tablist"></div></div>' +
-        '<div id="it-list" class="bz-it-list"></div><div id="it-more" class="bz-it-more"></div>';
+        '<div id="it-list" class="bz-it-list"></div><div id="it-more" class="bz-it-more"></div><div id="it-hidden"></div>';
       var listEl = $("#it-list", view), moreEl = $("#it-more", view), fEl = $("#it-f", view);
+      var alertTop = alertHtml(); if (alertTop) view.insertAdjacentHTML("afterbegin", alertTop);
       function match(x) {
         if (st.f === "draft") { if (!x.is_draft) return false; } else if (x.is_draft) return false;
         if (st.f === "product" && x.kind === "service") return false;
@@ -395,6 +444,7 @@
         });
       }
       draw();
+      loadHidden(view, c);
       $("#it-q", view).addEventListener("input", debounce(function (e) { st.q = e.target.value.trim(); st.n = 10; draw(); }, 160));
       function onClick(e) {
         var f = e.target.closest("[data-f]"); if (f) { st.f = f.dataset.f; st.n = 10; draw(); return; }
@@ -499,14 +549,30 @@
 
   /* ---- Plan ---- */
   PAGES.plan = function (view) {
-    var pl = S.plan || { planId: "free", limits: {} }, L = pl.limits || {}, st = S.stats || {}, used = (st.products || 0) + (st.services || 0);
+    var pl = S.plan || { planId: "free", limits: {} }, L = pl.limits || {}, st = S.stats || {}, ps = S.ps, used = (st.products || 0) + (st.services || 0);
     function meter(label, usedN, max) {
       var unl = Number(max) < 0, pct = unl ? 8 : Math.min(100, Math.round(usedN / Math.max(1, Number(max)) * 100));
       return '<div class="bz-pl-m"><div class="bz-pl-m-t"><span>' + label + "</span><strong>" + usedN + " / " + lim(max) + '</strong></div><div class="bz-st-bar"><span style="width:' + pct + '%"></span></div></div>';
     }
-    view.innerHTML = '<section class="bz-st-card bz-pl-hero"><span class="bz-st-pill gold">Your plan</span><h2>' + esc(cap(pl.planId || "free")) + '</h2><p class="bz-st-note">Upgrade any time. Payment is one-time and your limits go up straight away.</p><button type="button" class="bz-st-btn bz-st-btn-gold" data-act="upgrade">' + ic("plan", 18) + "<span>Upgrade my plan</span></button></section>" +
-      '<section class="bz-st-card"><h3 class="bz-st-h3">What you can do</h3>' + meter("Items (products + services)", used, L.max_products == null ? 5 : L.max_products) + meter("Collections", st.collections || 0, L.max_collections == null ? 2 : L.max_collections) +
+    var sub = ps && ps.subscription, line = "";
+    if (ps) {
+      if (ps.trial.active) line = "Free trial · " + ps.trial.daysLeft + " day" + (ps.trial.daysLeft === 1 ? "" : "s") + " left";
+      else if (sub) line = (sub.auto_renew ? "Renews on " : "Ends on ") + fmtDate(sub.current_period_end);
+      else line = ps.planId === "free" ? "You're on the free plan" : "Your plan is active";
+    }
+    var free = !ps || ps.planId === "free";
+    var html = alertHtml() +
+      '<section class="bz-st-card bz-pl-hero"><span class="bz-st-pill gold">Your plan</span><h2>' + esc(planName()) + "</h2>" + (line ? '<p class="bz-st-note">' + esc(line) + "</p>" : '<p class="bz-st-note">Upgrade any time. Your limits go up straight away.</p>') +
+      '<button type="button" class="bz-st-btn bz-st-btn-gold" data-act="upgrade">' + ic("plan", 18) + "<span>" + (free ? "Choose a plan" : "Change or renew my plan") + "</span></button>" +
+      (ps && ps.trial.eligible ? '<div style="height:10px"></div><button type="button" class="bz-st-btn bz-st-btn-ghost" data-act="trial">Try ' + esc(ps.trial.planLabel || "Premium") + " free for " + ps.trial.days + " days</button>" : "") + "</section>";
+    if (sub) {
+      html += '<section class="bz-st-card"><h3 class="bz-st-h3">How you pay</h3><div class="bz-pl-facts"><div><span>Plan</span><strong>' + esc(cap(sub.plan_id)) + '</strong></div><div><span>Every</span><strong>' + (sub.billing === "monthly" ? "Month" : sub.billing === "semiannual" ? "6 months" : "Year") + "</strong></div><div><span>Card</span><strong>" + (sub.card_last4 ? "•••• " + esc(sub.card_last4) : "Paid by WhatsApp") + "</strong></div></div>" +
+        '<p class="bz-st-note" style="margin-top:12px">' + (sub.auto_renew ? "It renews by itself. Turn that off and your plan stays on until " + esc(fmtDate(sub.current_period_end)) + "." : "It will not renew by itself. Your plan stays on until " + esc(fmtDate(sub.current_period_end)) + ".") + "</p>" +
+        (sub.card_last4 ? '<button type="button" class="bz-st-btn bz-st-btn-ghost" data-act="' + (sub.auto_renew ? "auto-renew-off" : "auto-renew-on") + '">' + (sub.auto_renew ? "Turn off auto-renew" : "Turn on auto-renew") + "</button>" : "") + "</section>";
+    }
+    html += '<section class="bz-st-card"><h3 class="bz-st-h3">What you can do</h3>' + meter("Items (products + services)", used, L.max_products == null ? 5 : L.max_products) + meter("Collections", st.collections || 0, L.max_collections == null ? 2 : L.max_collections) +
       '<div class="bz-pl-facts"><div><span>Photos per item</span><strong>' + (L.max_images_per_product == null ? 1 : lim(L.max_images_per_product)) + "</strong></div><div><span>Items per collection</span><strong>" + (L.max_items_per_collection == null ? 25 : lim(L.max_items_per_collection)) + "</strong></div><div><span>Video on items</span><strong>" + (L.video_allowed ? "Included" : "Not included") + "</strong></div></div></section>";
+    view.innerHTML = html;
   };
 
   /* ------------------------------ actions (one delegated listener) ------------------------------ */
@@ -517,6 +583,14 @@
     var act = a.dataset.act, p = S.p;
     if (act === "reload") return location.reload();
     if (act === "retry" || act === "refresh") return refreshPage();
+    if (act === "trial") {
+      a.disabled = true;
+      return api("POST", "/api/plans/trial/start", { profile_id: p.id }).then(function () { toast("Your free trial has started!"); W.LiyogStudioHooks.afterPlanChange(); }).catch(function (er) { toast(er.message, "error"); a.disabled = false; });
+    }
+    if (act === "auto-renew-off" || act === "auto-renew-on") {
+      a.disabled = true;
+      return api("POST", "/api/plans/auto-renew", { profile_id: p.id, on: act === "auto-renew-on" }).then(function () { toast(act === "auto-renew-on" ? "Auto-renew is on." : "Auto-renew is off. Your plan stays on until the end of what you paid for."); W.LiyogStudioHooks.afterPlanChange(); }).catch(function (er) { toast(er.message, "error"); a.disabled = false; });
+    }
     if (act === "add") return openForm(null, function () { if (S.page === "items") mountPage("items"); });
     if (act === "upgrade") { var t = window.LiyogTiersUI; return t ? t.openUpgradeSheet(p) : toast("Upgrades didn't load. Please refresh.", "error"); }
     if (act === "insights") { var bu = window.LiyogBoostUI; return bu && bu.openInsights ? bu.openInsights(p) : toast("Insights didn't load. Please refresh.", "error"); }
@@ -549,6 +623,7 @@
 
   // what the profile editor calls after a successful save (instead of reloading the whole page)
   window.LiyogStudioHooks = {
+    afterPlanChange: function () { bust("g:"); bust("items:"); try { sessionStorage.removeItem(ssKey(S.slug)); } catch (e) {} refreshQuietly(); if (S.page !== "home") mountPage(S.page); },
     afterProfileSave: function (data) {
       S.dirty = false; bust("g:");
       try { sessionStorage.removeItem(ssKey(S.slug)); } catch (e) {}
