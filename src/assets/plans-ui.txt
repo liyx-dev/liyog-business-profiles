@@ -1,0 +1,158 @@
+/* =====================================================================
+   BIZIPLEX — plans-ui.txt  (served as /plans-ui.js)
+   The plan chooser: Basic / Plus / Business / Elite, paid monthly, every 6 months or yearly.
+   window.LiyogPlansUI.open(profile, fallback, onChange)
+     * If you haven't set prices yet (or paid plans are switched off) it quietly calls `fallback`, which is the
+       old one-time upgrade sheet, so nothing breaks while you get ready.
+   Steps for the owner: pick how often > pick a plan > see the exact price > pay by card (renews by itself) or
+   through WhatsApp (one period). Plain words, big buttons, one thing per screen.
+   ===================================================================== */
+(function () {
+  "use strict";
+  var BASE = location.origin;
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function PU() { return window.LiyogProductUI || {}; }
+  function host() { return document.querySelector(".lp-root") || document.body; }
+  function toast(m, t) { var f = PU().showToast; if (f) f(m, t || "success"); }
+  function lock() { var u = PU(); if (u.lockBodyScroll) u.lockBodyScroll(); else document.body.style.overflow = "hidden"; }
+  function unlock() { var u = PU(); if (u.unlockBodyScroll) u.unlockBodyScroll(); else document.body.style.overflow = ""; }
+  var SYM = { NGN: "₦", GHS: "GH₵", ZAR: "R", KES: "KSh", USD: "$", GBP: "£", EUR: "€" };
+  function money(minor, cur) { var major = Number(minor) / 100, sym = SYM[cur] || (cur + " "); return sym + major.toLocaleString(undefined, { maximumFractionDigits: major < 100 && major % 1 ? 2 : 0 }); }
+  function lim(n) { n = Number(n); return n < 0 ? "Unlimited" : String(n); }
+
+  (function css() {
+    if (document.getElementById("lpp-styles")) return;
+    var st = document.createElement("style"); st.id = "lpp-styles";
+    st.textContent =
+      ".lpp-h{font-family:var(--font-display,inherit);text-align:center;margin:0 0 4px;font-size:21px}.lpp-sub{margin:0 0 14px;text-align:center;color:var(--ink-soft,#4B5A66);font-size:14px;line-height:1.5}" +
+      ".lpp-seg{display:flex;gap:6px;padding:4px;border-radius:999px;background:var(--surface-soft,#F7F9F8);border:1px solid var(--line,#E2E8E5);margin:0 0 14px}" +
+      ".lpp-seg button{flex:1;min-height:44px;border:0;border-radius:999px;background:transparent;color:var(--ink-soft,#4B5A66);font:800 13.5px var(--font-body,inherit);cursor:pointer;line-height:1.15}" +
+      ".lpp-seg button small{display:block;font-weight:700;color:var(--bz-green-text,#007A3A);font-size:11px}" +
+      ".lpp-seg button.on{background:var(--surface,#fff);color:var(--ink,#0F1419);box-shadow:0 1px 4px rgba(15,20,25,.14)}" +
+      ".lpp-card{display:block;width:100%;text-align:left;margin:0 0 12px;padding:16px;border-radius:20px;border:1.5px solid var(--line,#E2E8E5);background:var(--surface,#fff);color:var(--ink,#0F1419);cursor:pointer;font:inherit;box-shadow:0 1px 3px rgba(15,20,25,.08)}" +
+      ".lpp-card:hover{border-color:var(--bz-green,#00A94F)}.lpp-card.cur{border-color:var(--bz-gold,#FFB900);background:rgba(255,185,0,.08)}" +
+      ".lpp-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}.lpp-name{font:800 18px var(--font-display,inherit)}" +
+      ".lpp-price{font:800 20px var(--font-display,inherit);color:var(--bz-green-text,#007A3A)}.lpp-per{display:block;text-align:right;font-size:12px;color:var(--ink-soft,#4B5A66);font-weight:600}" +
+      ".lpp-feat{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:5px;font-size:14px;color:var(--ink-soft,#4B5A66)}.lpp-feat li:before{content:'✓';color:var(--bz-green,#00A94F);font-weight:800;margin-right:8px}" +
+      ".lpp-tag{display:inline-block;margin-top:8px;padding:2px 10px;border-radius:999px;background:var(--bz-gold,#FFB900);color:#1a1400;font:800 11.5px var(--font-body,inherit)}" +
+      ".lpp-trial{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 14px;padding:12px 14px;border-radius:16px;background:rgba(255,185,0,.14);border:1px solid rgba(255,185,0,.5);font-size:14px}" +
+      ".lpp-trial button{flex-shrink:0}.lpp-rows{margin:0 0 14px;border:1px solid var(--line,#E2E8E5);border-radius:18px;padding:4px 14px;background:var(--surface-soft,#F7F9F8)}" +
+      ".lpp-row{display:flex;justify-content:space-between;gap:12px;padding:11px 0;font-size:14.5px}.lpp-row+.lpp-row{border-top:1px solid var(--line,#E2E8E5)}.lpp-row b{text-align:right}.lpp-total b{color:var(--bz-green-text,#007A3A);font-size:17px}" +
+      ".lpp-fine{margin:12px 2px 0;text-align:center;font-size:12.5px;line-height:1.5;color:var(--ink-faint,#68757F)}.lpp-back{background:none;border:0;color:var(--ink-soft,#4B5A66);font:700 14px var(--font-body,inherit);padding:0 0 12px;cursor:pointer}" +
+      ".lpp-note{margin:0 0 12px;padding:10px 12px;border-radius:14px;background:rgba(255,138,0,.12);border:1px solid rgba(255,138,0,.4);font-size:13.5px}.lpp-skel{height:110px;border-radius:20px;margin-bottom:12px;background:linear-gradient(90deg,var(--line,#E2E8E5) 25%,var(--surface-soft,#F7F9F8) 50%,var(--line,#E2E8E5) 75%);background-size:200% 100%;animation:lpp-sh 1.4s infinite}@keyframes lpp-sh{0%{background-position:200% 0}100%{background-position:-200% 0}}";
+    document.head.appendChild(st);
+  })();
+
+  function api(method, url, body) {
+    var ctl = typeof AbortController !== "undefined" ? new AbortController() : null, t = setTimeout(function () { if (ctl) ctl.abort(); }, 15000);
+    return fetch(BASE + url, { method: method, credentials: "include", signal: ctl ? ctl.signal : undefined, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.text().then(function (tx) { var d = {}; try { d = tx ? JSON.parse(tx) : {}; } catch (e) {} if (!r.ok) { var er = new Error(d.error || "Something went wrong. Please try again."); er.status = r.status; throw er; } return d; }); })
+      .catch(function (e) { if (e && e.name === "AbortError") throw new Error("This is taking too long. Please check your connection."); if (e instanceof TypeError) throw new Error("You seem to be offline. Please check your connection."); throw e; })
+      .then(function (v) { clearTimeout(t); return v; }, function (e) { clearTimeout(t); throw e; });
+  }
+
+  function sheet() {
+    var ov = document.getElementById("lp-plans-overlay");
+    if (!ov) { ov = document.createElement("div"); ov.id = "lp-plans-overlay"; ov.className = "lp-sheet-overlay"; host().appendChild(ov); ov.addEventListener("click", function (e) { if (e.target === ov) close(); }); }
+    ov.innerHTML = '<div class="lp-sheet lp-sheet-tall"><div class="lp-sheet-top-bar"><div class="lp-sheet-handle"></div><button class="lp-sheet-close" id="lpp-x" type="button" aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div id="lpp-body"></div></div>';
+    document.getElementById("lpp-x").addEventListener("click", close);
+    if (!ov.classList.contains("lp-open")) { ov.classList.add("lp-open"); lock(); }
+    return document.getElementById("lpp-body");
+  }
+  function close() { var ov = document.getElementById("lp-plans-overlay"); if (ov && ov.classList.contains("lp-open")) { ov.classList.remove("lp-open"); unlock(); } }
+
+  var S = { p: null, data: null, me: null, billing: null, fallback: null, onChange: null };
+
+  function saving(plan, id, months) {
+    var m = plan.prices.monthly; if (!m || id === "monthly") return 0;
+    var pr = plan.prices[id]; if (!pr || pr.currency !== m.currency) return 0;
+    return Math.max(0, Math.round((1 - (pr.amount / months) / m.amount) * 100));
+  }
+
+  function renderChoose() {
+    var body = sheet(), d = S.data, st = (S.me && S.me.status) || {}, trial = d.trial || {}, cur = st.subscription || null;
+    if (!S.billing || !d.billing.some(function (b) { return b.id === S.billing; })) S.billing = (d.billing.filter(function (b) { return b.id === "monthly"; })[0] || d.billing[0]).id;
+    var months = (d.billing.filter(function (b) { return b.id === S.billing; })[0] || { months: 1 }).months;
+
+    var html = '<h3 class="lpp-h">Choose your plan</h3><p class="lpp-sub">Pay monthly, or save when you pay for longer. Cancel any time.</p>';
+    if (trial.enabled && st.trial && st.trial.eligible) html += '<div class="lpp-trial"><span><b>Not sure yet?</b> Try ' + esc(trial.planLabel || "Premium") + ' free for ' + trial.days + ' days. No card needed.</span><button type="button" class="lp-btn lp-btn-primary" id="lpp-trial" style="min-height:40px"><span>Try free</span></button></div>';
+    if (st.trial && st.trial.active) html += '<div class="lpp-trial"><span>Your free trial has <b>' + st.trial.daysLeft + ' day' + (st.trial.daysLeft === 1 ? "" : "s") + '</b> left. Pick a plan to keep everything.</span></div>';
+    if (d.billing.length > 1) html += '<div class="lpp-seg" role="tablist">' + d.billing.map(function (b) {
+      var s = 0; d.plans.forEach(function (pl) { s = Math.max(s, saving(pl, b.id, b.months)); });
+      return '<button type="button" role="tab" data-b="' + b.id + '" class="' + (b.id === S.billing ? "on" : "") + '">' + esc(b.label) + (s ? "<small>Save " + s + "%</small>" : "") + "</button>";
+    }).join("") + "</div>";
+
+    d.plans.forEach(function (pl) {
+      var pr = pl.prices[S.billing]; if (!pr) return;
+      var isCur = cur && cur.plan_id === pl.plan_id, L = pl.limits || {};
+      html += '<button type="button" class="lpp-card' + (isCur ? " cur" : "") + '" data-plan="' + esc(pl.plan_id) + '"><div class="lpp-top"><span class="lpp-name">' + esc(pl.label) + '</span><span class="lpp-price">' + money(pr.amount, pr.currency) + '<span class="lpp-per">' + (months > 1 ? "about " + money(Math.round(pr.amount / months), pr.currency) + " a month" : "a month") + "</span></span></div>" +
+        '<ul class="lpp-feat"><li>' + lim(L.max_products) + " products and services</li><li>" + lim(L.max_images_per_product) + " photo" + (Number(L.max_images_per_product) === 1 ? "" : "s") + " on each item</li>" +
+        (Number(L.video_allowed) ? "<li>Add a video to your items</li>" : "") + "<li>" + lim(L.max_collections) + " collections</li></ul>" + (isCur ? '<span class="lpp-tag">Your plan now</span>' : "") + "</button>";
+    });
+    html += '<p class="lpp-fine">Your plan stays on until the end of the time you paid for.</p>';
+    body.innerHTML = html;
+
+    Array.prototype.forEach.call(body.querySelectorAll("[data-b]"), function (b) { b.addEventListener("click", function () { S.billing = b.dataset.b; renderChoose(); }); });
+    Array.prototype.forEach.call(body.querySelectorAll("[data-plan]"), function (c) { c.addEventListener("click", function () { renderPay(c.dataset.plan); }); });
+    var tb = document.getElementById("lpp-trial");
+    if (tb) tb.addEventListener("click", function () {
+      tb.disabled = true; tb.firstChild.textContent = "Starting…";
+      api("POST", "/api/plans/trial/start", { profile_id: S.p.id }).then(function () { toast("Your free trial has started!"); close(); if (typeof S.onChange === "function") S.onChange(); else setTimeout(function () { location.reload(); }, 600); })
+        .catch(function (e) { toast(e.message, "error"); tb.disabled = false; tb.firstChild.textContent = "Try free"; });
+    });
+  }
+
+  function renderPay(planId) {
+    var body = sheet();
+    body.innerHTML = '<button type="button" class="lpp-back" id="lpp-back">&larr; Back</button><div class="lpp-skel"></div>';
+    document.getElementById("lpp-back").addEventListener("click", renderChoose);
+    api("GET", "/api/plans/quote?profile_id=" + encodeURIComponent(S.p.id) + "&plan_id=" + encodeURIComponent(planId) + "&billing=" + encodeURIComponent(S.billing)).then(function (r) {
+      var q = r.quote, foreign = q.currency !== "NGN", every = S.billing === "monthly" ? "month" : S.billing === "semiannual" ? "6 months" : "year";
+      body.innerHTML = '<button type="button" class="lpp-back" id="lpp-back">&larr; Back</button><h3 class="lpp-h">' + esc(q.planLabel) + '</h3><p class="lpp-sub">One last look, then pay.</p>' +
+        '<div class="lpp-rows"><div class="lpp-row"><span>Plan</span><b>' + esc(q.planLabel) + '</b></div><div class="lpp-row"><span>Pays every</span><b>' + every + '</b></div><div class="lpp-row"><span>Price</span><b>' + money(q.amount, q.currency) + "</b></div>" +
+        (q.credit > 0 ? '<div class="lpp-row"><span>Credit for your old plan</span><b>− ' + money(q.credit, "NGN") + "</b></div>" : "") +
+        '<div class="lpp-row lpp-total"><span>You pay today</span><b>' + (foreign && !q.credit ? money(q.amount, q.currency) + " (charged as " + money(q.ngnCharge, "NGN") + ")" : money(q.ngnCharge, "NGN")) + "</b></div></div>" +
+        (q.mode === "upgrade" ? '<div class="lpp-note">Your new plan starts today. The unused time on your old plan is taken off the price above.</div>' : q.mode === "same" ? '<div class="lpp-note">This adds another period to the plan you already have.</div>' : "") +
+        '<button type="button" class="lp-btn lp-btn-primary" id="lpp-card" style="width:100%;margin-bottom:10px"><span>Pay with card (renews by itself)</span></button>' +
+        '<button type="button" class="lp-btn lp-btn-outline-subtle" id="lpp-wa" style="width:100%"><span>Pay through WhatsApp (one time)</span></button>' +
+        '<p class="lpp-fine">Card payments renew every ' + every + ' at the same price. Turn it off any time in Studio, then Plan. Through WhatsApp you pay for one period and we switch it on for you.</p>';
+      document.getElementById("lpp-back").addEventListener("click", renderChoose);
+      function go(method, btn) {
+        btn.disabled = true; var label = btn.firstChild.textContent; btn.firstChild.textContent = "Please wait…";
+        api("POST", "/api/plans/checkout", { profile_id: S.p.id, plan_id: planId, billing: S.billing, method: method }).then(function (d) {
+          if (d.method === "card") { window.location.href = d.authorizationUrl; return; }
+          renderManual(d.purchase);
+        }).catch(function (e) { toast(e.message, "error"); btn.disabled = false; btn.firstChild.textContent = label; });
+      }
+      document.getElementById("lpp-card").addEventListener("click", function (e) { go("card", e.currentTarget); });
+      document.getElementById("lpp-wa").addEventListener("click", function (e) { go("manual", e.currentTarget); });
+    }).catch(function (e) {
+      body.innerHTML = '<button type="button" class="lpp-back" id="lpp-back">&larr; Back</button><p class="lpp-note">' + esc(e.message) + "</p>";
+      document.getElementById("lpp-back").addEventListener("click", renderChoose);
+    });
+  }
+
+  function renderManual(pu) {
+    var body = sheet(), every = S.billing === "monthly" ? "1 month" : S.billing === "semiannual" ? "6 months" : "1 year";
+    body.innerHTML = '<h3 class="lpp-h">Almost done</h3><p class="lpp-sub">Send us a WhatsApp message with your payment. We switch your ' + esc(pu.planLabel) + " plan on (" + every + ") as soon as we confirm it.</p>" +
+      '<button type="button" class="lp-btn lp-btn-primary" id="lpp-send" style="width:100%"><span>Message us on WhatsApp</span></button>';
+    document.getElementById("lpp-send").addEventListener("click", function () {
+      var text = ["I'd like to pay for my plan.", "Brand: " + S.p.business_name + " (" + BASE + "/b/" + S.p.slug + ")", "Plan: " + pu.planLabel + " for " + every, "Amount: " + money(pu.amount, pu.currency), "Payment ID: " + pu.id].join("\n");
+      fetch(BASE + "/api/boost-config").then(function (r) { return r.json(); }).catch(function () { return {}; }).then(function (cfg) {
+        window.open("https://wa.me/" + (cfg.adminWhatsapp || "") + "?text=" + encodeURIComponent(text), "_blank"); close();
+      });
+    });
+  }
+
+  function open(p, fallback, onChange) {
+    S.p = p; S.fallback = fallback; S.onChange = onChange; S.billing = null;
+    var body = sheet(); body.innerHTML = '<h3 class="lpp-h">Choose your plan</h3><div class="lpp-skel"></div><div class="lpp-skel"></div>';
+    Promise.all([api("GET", "/api/plans/pricing"), api("GET", "/api/plans/me?profile_id=" + encodeURIComponent(p.id)).catch(function () { return null; })]).then(function (r) {
+      if (!r[0].enabled) { close(); if (fallback) fallback(); return; }
+      S.data = r[0]; S.me = r[1]; renderChoose();
+    }).catch(function () { close(); if (fallback) fallback(); });
+  }
+
+  window.LiyogPlansUI = { open: open };
+})();
+
