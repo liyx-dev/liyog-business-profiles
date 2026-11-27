@@ -24,6 +24,7 @@ export function studioShellHtml(url) {
   </div>
 </div>
 <div class="lp-root lp-embed bz-st-host" id="bz-st-host" aria-live="polite"></div>`,
-    scripts: ["/tiers-ui.js", "/boost-ui.js", "/studio-ui.js", "/brands.js", "/studio-app.js"]
+    scripts: ["/tiers-ui.js", "/plans-ui.js", "/boost-ui.js", "/studio-ui.js", "/brands.js", "/studio-app.js"]
   });
 }
+
