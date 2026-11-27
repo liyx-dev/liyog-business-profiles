@@ -1,0 +1,109 @@
+/* =====================================================================
+   BIZIPLEX — admin-ui.txt  (served as /admin-ui.js, used by the /admin page)
+   Your back-office for plans, trials and prices. Works on a phone.
+   Your admin secret is asked for once, kept only for this browser tab (sessionStorage) and sent as the
+   x-admin-secret header on every call. Nothing here works without it.
+   ===================================================================== */
+(function () {
+  "use strict";
+  var root = document.getElementById("bz-admin"); if (!root) return;
+  var KEY = "bz_admin_secret", secret = ""; try { secret = sessionStorage.getItem(KEY) || ""; } catch (e) {}
+  var CFG = null, TAB = "overview";
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function $(s, r) { return (r || document).querySelector(s); }
+  function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+
+  var css = document.createElement("style");
+  css.textContent = "#bz-admin{max-width:900px;margin:0 auto;padding:16px 14px 60px}#bz-admin h1{font-size:24px;margin:6px 0 2px}#bz-admin h2{font-size:18px;margin:22px 0 8px}#bz-admin .sub{color:#68757F;margin:0 0 14px;font-size:14px}" +
+    "#bz-admin .tabs{display:flex;gap:6px;overflow-x:auto;margin:10px -14px 14px;padding:0 14px 6px}#bz-admin .tabs button{flex:0 0 auto;min-height:42px;padding:0 16px;border-radius:999px;border:1px solid #cdd6d1;background:transparent;color:inherit;font:700 14px system-ui;cursor:pointer}#bz-admin .tabs button.on{background:#00A94F;border-color:#00A94F;color:#fff}" +
+    "#bz-admin .card{background:#fff;color:#0F1419;border:1px solid #E2E8E5;border-radius:18px;padding:14px;margin:0 0 12px}@media(prefers-color-scheme:dark){#bz-admin .card{background:#161B1F;color:#E8ECEF;border-color:#2A3238}}" +
+    "#bz-admin label{display:block;font-weight:700;font-size:14px;margin:0 0 6px}#bz-admin .hint{font-weight:500;color:#68757F;font-size:12.5px;margin-top:3px}" +
+    "#bz-admin input,#bz-admin select{width:100%;min-height:44px;padding:0 12px;border-radius:12px;border:1.5px solid #cdd6d1;background:transparent;color:inherit;font:500 16px system-ui}" +
+    "#bz-admin .row{display:flex;gap:8px;align-items:center}#bz-admin .row>*{min-width:0}#bz-admin .btn{flex:0 0 auto;min-height:44px;padding:0 18px;border:0;border-radius:999px;background:#00A94F;color:#fff;font:800 14px system-ui;cursor:pointer}#bz-admin .btn.ghost{background:transparent;color:inherit;border:1.5px solid #cdd6d1}#bz-admin .btn.red{background:#D93025}" +
+    "#bz-admin .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}#bz-admin .stat{padding:12px;border-radius:16px;border:1px solid #E2E8E5}#bz-admin .stat b{display:block;font-size:24px}#bz-admin table{width:100%;border-collapse:collapse;font-size:14px}#bz-admin td,#bz-admin th{padding:6px 4px;text-align:left;border-bottom:1px solid #E2E8E5;vertical-align:middle}#bz-admin td input{min-height:38px;font-size:15px}" +
+    "#bz-admin .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#0F1419;color:#fff;padding:12px 18px;border-radius:14px;font-weight:700;z-index:9;max-width:90vw}#bz-admin .toast.err{background:#D93025}.wrap{overflow-x:auto}";
+  document.head.appendChild(css);
+
+  function toast(m, err) { var t = document.createElement("div"); t.className = "toast" + (err ? " err" : ""); t.textContent = m; root.appendChild(t); setTimeout(function () { t.remove(); }, 3200); }
+  function api(method, url, body) {
+    return fetch(url, { method: method, headers: Object.assign({ "x-admin-secret": secret }, body ? { "content-type": "application/json" } : {}), body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { if (!r.ok) { var e = new Error(d.error || "Something went wrong (" + r.status + ")"); e.status = r.status; throw e; } return d; }); });
+  }
+
+  function login(msg) {
+    root.innerHTML = '<h1>Admin</h1><p class="sub">Enter your admin secret to continue.</p>' + (msg ? '<p style="color:#D93025;font-weight:700">' + esc(msg) + "</p>" : "") +
+      '<div class="card"><label for="sec">Admin secret</label><input id="sec" type="password" autocomplete="current-password"><div style="height:10px"></div><button class="btn" id="go" style="width:100%">Open</button></div>';
+    function go() { secret = $("#sec").value.trim(); try { sessionStorage.setItem(KEY, secret); } catch (e) {} load(); }
+    $("#go").addEventListener("click", go); $("#sec").addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
+  }
+
+  function load() {
+    root.innerHTML = '<p class="sub" style="padding:20px">Loading…</p>';
+    api("GET", "/api/admin/plans-config").then(function (d) { CFG = d; draw(); }).catch(function (e) {
+      if (e.status === 401) { try { sessionStorage.removeItem(KEY); } catch (x) {} login("That secret wasn't accepted."); }
+      else { root.innerHTML = '<p class="card">' + esc(e.message) + '</p><button class="btn" id="re">Try again</button>'; $("#re").addEventListener("click", load); }
+    });
+  }
+
+  function draw() {
+    var tabs = [["overview", "Overview"], ["settings", "Settings"], ["limits", "Plans & limits"], ["prices", "Prices"]];
+    root.innerHTML = '<h1>Admin</h1><p class="sub">Plans, trials and prices. Changes save as you go.</p><div class="tabs">' + tabs.map(function (t) { return '<button data-t="' + t[0] + '" class="' + (t[0] === TAB ? "on" : "") + '">' + t[1] + "</button>"; }).join("") + '</div><div id="pane"></div>';
+    $$(".tabs button").forEach(function (b) { b.addEventListener("click", function () { TAB = b.dataset.t; draw(); }); });
+    ({ overview: overview, settings: settings, limits: limits, prices: prices })[TAB]($("#pane"));
+  }
+
+  function planOptions(withNone, sel) { return (withNone ? '<option value="">— none —</option>' : "") + CFG.plans.map(function (p) { return '<option value="' + p.plan_id + '"' + (p.plan_id === sel ? " selected" : "") + ">" + esc(p.label) + (p.legacy_tier_id ? "" : " (no tier link)") + "</option>"; }).join(""); }
+
+  function overview(pane) {
+    var s = CFG.stats;
+    pane.innerHTML = (s ? '<div class="stats"><div class="stat"><b>' + s.activeSubscriptions + '</b>paying plans</div><div class="stat"><b>' + s.pastDue + '</b>payment problems</div><div class="stat"><b>' + s.activeTrials + '</b>trials running</div><div class="stat"><b>' + s.trialsEver + '</b>trials started ever</div><div class="stat"><b>' + s.hiddenItems + '</b>items hidden by plans</div></div>' : '<div class="card">The new plan tables are not in the database yet. Run the migration first.</div>') +
+      '<h2>Give a brand a plan</h2><div class="card"><label for="gs">Brand link (the part after /b/)</label><input id="gs" placeholder="e.g. liyog-medics" autocapitalize="none"><div style="height:10px"></div><label for="gp">Plan</label><select id="gp">' + planOptions(true) + '</select><div class="hint">Choose "none" to take a gifted plan away.</div><div style="height:10px"></div><label for="gd">For how many days? (leave empty = for good)</label><input id="gd" inputmode="numeric" placeholder="e.g. 30"><div style="height:12px"></div><div class="row"><button class="btn" id="gg">Give plan</button><button class="btn ghost" id="gr">Re-check this brand</button></div></div>' +
+      '<div class="card"><b>Paystack webhook</b><div class="hint">In Paystack, set the webhook URL to <b>' + esc(location.origin) + '/api/paystack/webhook</b>. It handles plans, boosts and the old upgrades together.</div></div>';
+    function slug() { var v = $("#gs").value.trim().toLowerCase(); if (!v) toast("Type the brand link first.", true); return v; }
+    $("#gg").addEventListener("click", function () { var sl = slug(); if (!sl) return; api("POST", "/api/admin/grant", { slug: sl, plan_id: $("#gp").value, days: $("#gd").value.trim() }).then(function (d) { toast(d.result && d.result.planId ? "Done. They are now on " + d.result.planId + "." : "Done."); }).catch(function (e) { toast(e.message, true); }); });
+    $("#gr").addEventListener("click", function () { var sl = slug(); if (!sl) return; api("POST", "/api/admin/recheck", { slug: sl }).then(function (d) { toast("Checked. Plan in force: " + ((d.result && d.result.planId) || "free")); }).catch(function (e) { toast(e.message, true); }); });
+  }
+
+  function settings(pane) {
+    var groups = {}; CFG.settings.forEach(function (s) { (groups[s.group] = groups[s.group] || []).push(s); });
+    pane.innerHTML = Object.keys(groups).map(function (g) {
+      return "<h2>" + esc(g) + "</h2>" + groups[g].map(function (s) {
+        var input = s.type === "bool" ? '<select data-k="' + s.key + '"><option value="1"' + (s.parsed ? " selected" : "") + '>On</option><option value="0"' + (!s.parsed ? " selected" : "") + ">Off</option></select>"
+          : s.type === "plan" ? '<select data-k="' + s.key + '">' + planOptions(false, s.value) + "</select>"
+          : '<input data-k="' + s.key + '" value="' + esc(s.value) + '"' + (s.type === "int" ? ' inputmode="numeric"' : "") + (s.type === "date" ? ' placeholder="e.g. 2027-12-31 (empty = for good)"' : "") + ">";
+        return '<div class="card"><label>' + esc(s.label) + (s.type === "int" ? '<span class="hint">From ' + s.min + " to " + s.max + "</span>" : "") + '</label><div class="row">' + input + '<button class="btn" data-save="' + s.key + '">Save</button></div></div>';
+      }).join("");
+    }).join("");
+    $$("[data-save]", pane).forEach(function (b) { b.addEventListener("click", function () { var k = b.dataset.save, el = $('[data-k="' + k + '"]', pane); api("PUT", "/api/admin/setting", { key: k, value: el.value }).then(function () { toast("Saved."); }).catch(function (e) { toast(e.message, true); }); }); });
+  }
+
+  function limits(pane) {
+    var keys = {}; CFG.limits.forEach(function (l) { keys[l.limit_key] = 1; });
+    var ks = Object.keys(keys).sort(), val = {}; CFG.limits.forEach(function (l) { val[l.plan_id + "|" + l.limit_key] = l.value; });
+    pane.innerHTML = '<p class="sub">What each plan allows. -1 means unlimited. You can add new kinds of limits for BiziFeed, BiziChat and more any time.</p><div class="card wrap"><table><tr><th>Limit</th>' + CFG.plans.map(function (p) { return "<th>" + esc(p.label) + "</th>"; }).join("") + "</tr>" +
+      ks.map(function (k) { return "<tr><td>" + esc(k) + "</td>" + CFG.plans.map(function (p) { var v = val[p.plan_id + "|" + k]; return '<td><input inputmode="numeric" style="min-width:70px" data-p="' + p.plan_id + '" data-l="' + k + '" value="' + (v == null ? "" : v) + '"></td>'; }).join("") + "</tr>"; }).join("") + "</table></div>" +
+      '<h2>Add a new limit</h2><div class="card"><label>Name (small letters, numbers and _)</label><input id="nl" placeholder="e.g. bizifeed_posts_per_day"><div style="height:10px"></div><label>Value for the Free plan</label><input id="nv" inputmode="numeric" placeholder="e.g. 3"><div style="height:12px"></div><button class="btn" id="na">Add</button></div>';
+    $$("input[data-l]", pane).forEach(function (i) { i.addEventListener("change", function () { if (i.value.trim() === "") return; api("PUT", "/api/admin/limit", { plan_id: i.dataset.p, limit_key: i.dataset.l, value: i.value.trim() }).then(function (d) { toast("Saved. " + (d.note || "")); }).catch(function (e) { toast(e.message, true); }); }); });
+    $("#na").addEventListener("click", function () { api("PUT", "/api/admin/limit", { plan_id: "free", limit_key: $("#nl").value.trim(), value: $("#nv").value.trim() }).then(function () { toast("Added. Now set it for the other plans."); load(); }).catch(function (e) { toast(e.message, true); }); });
+  }
+
+  function prices(pane) {
+    var bl = { monthly: "Monthly", semiannual: "6 months", yearly: "Yearly" };
+    pane.innerHTML = '<p class="sub">What each plan costs. Type the price the way you say it (2000 means ₦2,000). People who already subscribed keep their price.</p><div class="card wrap"><table><tr><th>Plan</th><th>Pays</th><th>Country</th><th>Price</th><th></th></tr>' +
+      (CFG.prices.map(function (p) { return "<tr><td>" + esc(p.plan_id) + "</td><td>" + (bl[p.billing] || p.billing) + "</td><td>" + esc(p.country_code) + "</td><td>" + esc(p.currency) + " " + (p.amount / 100).toLocaleString() + (p.is_active ? "" : " (off)") + '</td><td><button class="btn red" style="min-height:36px;padding:0 12px" data-del="' + esc(p.plan_id + "|" + p.billing + "|" + p.country_code) + '">Remove</button></td></tr>'; }).join("") || '<tr><td colspan="5">No prices yet. Add the first one below.</td></tr>') + "</table></div>" +
+      '<h2>Add or change a price</h2><div class="card"><label>Plan</label><select id="pp">' + planOptions(false) + '</select><div style="height:10px"></div><label>How often</label><select id="pb"><option value="monthly">Monthly</option><option value="semiannual">Every 6 months</option><option value="yearly">Yearly</option></select><div style="height:10px"></div>' +
+      '<label>Country</label><select id="pc"><option value="NG">Nigeria (NG)</option><option value="GH">Ghana (GH)</option><option value="ZA">South Africa (ZA)</option><option value="KE">Kenya (KE)</option><option value="USD">Everywhere else (USD)</option></select><div style="height:10px"></div>' +
+      '<label>Currency</label><input id="pcur" value="NGN" maxlength="3" autocapitalize="characters"><div class="hint">NGN for Nigeria, GHS Ghana, ZAR South Africa, KES Kenya, USD everywhere else.</div><div style="height:10px"></div><label>Price</label><input id="pa" inputmode="decimal" placeholder="e.g. 2000"><div style="height:10px"></div>' +
+      '<label>Exact amount in Naira (optional)</label><input id="pn" inputmode="decimal" placeholder="Only for countries outside Nigeria"><div class="hint">Leave empty to convert automatically at today\'s rate.</div><div style="height:12px"></div><button class="btn" id="ps">Save price</button></div>';
+    $("#pc").addEventListener("change", function () { var m = { NG: "NGN", GH: "GHS", ZA: "ZAR", KE: "KES", USD: "USD" }; $("#pcur").value = m[this.value] || "USD"; });
+    $("#ps").addEventListener("click", function () {
+      var a = Math.round(parseFloat($("#pa").value) * 100), n = $("#pn").value.trim() ? Math.round(parseFloat($("#pn").value) * 100) : null;
+      if (!(a > 0)) return toast("Type the price first.", true);
+      api("PUT", "/api/admin/price", { plan_id: $("#pp").value, billing: $("#pb").value, country_code: $("#pc").value, currency: $("#pcur").value.trim().toUpperCase(), amount: a, ngn_amount: n }).then(function (d) { toast("Saved. " + (d.note || "")); load(); }).catch(function (e) { toast(e.message, true); });
+    });
+    $$("[data-del]", pane).forEach(function (b) { b.addEventListener("click", function () { var x = b.dataset.del.split("|"); if (!confirm("Remove this price?")) return; api("DELETE", "/api/admin/price", { plan_id: x[0], billing: x[1], country_code: x[2] }).then(function () { toast("Removed."); load(); }).catch(function (e) { toast(e.message, true); }); }); });
+  }
+
+  if (secret) load(); else login();
+})();
+
